@@ -17,12 +17,14 @@ use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
     CreateNamespaceRequest, DeleteCollectionTemplateRequest, DeleteEntityRequest,
     DescribeCollectionRequest, DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest,
-    GetCollectionTemplateRequest, GetEntityRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListNamespaceCollectionsRequest, ListNamespacesRequest, PutCollectionTemplateRequest,
-    PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, RevalidateRequest,
-    RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
+    ExplainPolicyRequest, GetCollectionTemplateRequest, GetEntityRequest, ListCollectionsRequest,
+    ListDatabasesRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
+    PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
+    RevalidateRequest, RevertEntityRequest, RollbackEntityRequest, RollbackEntityTarget,
+    RollbackTransactionRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_audit::AuditLog;
+use axon_core::auth::CallerIdentity;
 use axon_core::id::{CollectionId, EntityId};
 use axon_schema::schema::CollectionSchema;
 use axon_storage::SqliteStorageAdapter;
@@ -145,6 +147,18 @@ enum Command {
         #[arg(long, short = 'd', default_value = "1")]
         depth: usize,
     },
+
+    /// Policy explanation and testing (CONTRACT-008).
+    #[command(subcommand)]
+    Policy(PolicyCmd),
+
+    /// Governed-write mutation intent workflow (CONTRACT-008).
+    #[command(subcommand)]
+    Mutation(MutationCmd),
+
+    /// Rollback operations (CONTRACT-008).
+    #[command(subcommand)]
+    Rollback(RollbackCmd),
 
     /// Manage per-principal role assignments.
     #[cfg(feature = "serve")]
@@ -497,6 +511,26 @@ enum AuditCmd {
         #[arg(long)]
         force: bool,
     },
+    /// Show field-level diff for an entity's audit entries (CONTRACT-008).
+    Diff {
+        /// Collection name.
+        collection: String,
+        /// Entity ID.
+        entity_id: String,
+        /// Show diff for a specific audit entry ID only.
+        #[arg(long)]
+        entry: Option<u64>,
+    },
+    /// Show actor, tool origin, and policy decision for audit entries (CONTRACT-008).
+    Blame {
+        /// Collection name.
+        collection: String,
+        /// Entity ID.
+        entity_id: String,
+        /// Maximum number of entries to show.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
 }
 
 // ── Schema commands ───────────────────────────────────────────────────────────
@@ -606,6 +640,154 @@ enum BeadCmd {
     Import {
         /// Input file path.
         file: String,
+    },
+}
+
+// ── Policy commands ───────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum PolicyCmd {
+    /// Explain the policy decision for an operation on an entity (CONTRACT-008).
+    ///
+    /// Shows which rules matched, the final decision (allow/deny/needs_approval),
+    /// and the policy version used.
+    Explain {
+        /// Collection name.
+        collection: String,
+        /// Operation to explain: read, create, update, patch, delete, transition, rollback, transaction.
+        #[arg(long, short = 'o')]
+        operation: String,
+        /// Entity ID (required for update/patch/delete/read).
+        #[arg(long)]
+        entity_id: Option<String>,
+        /// Entity data as JSON (required for create/update).
+        #[arg(long, short = 'd')]
+        data: Option<String>,
+        /// Actor name to evaluate as (default: anonymous/admin in embedded mode).
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Test whether an operation is allowed, returning only allow/deny (CONTRACT-008).
+    Test {
+        /// Collection name.
+        collection: String,
+        /// Operation to test: read, create, update, patch, delete, transition, rollback.
+        #[arg(long, short = 'o')]
+        operation: String,
+        /// Entity ID.
+        #[arg(long)]
+        entity_id: Option<String>,
+        /// Entity data as JSON.
+        #[arg(long, short = 'd')]
+        data: Option<String>,
+        /// Actor name to evaluate as.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+}
+
+// ── Mutation intent commands ──────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum MutationCmd {
+    /// Preview a governed write intent (CONTRACT-008).
+    ///
+    /// Evaluates policy and returns allow/deny/needs_approval with a preview token.
+    /// Requires a running Axon server with policy enforcement enabled.
+    Preview {
+        /// Collection name.
+        collection: String,
+        /// Entity ID.
+        #[arg(long)]
+        entity_id: String,
+        /// Mutation operation: create, update, delete.
+        #[arg(long, short = 'o')]
+        operation: String,
+        /// Entity data as JSON (required for create/update).
+        #[arg(long, short = 'd')]
+        data: Option<String>,
+        /// Actor performing the mutation.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Commit a previously previewed governed write intent (CONTRACT-008).
+    ///
+    /// Requires the intent token returned by `mutation preview`.
+    Commit {
+        /// Intent token returned by `mutation preview`.
+        #[arg(long)]
+        token: String,
+        /// Actor committing the intent.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Approve a pending governed write intent (CONTRACT-008).
+    ///
+    /// For intents that require human approval before commit.
+    Approve {
+        /// Intent ID to approve.
+        intent_id: String,
+        /// Reason for approval (required by some policies).
+        #[arg(long)]
+        reason: Option<String>,
+        /// Actor approving the intent.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Reject a pending governed write intent (CONTRACT-008).
+    Reject {
+        /// Intent ID to reject.
+        intent_id: String,
+        /// Reason for rejection.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Actor rejecting the intent.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+}
+
+// ── Rollback commands ─────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum RollbackCmd {
+    /// Preview a rollback without writing changes (CONTRACT-008).
+    ///
+    /// Shows compensating operations and conflicts. No state mutation.
+    DryRun {
+        /// Roll back a specific transaction by ID.
+        #[arg(long, conflicts_with_all = ["entity", "entity_collection", "to_version"])]
+        transaction: Option<String>,
+        /// Entity ID to roll back (use with --entity-collection and --to-version).
+        #[arg(long)]
+        entity: Option<String>,
+        /// Collection of the entity to roll back.
+        #[arg(long)]
+        entity_collection: Option<String>,
+        /// Target version to roll back to.
+        #[arg(long)]
+        to_version: Option<u64>,
+        /// Actor performing the rollback.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Execute a rollback (governed write, CONTRACT-008).
+    Commit {
+        /// Roll back a specific transaction by ID.
+        #[arg(long, conflicts_with_all = ["entity", "entity_collection", "to_version"])]
+        transaction: Option<String>,
+        /// Entity ID to roll back.
+        #[arg(long)]
+        entity: Option<String>,
+        /// Collection of the entity to roll back.
+        #[arg(long)]
+        entity_collection: Option<String>,
+        /// Target version to roll back to.
+        #[arg(long)]
+        to_version: Option<u64>,
+        /// Actor performing the rollback.
+        #[arg(long)]
+        actor: Option<String>,
     },
 }
 
@@ -761,6 +943,9 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Schema(cmd) => run_schema(cmd, &cli.output, &mut handler),
         Command::Audit(cmd) => run_audit(cmd, &cli.output, &mut handler),
         Command::Bead(cmd) => run_bead(cmd, &cli.output, &mut handler),
+        Command::Policy(cmd) => run_policy(cmd, &cli.output, &mut handler),
+        Command::Mutation(cmd) => run_mutation(cmd, &cli.output),
+        Command::Rollback(cmd) => run_rollback(cmd, &cli.output, &mut handler),
         Command::Graph {
             collection,
             id,
@@ -2017,6 +2202,462 @@ fn run_audit(
                 }
             }
         }
+        AuditCmd::Diff {
+            collection,
+            entity_id,
+            entry,
+        } => {
+            let entries = handler
+                .audit_log()
+                .query_by_entity(
+                    &CollectionId::new(&collection),
+                    &EntityId::new(&entity_id),
+                )
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            let to_show: Vec<&axon_audit::AuditEntry> = if let Some(entry_id) = entry {
+                entries.iter().filter(|e| e.id == entry_id).collect()
+            } else {
+                entries.iter().collect()
+            };
+
+            if to_show.is_empty() {
+                anyhow::bail!("no audit entries found for {}/{}", collection, entity_id);
+            }
+
+            let diffs: Vec<Value> = to_show
+                .iter()
+                .map(|e| {
+                    let field_diff = compute_field_diff(e.data_before.as_ref(), e.data_after.as_ref());
+                    serde_json::json!({
+                        "audit_id": e.id,
+                        "mutation": e.mutation.to_string(),
+                        "actor": e.actor,
+                        "timestamp_ns": e.timestamp_ns,
+                        "version": e.version,
+                        "diff": field_diff,
+                    })
+                })
+                .collect();
+
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(&diffs, format),
+                OutputFormat::Table => {
+                    for d in &diffs {
+                        println!(
+                            "[{}] {} v{} actor={} diff={}",
+                            d["audit_id"], d["mutation"].as_str().unwrap_or(""),
+                            d["version"], d["actor"].as_str().unwrap_or(""),
+                            d["diff"],
+                        );
+                    }
+                }
+            }
+        }
+        AuditCmd::Blame {
+            collection,
+            entity_id,
+            limit,
+        } => {
+            let mut entries = handler
+                .audit_log()
+                .query_by_entity(
+                    &CollectionId::new(&collection),
+                    &EntityId::new(&entity_id),
+                )
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            if let Some(n) = limit {
+                entries.truncate(n);
+            }
+
+            if entries.is_empty() {
+                anyhow::bail!("no audit entries found for {}/{}", collection, entity_id);
+            }
+
+            let blame: Vec<Value> = entries
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "audit_id": e.id,
+                        "timestamp_ns": e.timestamp_ns,
+                        "mutation": e.mutation.to_string(),
+                        "actor": e.actor,
+                        "version": e.version,
+                        "collection": e.collection.to_string(),
+                        "entity_id": e.entity_id.to_string(),
+                    })
+                })
+                .collect();
+
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(&blame, format),
+                OutputFormat::Table => {
+                    for b in &blame {
+                        println!(
+                            "[{}] {} actor={} mutation={} v={}",
+                            b["audit_id"],
+                            b["timestamp_ns"],
+                            b["actor"].as_str().unwrap_or(""),
+                            b["mutation"].as_str().unwrap_or(""),
+                            b["version"],
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn compute_field_diff(before: Option<&Value>, after: Option<&Value>) -> Value {
+    match (before, after) {
+        (None, None) => serde_json::json!({}),
+        (None, Some(a)) => {
+            if let Some(obj) = a.as_object() {
+                let added: serde_json::Map<String, Value> = obj
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::json!({"added": v})))
+                    .collect();
+                Value::Object(added)
+            } else {
+                serde_json::json!({"added": a})
+            }
+        }
+        (Some(b), None) => {
+            if let Some(obj) = b.as_object() {
+                let removed: serde_json::Map<String, Value> = obj
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::json!({"removed": v})))
+                    .collect();
+                Value::Object(removed)
+            } else {
+                serde_json::json!({"removed": b})
+            }
+        }
+        (Some(b), Some(a)) => {
+            let mut diff = serde_json::Map::new();
+            let b_obj = b.as_object();
+            let a_obj = a.as_object();
+            match (b_obj, a_obj) {
+                (Some(bm), Some(am)) => {
+                    let all_keys: std::collections::BTreeSet<&String> =
+                        bm.keys().chain(am.keys()).collect();
+                    for key in all_keys {
+                        match (bm.get(key), am.get(key)) {
+                            (Some(bv), Some(av)) if bv != av => {
+                                diff.insert(
+                                    key.clone(),
+                                    serde_json::json!({"before": bv, "after": av}),
+                                );
+                            }
+                            (Some(bv), None) => {
+                                diff.insert(key.clone(), serde_json::json!({"removed": bv}));
+                            }
+                            (None, Some(av)) => {
+                                diff.insert(key.clone(), serde_json::json!({"added": av}));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {
+                    if b != a {
+                        diff.insert("before".into(), b.clone());
+                        diff.insert("after".into(), a.clone());
+                    }
+                }
+            }
+            Value::Object(diff)
+        }
+    }
+}
+
+fn run_policy(
+    cmd: PolicyCmd,
+    format: &OutputFormat,
+    handler: &mut AxonHandler<SqliteStorageAdapter>,
+) -> Result<()> {
+    let caller = CallerIdentity::anonymous();
+
+    let (collection, operation, entity_id, data, _actor) = match &cmd {
+        PolicyCmd::Explain {
+            collection,
+            operation,
+            entity_id,
+            data,
+            actor,
+        }
+        | PolicyCmd::Test {
+            collection,
+            operation,
+            entity_id,
+            data,
+            actor,
+        } => (collection, operation, entity_id, data, actor),
+    };
+
+    let data_value: Option<Value> = match data {
+        Some(s) => Some(serde_json::from_str(s).with_context(|| "data must be valid JSON")?),
+        None => None,
+    };
+
+    let req = ExplainPolicyRequest {
+        operation: operation.clone(),
+        collection: Some(CollectionId::new(collection)),
+        entity_id: entity_id.as_deref().map(EntityId::new),
+        expected_version: None,
+        data: data_value,
+        patch: None,
+        lifecycle_name: None,
+        target_state: None,
+        to_version: None,
+        operations: Vec::new(),
+        actor_override: None,
+    };
+
+    let resp = handler
+        .explain_policy_with_caller(req, &caller, None)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    match &cmd {
+        PolicyCmd::Explain { .. } => match format {
+            OutputFormat::Json | OutputFormat::Yaml => {
+                print_serialized(&resp, format);
+            }
+            OutputFormat::Table => {
+                println!("operation:       {}", resp.operation);
+                println!("decision:        {}", resp.decision);
+                println!("reason:          {}", resp.reason);
+                println!("policy_version:  {}", resp.policy_version);
+                if !resp.rule_ids.is_empty() {
+                    println!("rule_ids:        {}", resp.rule_ids.join(", "));
+                }
+                if !resp.denied_fields.is_empty() {
+                    println!("denied_fields:   {}", resp.denied_fields.join(", "));
+                }
+                if let Some(approval) = &resp.approval {
+                    println!(
+                        "approval_route:  {} (decision={}, role={})",
+                        approval.policy_id,
+                        approval.decision,
+                        approval.role.as_deref().unwrap_or("any"),
+                    );
+                }
+            }
+        },
+        PolicyCmd::Test { .. } => match format {
+            OutputFormat::Json | OutputFormat::Yaml => {
+                print_serialized(
+                    &serde_json::json!({
+                        "operation": resp.operation,
+                        "collection": collection,
+                        "decision": resp.decision,
+                        "policy_version": resp.policy_version,
+                    }),
+                    format,
+                );
+            }
+            OutputFormat::Table => {
+                println!("{} {} -> {}", resp.operation, collection, resp.decision);
+            }
+        },
+    }
+    Ok(())
+}
+
+fn run_mutation(cmd: MutationCmd, format: &OutputFormat) -> Result<()> {
+    let (error_msg, intent_id_label) = match &cmd {
+        MutationCmd::Preview { collection, entity_id, operation, .. } => (
+            format!(
+                "mutation preview requires a running Axon server with policy enforcement enabled; \
+                 start one with 'axon serve' or use --server to connect to an existing server. \
+                 (collection={collection}, entity_id={entity_id}, operation={operation})"
+            ),
+            None,
+        ),
+        MutationCmd::Commit { token, .. } => (
+            format!(
+                "mutation commit requires a running Axon server with policy enforcement enabled; \
+                 start one with 'axon serve' or use --server to connect to an existing server. \
+                 (token={token})"
+            ),
+            None,
+        ),
+        MutationCmd::Approve { intent_id, .. } => (
+            "mutation approve requires a running Axon server with policy enforcement enabled; \
+             start one with 'axon serve' or use --server to connect to an existing server."
+                .to_string(),
+            Some(intent_id.clone()),
+        ),
+        MutationCmd::Reject { intent_id, .. } => (
+            "mutation reject requires a running Axon server with policy enforcement enabled; \
+             start one with 'axon serve' or use --server to connect to an existing server."
+                .to_string(),
+            Some(intent_id.clone()),
+        ),
+    };
+
+    let code = "intent_server_required";
+    match format {
+        OutputFormat::Json | OutputFormat::Yaml => {
+            let mut obj = serde_json::json!({
+                "code": code,
+                "detail": error_msg,
+            });
+            if let Some(id) = intent_id_label {
+                obj["intent_id"] = Value::String(id);
+            }
+            print_serialized(&obj, format);
+        }
+        OutputFormat::Table => {
+            eprintln!("error [{code}]: {error_msg}");
+        }
+    }
+    anyhow::bail!("{}", error_msg);
+}
+
+fn run_rollback(
+    cmd: RollbackCmd,
+    format: &OutputFormat,
+    handler: &mut AxonHandler<SqliteStorageAdapter>,
+) -> Result<()> {
+    match cmd {
+        RollbackCmd::DryRun {
+            transaction,
+            entity,
+            entity_collection,
+            to_version,
+            actor,
+        } => {
+            if let Some(tx_id) = transaction {
+                let resp = handler
+                    .rollback_transaction(RollbackTransactionRequest {
+                        transaction_id: tx_id.clone(),
+                        actor,
+                        dry_run: true,
+                    })
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                match format {
+                    OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                    OutputFormat::Table => {
+                        println!("dry-run rollback of transaction {tx_id}");
+                        println!(
+                            "  affected={} rolled_back={} errors={}",
+                            resp.entities_affected, resp.entities_rolled_back, resp.errors,
+                        );
+                        for detail in &resp.details {
+                            println!(
+                                "  {}/{}: {}",
+                                detail.collection,
+                                detail.id,
+                                if detail.success { "ok" } else { detail.error.as_deref().unwrap_or("failed") },
+                            );
+                        }
+                    }
+                }
+            } else if let (Some(eid), Some(ecoll), Some(version)) =
+                (entity, entity_collection, to_version)
+            {
+                let resp = handler
+                    .rollback_entity(RollbackEntityRequest {
+                        collection: CollectionId::new(&ecoll),
+                        id: EntityId::new(&eid),
+                        target: RollbackEntityTarget::Version(version),
+                        expected_version: None,
+                        actor,
+                        dry_run: true,
+                    })
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                use axon_api::response::RollbackEntityResponse;
+                match format {
+                    OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                    OutputFormat::Table => match &resp {
+                        RollbackEntityResponse::DryRun { current, target, diff } => {
+                            println!("dry-run rollback of {ecoll}/{eid} to v{version}");
+                            if current.is_some() {
+                                println!("  current version: {}", current.as_ref().unwrap().version);
+                            } else {
+                                println!("  entity would be recreated (currently deleted)");
+                            }
+                            println!("  target version: {}", target.version);
+                            println!("  changed fields: {}", diff.len());
+                            for (field, change) in diff {
+                                println!("    {field}: {:?}", change);
+                            }
+                        }
+                        RollbackEntityResponse::Applied { .. } => {
+                            println!("unexpected applied response from dry-run");
+                        }
+                    },
+                }
+            } else {
+                anyhow::bail!(
+                    "rollback dry-run requires either --transaction <id> or \
+                     --entity <id> --entity-collection <collection> --to-version <v>"
+                );
+            }
+        }
+        RollbackCmd::Commit {
+            transaction,
+            entity,
+            entity_collection,
+            to_version,
+            actor,
+        } => {
+            if let Some(tx_id) = transaction {
+                let resp = handler
+                    .rollback_transaction(RollbackTransactionRequest {
+                        transaction_id: tx_id.clone(),
+                        actor,
+                        dry_run: false,
+                    })
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                match format {
+                    OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                    OutputFormat::Table => {
+                        println!("rolled back transaction {tx_id}");
+                        println!(
+                            "  affected={} rolled_back={} errors={}",
+                            resp.entities_affected, resp.entities_rolled_back, resp.errors,
+                        );
+                    }
+                }
+            } else if let (Some(eid), Some(ecoll), Some(version)) =
+                (entity, entity_collection, to_version)
+            {
+                let resp = handler
+                    .rollback_entity(RollbackEntityRequest {
+                        collection: CollectionId::new(&ecoll),
+                        id: EntityId::new(&eid),
+                        target: RollbackEntityTarget::Version(version),
+                        expected_version: None,
+                        actor,
+                        dry_run: false,
+                    })
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                use axon_api::response::RollbackEntityResponse;
+                match format {
+                    OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                    OutputFormat::Table => match &resp {
+                        RollbackEntityResponse::Applied { entity, audit_entry } => {
+                            println!(
+                                "rolled back {}/{} to v{} (audit entry {})",
+                                entity.collection, entity.id, entity.version, audit_entry.id,
+                            );
+                        }
+                        RollbackEntityResponse::DryRun { .. } => {
+                            println!("unexpected dry-run response from commit");
+                        }
+                    },
+                }
+            } else {
+                anyhow::bail!(
+                    "rollback commit requires either --transaction <id> or \
+                     --entity <id> --entity-collection <collection> --to-version <v>"
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -2442,6 +3083,9 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
             AuditCmd::Show { .. } | AuditCmd::Revert { .. } => {
                 anyhow::bail!("audit show/revert not yet available in client mode");
             }
+            AuditCmd::Diff { .. } | AuditCmd::Blame { .. } => {
+                anyhow::bail!("audit diff/blame not yet available in client mode");
+            }
         },
         Command::Schema(cmd) => match cmd {
             SchemaCmd::Show { collection } => {
@@ -2512,6 +3156,18 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
         },
         Command::Bead(_) => {
             anyhow::bail!("bead commands are not yet available in client mode");
+        }
+        Command::Policy(_) => {
+            anyhow::bail!(
+                "policy explain/test is not yet available in client mode; \
+                 use embedded mode (omit --server or run without an active server)"
+            );
+        }
+        Command::Mutation(cmd) => {
+            run_mutation(cmd, &cli.output)?;
+        }
+        Command::Rollback(_) => {
+            anyhow::bail!("rollback commands are not yet available in client mode");
         }
         // These are handled before mode detection; unreachable in client mode
         #[cfg(feature = "serve")]
@@ -2841,6 +3497,288 @@ mod tests {
             .unwrap();
         assert_eq!(delete_entries.entries.len(), 1);
         assert_eq!(delete_entries.entries[0].actor, "cleaner");
+    }
+
+    // ── Governed workflow tests (CONTRACT-008) ─────────────────────────────
+
+    #[test]
+    fn policy_explain_no_policy_returns_allow() {
+        let (_f, db) = tmp_db();
+        run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
+
+        // Use "read" operation which needs no data; no-policy collection returns "allow".
+        let cli = make_cli(
+            &db,
+            &["policy", "explain", "tasks", "--operation", "read"],
+        );
+        run(cli).unwrap();
+    }
+
+    #[test]
+    fn policy_test_no_policy_returns_allow() {
+        let (_f, db) = tmp_db();
+        run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
+
+        let cli = make_cli(
+            &db,
+            &["--output", "json", "policy", "test", "tasks", "--operation", "read"],
+        );
+        run(cli).unwrap();
+    }
+
+    #[test]
+    fn policy_explain_create_with_data_returns_allow() {
+        let (_f, db) = tmp_db();
+        run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
+
+        // "create" requires --data; no-policy collection returns "allow".
+        let cli = make_cli(
+            &db,
+            &[
+                "--output", "json",
+                "policy", "explain", "tasks",
+                "--operation", "create",
+                "--data", r#"{"title":"test"}"#,
+            ],
+        );
+        run(cli).unwrap();
+    }
+
+    #[test]
+    fn mutation_preview_returns_server_required_error() {
+        let (_f, db) = tmp_db();
+        run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
+
+        let cli = make_cli(
+            &db,
+            &[
+                "mutation", "preview", "tasks",
+                "--entity-id", "t-001",
+                "--operation", "create",
+                "--data", r#"{"title":"test"}"#,
+            ],
+        );
+        let result = run(cli);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("server"), "expected server-required error, got: {err}");
+    }
+
+    #[test]
+    fn mutation_commit_returns_server_required_error() {
+        let (_f, db) = tmp_db();
+        let cli = make_cli(
+            &db,
+            &["mutation", "commit", "--token", "dummy-token"],
+        );
+        let result = run(cli);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("server"), "expected server-required error, got: {err}");
+    }
+
+    #[test]
+    fn rollback_dry_run_transaction_not_found_returns_error() {
+        let (_f, db) = tmp_db();
+        let cli = make_cli(
+            &db,
+            &["rollback", "dry-run", "--transaction", "tx-nonexistent"],
+        );
+        // Should fail with "transaction not found" or similar, not panic
+        let result = run(cli);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rollback_dry_run_entity_previews_without_write() {
+        // Rollback needs audit history; use a single handler instance so the
+        // in-memory audit log is shared across create/update/rollback calls.
+        let (_f, db) = tmp_db();
+        let storage = SqliteStorageAdapter::open(&db).unwrap();
+        let mut handler = AxonHandler::new(storage);
+
+        handler
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("tasks"),
+                schema: CollectionSchema {
+                    collection: CollectionId::new("tasks"),
+                    description: None,
+                    version: 1,
+                    entity_schema: None,
+                    link_types: Default::default(),
+                    access_control: None,
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    queries: Default::default(),
+                    lifecycles: Default::default(),
+                },
+                actor: None,
+            })
+            .unwrap();
+
+        handler
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                data: serde_json::json!({"title": "v1"}),
+                actor: Some("agent".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap();
+
+        handler
+            .update_entity(UpdateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                data: serde_json::json!({"title": "v2"}),
+                expected_version: 1,
+                actor: Some("agent".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap();
+
+        let resp = handler
+            .rollback_entity(RollbackEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                target: RollbackEntityTarget::Version(1),
+                expected_version: None,
+                actor: Some("agent".into()),
+                dry_run: true,
+            })
+            .unwrap();
+
+        use axon_api::response::RollbackEntityResponse;
+        match &resp {
+            RollbackEntityResponse::DryRun { current, target, .. } => {
+                let cur = current.as_ref().unwrap();
+                assert_eq!(cur.version, 2, "entity should still be at v2 (dry-run)");
+                assert_eq!(target.data["title"], "v1", "target data should be v1");
+            }
+            RollbackEntityResponse::Applied { .. } => {
+                panic!("expected DryRun response, got Applied");
+            }
+        }
+    }
+
+    #[test]
+    fn audit_diff_shows_changed_fields() {
+        // Audit log is in-memory per handler; use a single handler for all operations.
+        let (_f, db) = tmp_db();
+        let storage = SqliteStorageAdapter::open(&db).unwrap();
+        let mut handler = AxonHandler::new(storage);
+
+        handler
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("tasks"),
+                schema: CollectionSchema {
+                    collection: CollectionId::new("tasks"),
+                    description: None,
+                    version: 1,
+                    entity_schema: None,
+                    link_types: Default::default(),
+                    access_control: None,
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    queries: Default::default(),
+                    lifecycles: Default::default(),
+                },
+                actor: None,
+            })
+            .unwrap();
+
+        handler
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                data: serde_json::json!({"title": "v1", "status": "open"}),
+                actor: Some("agent".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap();
+
+        handler
+            .update_entity(UpdateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                data: serde_json::json!({"title": "v2", "status": "done"}),
+                expected_version: 1,
+                actor: Some("agent".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap();
+
+        let entries = handler
+            .audit_log()
+            .query_by_entity(&CollectionId::new("tasks"), &EntityId::new("t-001"))
+            .unwrap();
+        assert_eq!(entries.len(), 2, "expected create + update audit entries");
+
+        let update_entry = entries.iter().find(|e| e.data_before.is_some()).unwrap();
+        let diff = compute_field_diff(update_entry.data_before.as_ref(), update_entry.data_after.as_ref());
+        let obj = diff.as_object().unwrap();
+        assert!(obj.contains_key("title"), "title should appear in diff: {diff}");
+        assert!(obj.contains_key("status"), "status should appear in diff: {diff}");
+        assert_eq!(obj["title"]["before"], "v1");
+        assert_eq!(obj["title"]["after"], "v2");
+    }
+
+    #[test]
+    fn audit_blame_lists_actors() {
+        // Audit log is in-memory per handler; use a single handler.
+        let (_f, db) = tmp_db();
+        let storage = SqliteStorageAdapter::open(&db).unwrap();
+        let mut handler = AxonHandler::new(storage);
+
+        handler
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("tasks"),
+                schema: CollectionSchema {
+                    collection: CollectionId::new("tasks"),
+                    description: None,
+                    version: 1,
+                    entity_schema: None,
+                    link_types: Default::default(),
+                    access_control: None,
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    queries: Default::default(),
+                    lifecycles: Default::default(),
+                },
+                actor: None,
+            })
+            .unwrap();
+
+        handler
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                data: serde_json::json!({"title": "hello"}),
+                actor: Some("user-a".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap();
+
+        let entries = handler
+            .audit_log()
+            .query_by_entity(&CollectionId::new("tasks"), &EntityId::new("t-001"))
+            .unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].actor, "user-a");
+        assert_eq!(entries[0].entity_id.to_string(), "t-001");
+        assert_eq!(entries[0].collection.to_string(), "tasks");
     }
 
     #[test]
