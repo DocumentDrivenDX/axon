@@ -32,6 +32,8 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo test
+      - run: python3 scripts/check_covers_traceability_test.py
+      - run: python3 scripts/check_covers_traceability.py --format text
 
   test-kafka:
     name: Test (kafka feature)
