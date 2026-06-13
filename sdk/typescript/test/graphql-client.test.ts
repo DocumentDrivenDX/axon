@@ -38,6 +38,22 @@ function requestBody(call: [string, unknown]): { query: string; variables: Recor
   };
 }
 
+async function expectGraphQLError(
+  promise: Promise<unknown>,
+  expectedCode: string,
+  expectedExtensions: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await promise;
+    throw new Error(`expected GraphQL error code ${expectedCode}`);
+  } catch (error) {
+    expect(error).toBeInstanceOf(AxonGraphQLError);
+    const gqlError = error as AxonGraphQLError;
+    expect(gqlError.code).toBe(expectedCode);
+    expect(gqlError.extensions).toMatchObject(expectedExtensions);
+  }
+}
+
 describe("GraphQL endpoint scoping", () => {
   it("routes tenant database requests to /tenants/:tenant/databases/:database/graphql", async () => {
     const { mock, calls } = mockFetch(200, '{"data":{"collections":[]}}');
@@ -302,11 +318,17 @@ describe("relationship, aggregation, audit, lifecycle, and subscription helpers"
   });
 });
 
-describe("governed-workflow methods (CONTRACT-009)", () => {
-  it("previewMutation sends the previewMutation mutation with input variable @covers US-105-AC6", async () => {
+describe("governed-workflow methods and outcomes (CONTRACT-009)", () => {
+  it("previewMutation preserves needs_approval GraphQL outcome vocabulary @covers US-105-AC6", async () => {
+    const previewResponse = {
+      decision: "needs_approval",
+      intentToken: "tok-approval",
+      approvalRoute: { role: "finance-approver" },
+      intent: { id: "i-1", approvalState: "pending", decision: "needs_approval" },
+    };
     const { mock, calls } = mockFetch(
       200,
-      '{"data":{"previewMutation":{"decision":"allow","intentToken":"tok-1","intent":{"id":"i-1","approvalState":"none","decision":"allow"}}}}',
+      JSON.stringify({ data: { previewMutation: previewResponse } }),
     );
     const client = new AxonGraphQLClient({
       baseUrl: "http://localhost:4170",
@@ -325,41 +347,164 @@ describe("governed-workflow methods (CONTRACT-009)", () => {
       expiresInSeconds: 600,
     };
 
-    await client.tenant("acme").database("default").previewMutation(input);
+    const result = await client.tenant("acme").database("default").previewMutation(input);
 
     const body = requestBody(calls[0]);
     expect(body.query).toBe(AxonGraphQLDocuments.previewMutation);
     expect(body.variables).toEqual({ input });
+    expect(result).toEqual({ previewMutation: previewResponse });
   });
 
-  it("commitIntent sends commitMutationIntent mutation with intentToken @covers US-107-AC6", async () => {
+  it("commitIntent returns committed GraphQL success payload @covers US-107-AC6", async () => {
+    const commitResponse = {
+      committed: true,
+      transactionId: "tx-1",
+      errorCode: null,
+      stale: null,
+      intent: { id: "i-1", approvalState: "committed", decision: "allow" },
+    };
     const { mock, calls } = mockFetch(
       200,
-      '{"data":{"commitMutationIntent":{"committed":true,"transactionId":"tx-1","intent":{"id":"i-1","approvalState":"committed","decision":"allow"}}}}',
+      JSON.stringify({ data: { commitMutationIntent: commitResponse } }),
     );
     const client = new AxonGraphQLClient({
       baseUrl: "http://localhost:4170",
       fetchImpl: mock,
     });
 
-    await client.tenant("acme").database("default").commitIntent({ intentToken: "tok-1" });
+    const result = await client.tenant("acme").database("default").commitIntent({
+      intentToken: "tok-1",
+    });
 
     const body = requestBody(calls[0]);
     expect(body.query).toBe(AxonGraphQLDocuments.commitMutationIntent);
     expect(body.variables).toEqual({ input: { intentToken: "tok-1" } });
+    expect(result).toEqual({ commitMutationIntent: commitResponse });
   });
 
-  it("approveIntent sends approveMutationIntent mutation with intentId and reason @covers US-106-AC4", async () => {
+  it.each([
+    {
+      label: "intent_stale",
+      expectedCode: "intent_stale",
+      response: {
+        errors: [
+          {
+            message: "intent stale",
+            extensions: {
+              code: "intent_stale",
+              stale: [
+                {
+                  dimension: "pre_image",
+                  expected: 1,
+                  actual: 2,
+                  path: "task-a",
+                },
+              ],
+            },
+          },
+        ],
+      },
+      expectedExtensions: {
+        code: "intent_stale",
+        stale: [
+          {
+            dimension: "pre_image",
+            expected: 1,
+            actual: 2,
+            path: "task-a",
+          },
+        ],
+      },
+    },
+    {
+      label: "intent_mismatch",
+      expectedCode: "intent_mismatch",
+      response: {
+        errors: [
+          {
+            message: "intent mismatch",
+            extensions: {
+              code: "intent_mismatch",
+              stale: [
+                {
+                  dimension: "operation_hash",
+                  expected: "sha256:old",
+                  actual: "sha256:new",
+                  path: "input.operation",
+                },
+              ],
+            },
+          },
+        ],
+      },
+      expectedExtensions: {
+        code: "intent_mismatch",
+        stale: [
+          {
+            dimension: "operation_hash",
+            expected: "sha256:old",
+            actual: "sha256:new",
+            path: "input.operation",
+          },
+        ],
+      },
+    },
+    {
+      label: "forbidden",
+      expectedCode: "forbidden",
+      response: {
+        errors: [
+          {
+            message: "forbidden",
+            extensions: {
+              code: "forbidden",
+              detail: {
+                reason: "needs_approval",
+              },
+            },
+          },
+        ],
+      },
+      expectedExtensions: {
+        code: "forbidden",
+        detail: {
+          reason: "needs_approval",
+        },
+      },
+    },
+  ])(
+    "commitIntent preserves stable GraphQL error vocabulary @covers US-107-AC6",
+    async ({ expectedCode, response, expectedExtensions }) => {
+      const { mock } = mockFetch(200, JSON.stringify(response));
+      const client = new AxonGraphQLClient({
+        baseUrl: "http://localhost:4170",
+        fetchImpl: mock,
+      });
+
+      await expectGraphQLError(
+        client.tenant("acme").database("default").commitIntent({ intentToken: "tok-1" }),
+        expectedCode,
+        expectedExtensions,
+      );
+    },
+  );
+
+  it("approveIntent preserves approved GraphQL outcome vocabulary @covers US-106-AC4", async () => {
+    const approveResponse = {
+      id: "i-1",
+      approvalState: "approved",
+      decision: "needs_approval",
+    };
     const { mock, calls } = mockFetch(
       200,
-      '{"data":{"approveMutationIntent":{"id":"i-1","approvalState":"approved","decision":"needs_approval"}}}',
+      JSON.stringify({ data: { approveMutationIntent: approveResponse } }),
     );
     const client = new AxonGraphQLClient({
       baseUrl: "http://localhost:4170",
       fetchImpl: mock,
     });
 
-    await client.tenant("acme").database("default").approveIntent({
+    const result = await client.tenant("acme").database("default").approveIntent({
       intentId: "i-1",
       reason: "approved for release",
     });
@@ -367,19 +512,25 @@ describe("governed-workflow methods (CONTRACT-009)", () => {
     const body = requestBody(calls[0]);
     expect(body.query).toBe(AxonGraphQLDocuments.approveMutationIntent);
     expect(body.variables).toEqual({ input: { intentId: "i-1", reason: "approved for release" } });
+    expect(result).toEqual({ approveMutationIntent: approveResponse });
   });
 
-  it("rejectIntent sends rejectMutationIntent mutation with intentId and reason @covers US-106-AC4", async () => {
+  it("rejectIntent preserves rejected GraphQL outcome vocabulary @covers US-106-AC4", async () => {
+    const rejectResponse = {
+      id: "i-2",
+      approvalState: "rejected",
+      decision: "needs_approval",
+    };
     const { mock, calls } = mockFetch(
       200,
-      '{"data":{"rejectMutationIntent":{"id":"i-2","approvalState":"rejected","decision":"needs_approval"}}}',
+      JSON.stringify({ data: { rejectMutationIntent: rejectResponse } }),
     );
     const client = new AxonGraphQLClient({
       baseUrl: "http://localhost:4170",
       fetchImpl: mock,
     });
 
-    await client.tenant("acme").database("default").rejectIntent({
+    const result = await client.tenant("acme").database("default").rejectIntent({
       intentId: "i-2",
       reason: "insufficient justification",
     });
@@ -389,19 +540,27 @@ describe("governed-workflow methods (CONTRACT-009)", () => {
     expect(body.variables).toEqual({
       input: { intentId: "i-2", reason: "insufficient justification" },
     });
+    expect(result).toEqual({ rejectMutationIntent: rejectResponse });
   });
 
-  it("explainPolicy sends explainPolicy query with input variable", async () => {
+  it("explainPolicy preserves policy explanation vocabulary", async () => {
+    const explainResponse = {
+      operation: "update",
+      collection: "tasks",
+      decision: "needs_approval",
+      reason: "needs_approval",
+      policyVersion: 1,
+    };
     const { mock, calls } = mockFetch(
       200,
-      '{"data":{"explainPolicy":{"operation":"update","collection":"tasks","decision":"needs_approval","reason":"needs_approval","policyVersion":1}}}',
+      JSON.stringify({ data: { explainPolicy: explainResponse } }),
     );
     const client = new AxonGraphQLClient({
       baseUrl: "http://localhost:4170",
       fetchImpl: mock,
     });
 
-    await client.tenant("acme").database("default").explainPolicy({
+    const result = await client.tenant("acme").database("default").explainPolicy({
       operation: "update",
       collection: "tasks",
       entityId: "task-1",
@@ -418,16 +577,41 @@ describe("governed-workflow methods (CONTRACT-009)", () => {
         data: { budget_cents: 20000 },
       },
     });
+    expect(result).toEqual({ explainPolicy: explainResponse });
   });
 
-  it("queryAudit delegates to auditLog with the same document and variables", async () => {
-    const { mock, calls } = mockFetch(200, '{"data":{"auditLog":{"totalCount":0,"edges":[]}}}');
+  it("queryAudit delegates to auditLog and preserves the returned audit vocabulary", async () => {
+    const auditResponse = {
+      totalCount: 1,
+      edges: [
+        {
+          cursor: "cursor-1",
+          node: {
+            id: "a-1",
+            timestampNs: "1000",
+            collection: "tasks",
+            entityId: "task-1",
+            version: "4",
+            mutation: "entity.update",
+            actor: "agent-1",
+            dataBefore: { status: "draft" },
+            dataAfter: { status: "approved" },
+            metadata: {},
+            transactionId: "tx-1",
+          },
+        },
+      ],
+    };
+    const { mock, calls } = mockFetch(
+      200,
+      JSON.stringify({ data: { auditLog: auditResponse } }),
+    );
     const client = new AxonGraphQLClient({
       baseUrl: "http://localhost:4170",
       fetchImpl: mock,
     });
 
-    await client.tenant("acme").database("default").queryAudit({
+    const result = await client.tenant("acme").database("default").queryAudit({
       collection: "tasks",
       entityId: "task-1",
     });
@@ -435,19 +619,26 @@ describe("governed-workflow methods (CONTRACT-009)", () => {
     const body = requestBody(calls[0]);
     expect(body.query).toBe(AxonGraphQLDocuments.auditLog);
     expect(body.variables).toMatchObject({ collection: "tasks", entityId: "task-1" });
+    expect(result).toEqual({ auditLog: auditResponse });
   });
 
-  it("rollbackDryRun calls rollbackEntity with dryRun forced to true", async () => {
+  it("rollbackDryRun forces a dry-run rollback response and preserves the GraphQL payload", async () => {
+    const rollbackResponse = {
+      entity: { id: "task-1", collection: "tasks", version: 1, data: { status: "draft" } },
+      auditEntry: { id: "a-1", mutation: "entity.update" },
+      dryRun: true,
+      diff: [{ path: ["status"], before: "draft", after: "approved" }],
+    };
     const { mock, calls } = mockFetch(
       200,
-      '{"data":{"rollbackEntity":{"dryRun":true,"entity":{"id":"task-1","version":1}}}}',
+      JSON.stringify({ data: { rollbackEntity: rollbackResponse } }),
     );
     const client = new AxonGraphQLClient({
       baseUrl: "http://localhost:4170",
       fetchImpl: mock,
     });
 
-    await client.tenant("acme").database("default").rollbackDryRun({
+    const result = await client.tenant("acme").database("default").rollbackDryRun({
       collection: "tasks",
       id: "task-1",
       toVersion: 2,
@@ -466,5 +657,6 @@ describe("governed-workflow methods (CONTRACT-009)", () => {
         dryRun: true,
       },
     });
+    expect(result).toEqual({ rollbackEntity: rollbackResponse });
   });
 });

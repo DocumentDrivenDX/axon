@@ -32,7 +32,7 @@ ddx:
 | US-107-AC3 | Commit with operation differing from bound operation hash → mismatch failure | `operation_hash_mismatch_rejects_commit` | Preview with budget 6000; commit supplies budget 7777 in operation; returns `intent_mismatch`; entity unchanged | `@covers US-107-AC3` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
 | US-107-AC4 | Multi-entity intent: one stale entity invalidates the whole intent, no partial commit | `multi_entity_intent_one_stale_entity_invalidates_whole_intent` | Transaction preview over task-a + task-b; out-of-band update bumps task-b version; commit returns `intent_stale` naming task-b pre-image; task-a also unchanged (atomic) | `@covers US-107-AC4` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
 | US-107-AC5 | Committed token reused → rejected; expired intent cannot commit or be approved | `under_threshold_allow_commit_and_replay_rejects`; `expired_intent_cannot_commit`; `pending_query_materializes_and_audits_expired_intent_lineage` | Replay rejected; expired intents rejected and audited | `@covers US-107-AC5` in test bodies | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
-| US-107-AC6 | SDK commit helper and GraphQL commit field match for success/stale/mismatch/authz outcomes | "commitIntent sends commitMutationIntent mutation with intentToken @covers US-107-AC6" | SDK commitIntent method sends the correct mutation document | `@covers US-107-AC6` | COVERED | L6 parity | `sdk/typescript/test/graphql-client.test.ts` |
+| US-107-AC6 | SDK commit helper and GraphQL commit field match for success/stale/mismatch/authz outcomes | `commitIntent returns committed GraphQL success payload @covers US-107-AC6`; `commitIntent preserves stable GraphQL error vocabulary @covers US-107-AC6` | SDK commitIntent returns the committed payload unchanged and preserves stable GraphQL error codes/extensions for stale, mismatch, and forbidden responses | `@covers US-107-AC6` in test bodies | COVERED | L6 parity | `sdk/typescript/test/graphql-client.test.ts` |
 
 ## Executable Proof
 
@@ -47,7 +47,7 @@ cargo test -p axon-server --test mcp_intents_contract
 
 - `crates/axon-server/tests/graphql_intents_contract.rs` (extend: policy-drift, op-hash mismatch, multi-entity atomic invalidation)
 - `crates/axon-sim` workload: concurrent commit vs entity mutation race under BUGGIFY (AC4)
-- `sdk/typescript/test/intents.test.ts` (planned, AC6)
+- `sdk/typescript/test/graphql-client.test.ts` (extend: governed-workflow outcome assertions for preview/commit/approval/error paths)
 
 ### Coverage Focus
 
@@ -72,7 +72,7 @@ cargo test -p axon-server --test mcp_intents_contract
 1. Citation pass on AC1/AC5.
 2. Red tests for AC2 (policy drift) and AC3 (op-hash mismatch) — smallest gaps against the PRD metric.
 3. Multi-entity atomic invalidation (AC4) at L6, then the DST race workload.
-4. AC6 when the SDK helper exists; record a manual exception until then if the story must close.
+4. AC6 uses the SDK outcome matrix in `sdk/typescript/test/graphql-client.test.ts`; keep the `@covers` citation on the commit helper tests.
 
 **Constraints**
 - PRD approval-safety metric (100% stale rejection on pre-image, schema, policy, grant, operation hash); CONTRACT-002 stale/mismatch vocabulary.
