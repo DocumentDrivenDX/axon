@@ -1,0 +1,52 @@
+{
+  "attempt_id": "20260613T203812-633063e7",
+  "bead_id": "axon-026e5de1",
+  "base_rev": "e5cc946ec280496a9b089e0dcd4467fbf2246308",
+  "created_at": "2026-06-13T20:38:15.635309857Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-026e5de1",
+    "title": "feat: implement BYOC observation credential issuance",
+    "description": "Implement POST /tenants/{id}/observation-credentials on the control-plane HTTP API.\n\nThe ObservationCredential model (model.rs) and shape tests (byoc_safety_proof.rs) were written in axon-a602f905. This bead implements the issuance endpoint.\n\nRequirements:\n- POST /tenants/{id}/observation-credentials issues a short-lived credential with TTL ≤ 24h.\n- Credentials expire after expires_at_ms; the API rejects expired credentials on use.\n- Scope is caller-specified: health_only or metrics_read.\n- Issued credentials are stored in the control-plane store (new ControlPlaneStore method).\n- A DELETE /tenants/{id}/observation-credentials/{cred-id} endpoint revokes a credential.\n\nIn-scope: model update (already done), store trait extension, service layer, HTTP handler, tests.\nOut-of-scope: credential propagation to tenant instances (requires ADR update).",
+    "acceptance": "1. POST /tenants/{id}/observation-credentials returns a 201 with an ObservationCredential whose ttl_ms() \u003c= 24h.\n2. A credential with expires_at_ms in the past is rejected with 401 credential_expired.\n3. DELETE /tenants/{id}/observation-credentials/{cred-id} removes the credential from the store.\n4. cargo test -p axon-control-plane passes with no clippy warnings.",
+    "labels": [
+      "helix",
+      "area:control-plane",
+      "area:security",
+      "kind:task",
+      "ac-quality:needs-refinement"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "",
+          "body": "[{\"ac\":1,\"text\":\"POST /tenants/{id}/observation-credentials returns a 201 with an ObservationCredential whose ttl_ms() \\u003c= 24h.\",\"kind\":\"prose\",\"verifiable\":false},{\"ac\":2,\"text\":\"A credential with expires_at_ms in the past is rejected with 401 credential_expired.\",\"kind\":\"prose\",\"verifiable\":false},{\"ac\":3,\"text\":\"DELETE /tenants/{id}/observation-credentials/{cred-id} removes the credential from the store.\",\"kind\":\"prose\",\"verifiable\":false},{\"ac\":4,\"text\":\"cargo test -p axon-control-plane passes with no clippy warnings.\",\"kind\":\"command\",\"verifiable\":true}]",
+          "created_at": "2026-06-13T20:32:38.331935838Z",
+          "kind": "ac-quality-low",
+          "source": "preclaim-ac-quality",
+          "summary": "score=0.25 threshold=0.50 verifiable=1/4"
+        },
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-026e5de1\",\"fingerprint\":\"f38d1d3542042dae39f88248d3867cc07683c1dece50fee224e83177119ee1c7\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"f38d1d3542042dae39f88248d3867cc07683c1dece50fee224e83177119ee1c7\"}",
+          "created_at": "2026-06-13T20:36:06.851504431Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ]
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260613T203812-633063e7",
+    "prompt": ".ddx/executions/20260613T203812-633063e7/prompt.md",
+    "manifest": ".ddx/executions/20260613T203812-633063e7/manifest.json",
+    "result": ".ddx/executions/20260613T203812-633063e7/result.json",
+    "checks": ".ddx/executions/20260613T203812-633063e7/checks.json",
+    "usage": ".ddx/executions/20260613T203812-633063e7/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-026e5de1-20260613T203812-633063e7"
+  },
+  "prompt_sha": "c693648547edfaa8ad434dcd51ec71d323b0ec08f11f591796fd8ba7495f97ba"
+}
