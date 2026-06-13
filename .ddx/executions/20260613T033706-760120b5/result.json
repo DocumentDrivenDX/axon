@@ -1,0 +1,42 @@
+{
+  "bead_id": "axon-7e75384c",
+  "attempt_id": "20260613T033706-760120b5",
+  "base_rev": "d3d300e61be670c3680bd16bd57dfdf0cb9a50ec",
+  "result_rev": "13ffccd8ccd81d2a0da44f67d2f3800fb1592fa5",
+  "implementation_rev": "13ffccd8ccd81d2a0da44f67d2f3800fb1592fa5",
+  "outcome": "task_succeeded",
+  "status": "success",
+  "detail": "success",
+  "candidate_ref": "refs/ddx/iterations/20260613T033706-760120b5/0",
+  "cycle_trace": [
+    {
+      "cycle_index": 0,
+      "attempt_id": "20260613T033706-760120b5",
+      "result_rev": "13ffccd8ccd81d2a0da44f67d2f3800fb1592fa5",
+      "implementer_route": {},
+      "requested_route": {},
+      "actual_route": {},
+      "review_result": {},
+      "final_decision": "success",
+      "failure_class": "none",
+      "retry_action": "close",
+      "escalation_count": 0,
+      "review_status": "skipped",
+      "review_skip_reason": "review_not_configured",
+      "review_classification": "review_skipped",
+      "land_status": "landed",
+      "reconcile_status": "not_applicable"
+    }
+  ],
+  "session_id": "eb-691bfa14",
+  "duration_ms": 291440,
+  "exit_code": 0,
+  "project_root": "/home/erik/Projects/axon",
+  "execution_dir": ".ddx/executions/20260613T033706-760120b5",
+  "prompt_file": ".ddx/executions/20260613T033706-760120b5/prompt.md",
+  "manifest_file": ".ddx/executions/20260613T033706-760120b5/manifest.json",
+  "result_file": ".ddx/executions/20260613T033706-760120b5/result.json",
+  "rate_limit_budget": 300000000000,
+  "started_at": "2026-06-13T03:37:09.568247473Z",
+  "finished_at": "2026-06-13T03:42:01.008535727Z"
+}
