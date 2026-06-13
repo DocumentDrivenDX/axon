@@ -13656,6 +13656,9 @@ entity_schema:
 
     #[test]
     fn rollback_entity_to_version_restores_target_state_and_audits() {
+        // @covers US-096-AC1
+        // @covers US-096-AC2
+        // @covers US-096-AC3
         let mut h = handler();
         let col = CollectionId::new("tasks");
         let id = EntityId::new("t-001");
@@ -13725,6 +13728,8 @@ entity_schema:
 
     #[test]
     fn rollback_entity_dry_run_returns_current_target_and_diff() {
+        // @covers US-095-AC1
+        // @covers US-095-AC2
         let mut h = handler();
         let col = CollectionId::new("tasks");
         let id = EntityId::new("t-001");
@@ -14069,6 +14074,7 @@ entity_schema:
 
     #[test]
     fn rollback_entity_honors_expected_version() {
+        // @covers US-096-AC5
         let mut h = handler();
         let col = CollectionId::new("tasks");
         let id = EntityId::new("t-001");
@@ -14446,6 +14452,7 @@ entity_schema:
 
     #[test]
     fn rollback_transaction_reverts_updates() {
+        // @covers US-097-AC1
         let mut h = handler();
         let col = CollectionId::new("accounts");
 
