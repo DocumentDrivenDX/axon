@@ -1,0 +1,53 @@
+{
+  "attempt_id": "20260613T141449-06f7055c",
+  "bead_id": "axon-976119df",
+  "base_rev": "8f7903fc4360052ab144277b2ff0fe8bc60c6440",
+  "created_at": "2026-06-13T14:14:52.353307974Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-976119df",
+    "title": "test: prove redaction and visibility parity edge cases",
+    "description": "Context: The PRD requires reusable RBAC/ABAC/field/relationship visibility controls below all surfaces. Remaining proof gaps include STP-046 AC4, STP-047 AC3, STP-102 AC1/AC4, and related audit redaction/nullability behavior.\n\nIn-scope files: policy contract tests in `crates/axon-server/tests/`, policy/read implementation in `crates/axon-api/` or `crates/axon-graphql/` only as required, and affected STP markdown rows.\nOut-of-scope: UI DOM-leak assertions and candidate-policy dry-run behavior.\nImplementation hint: assert generated GraphQL nullability for redactable required fields, read-time redaction for JSON-Schema-required fields, ABAC mirror cases, and same redaction in query results/detail/audit after-state.",
+    "acceptance": "1. `cargo test -p axon-server --test graphql_policy_contract` passes.\n2. `cargo test -p axon-server --test feat_029_contract_parent` passes.\n3. The executable @covers scanner reports coverage for every STP-046/STP-047/STP-102 row changed by this bead.\n4. Updated STP rows cite the exact test evidence.",
+    "labels": [
+      "helix",
+      "plan:spec-gap-2026-06-12",
+      "area:policy",
+      "area:graphql",
+      "area:audit",
+      "kind:task"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-976119df (changed existing dirty paths: .ddx/.git-tracker.lock/acquired_at, .ddx/.git-tracker.lock/pid)\",\"fingerprint\":\"da1fe6150eff6d93aa80c2f7f2d1f1dae2aff745fd9144d428d8859c9de1b889\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"da1fe6150eff6d93aa80c2f7f2d1f1dae2aff745fd9144d428d8859c9de1b889\"}",
+          "created_at": "2026-06-13T14:13:56.123209032Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ],
+      "spec-id": "TP-001"
+    }
+  },
+  "governing": [
+    {
+      "id": "TP-001",
+      "path": "docs/helix/03-test/test-plan.md",
+      "title": "Axon Test Plan"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260613T141449-06f7055c",
+    "prompt": ".ddx/executions/20260613T141449-06f7055c/prompt.md",
+    "manifest": ".ddx/executions/20260613T141449-06f7055c/manifest.json",
+    "result": ".ddx/executions/20260613T141449-06f7055c/result.json",
+    "checks": ".ddx/executions/20260613T141449-06f7055c/checks.json",
+    "usage": ".ddx/executions/20260613T141449-06f7055c/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-976119df-20260613T141449-06f7055c"
+  },
+  "prompt_sha": "2b4f0fb15afa179250071b4bb7214ff2d0d11028e4452b7c2a11540c62b26ade"
+}
