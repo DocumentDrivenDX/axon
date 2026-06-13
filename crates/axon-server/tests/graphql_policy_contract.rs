@@ -3031,3 +3031,188 @@ async fn graphql_execution_reevaluates_policy_regardless_of_stale_explain() {
         "task-a must be unchanged after denied execution: {task_a}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_put_schema_dry_run_evaluates_candidate_policy_without_live_mutation() {
+    // @covers US-109-AC4
+    let server = test_server();
+
+    // v1: only "admin" can read or update entities in this collection.
+    server
+        .post("/tenants/default/databases/default/collections/candidate_fixture")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": { "label": { "type": "string" } }
+                },
+                "access_control": {
+                    "read": {
+                        "allow": [{ "name": "admin-read", "when": { "subject": "user_id", "eq": "admin" } }]
+                    },
+                    "update": {
+                        "allow": [{ "name": "admin-update", "when": { "subject": "user_id", "eq": "admin" } }]
+                    }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    server
+        .post("/tenants/default/databases/default/entities/candidate_fixture/cf1")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({ "data": { "label": "original" }, "actor": "admin" }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    // Propose v2 that also allows "candidate-reader" to read (updates still
+    // admin-only). explainInputs are evaluated against the CANDIDATE v2 policy:
+    //   [0] read by "candidate-reader"  → allowed by v2, denied by active v1
+    //   [1] update by "candidate-reader" → denied by both v1 and v2
+    let dry_run = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            putSchema(input: {
+                collection: "candidate_fixture"
+                dryRun: true
+                schema: {
+                    version: 2
+                    entitySchema: {
+                        type: "object"
+                        properties: { label: { type: "string" } }
+                    }
+                    accessControl: {
+                        read: {
+                            allow: [
+                                { name: "admin-read", when: { subject: "user_id", eq: "admin" } }
+                                { name: "candidate-reader-read", when: { subject: "user_id", eq: "candidate-reader" } }
+                            ]
+                        }
+                        update: {
+                            allow: [{ name: "admin-update", when: { subject: "user_id", eq: "admin" } }]
+                        }
+                    }
+                }
+                explainInputs: [
+                    {
+                        operation: "read"
+                        entityId: "cf1"
+                        actor: { actor: "candidate-reader", role: "read" }
+                    }
+                    {
+                        operation: "update"
+                        entityId: "cf1"
+                        data: { label: "candidate-change" }
+                        actor: { actor: "candidate-reader", role: "write" }
+                    }
+                ]
+            }) {
+                dryRun
+                schema
+                policyCompileReport
+                dryRunExplanations
+            }
+        }"#,
+    )
+    .await;
+
+    assert!(
+        dry_run["errors"].is_null(),
+        "dry-run with explain inputs should not error: {dry_run}"
+    );
+    let result = &dry_run["data"]["putSchema"];
+    assert_eq!(result["dryRun"], true);
+    assert_eq!(result["schema"]["version"], 2);
+    assert!(
+        result["policyCompileReport"]["errors"]
+            .as_array()
+            .map(|e| e.is_empty())
+            .unwrap_or(true),
+        "proposed policy must compile without errors: {result}"
+    );
+
+    let explanations = result["dryRunExplanations"]
+        .as_array()
+        .expect("dryRunExplanations must be a non-null array");
+    assert_eq!(
+        explanations.len(),
+        2,
+        "one explanation per explain input: {explanations:?}"
+    );
+
+    // [0] read by candidate-reader: ALLOWED by v2 candidate, denied by active v1
+    // dryRunExplanations fields are snake_case (direct serde serialization).
+    assert_eq!(
+        explanations[0]["decision"], "allow",
+        "candidate-reader read must be allowed by the proposed v2 policy: {explanations:?}"
+    );
+    assert_eq!(
+        explanations[0]["policy_version"], 2,
+        "dry-run explanation must reflect the proposed schema version: {explanations:?}"
+    );
+
+    // [1] update by candidate-reader: denied (update not granted to candidate-reader in v2)
+    assert_eq!(
+        explanations[1]["decision"], "deny",
+        "candidate-reader update must be denied even by the proposed v2 policy: {explanations:?}"
+    );
+
+    // Active schema must still be at v1 — dry-run must not have applied the change.
+    let active = gql_as(
+        &server,
+        "admin",
+        r#"{ collection(name: "candidate_fixture") { name schemaVersion } }"#,
+    )
+    .await;
+    assert_eq!(
+        active["data"]["collection"]["schemaVersion"], 1,
+        "dry-run must not activate the proposed schema: {active}"
+    );
+
+    // Active v1 policy still denies "candidate-reader" on the live API.
+    let live_denied = gql_as(
+        &server,
+        "candidate-reader",
+        r#"{ entity(collection: "candidate_fixture", id: "cf1") { id } }"#,
+    )
+    .await;
+    assert!(
+        live_denied["errors"].is_null(),
+        "unexpected live read errors: {live_denied}"
+    );
+    assert_eq!(
+        live_denied["data"]["entity"],
+        Value::Null,
+        "candidate policy must not affect live enforcement — v1 still denies reads: {live_denied}"
+    );
+
+    // Entity cf1 must be unchanged — fixture evaluation never mutates live data.
+    let entity = gql_as(
+        &server,
+        "admin",
+        r#"{ entity(collection: "candidate_fixture", id: "cf1") { data } }"#,
+    )
+    .await;
+    assert_eq!(
+        entity["data"]["entity"]["data"]["label"], "original",
+        "explain evaluation must not mutate the live entity: {entity}"
+    );
+
+    // No entity.update audit entries must exist — update evaluation never executes.
+    let audit = server
+        .get("/tenants/default/databases/default/audit/query?collection=candidate_fixture&operation=entity.update")
+        .await;
+    audit.assert_status_ok();
+    assert_eq!(
+        audit.json::<Value>()["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "candidate policy fixture evaluation must not produce mutation audit entries"
+    );
+}

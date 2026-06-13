@@ -1027,3 +1027,184 @@ async fn feat_029_contract_parent_keeps_reference_policy_contracts_in_sync() {
         }
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn feat_029_dry_run_explain_matches_activated_policy_graphql_only() {
+    // @covers US-109-AC5
+    //
+    // Candidate-fixture evaluation parity across interfaces:
+    //   - GraphQL: putSchema(dryRun: true, explainInputs: [...]) is the only
+    //     interface that exposes candidate-policy fixture evaluation.
+    //   - MCP: putSchema is not exposed via MCP; MCP parity leg is ABSENT.
+    //   - SDK/CLI: TypeScript SDK putSchema does not thread explainInputs;
+    //     CLI parity leg is ABSENT.
+    //
+    // This test verifies the GraphQL dry-run explanation faithfully predicts
+    // the decision that the activated policy will produce for the same tuple.
+    let (server, _) = test_server_with_handler();
+
+    // Bootstrap a small schema with a v1 read policy: only "manager" can read.
+    server
+        .post("/tenants/default/databases/default/collections/parity_subject")
+        .json(&serde_json::json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": { "status": { "type": "string" } }
+                },
+                "access_control": {
+                    "read": {
+                        "allow": [{ "name": "manager-only", "when": { "subject": "user_id", "eq": "manager" } }]
+                    },
+                    "update": {
+                        "allow": [{ "name": "manager-update", "when": { "subject": "user_id", "eq": "manager" } }]
+                    }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    server
+        .post("/tenants/default/databases/default/entities/parity_subject/ps1")
+        .add_header("x-axon-actor", "manager")
+        .json(&serde_json::json!({ "data": { "status": "open" }, "actor": "manager" }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    // Propose v2 that adds "analyst" to the allow list.
+    // Dry-run explains: read by "analyst" (allowed in v2, denied in v1).
+    let dry_run = gql_as(
+        &server,
+        "manager",
+        r#"mutation {
+            putSchema(input: {
+                collection: "parity_subject"
+                dryRun: true
+                schema: {
+                    version: 2
+                    entitySchema: {
+                        type: "object"
+                        properties: { status: { type: "string" } }
+                    }
+                    accessControl: {
+                        read: {
+                            allow: [
+                                { name: "manager-only", when: { subject: "user_id", eq: "manager" } }
+                                { name: "analyst-read", when: { subject: "user_id", eq: "analyst" } }
+                            ]
+                        }
+                        update: {
+                            allow: [{ name: "manager-update", when: { subject: "user_id", eq: "manager" } }]
+                        }
+                    }
+                }
+                explainInputs: [
+                    {
+                        operation: "read"
+                        entityId: "ps1"
+                        actor: { actor: "analyst", role: "read" }
+                    }
+                ]
+            }) {
+                dryRun
+                dryRunExplanations
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        dry_run["errors"].is_null(),
+        "dry-run explain should not error: {dry_run}"
+    );
+    let dry_run_result = &dry_run["data"]["putSchema"];
+    assert_eq!(dry_run_result["dryRun"], true);
+    let dry_run_explanations = dry_run_result["dryRunExplanations"]
+        .as_array()
+        .expect("dryRunExplanations must be a non-null array");
+    assert_eq!(dry_run_explanations.len(), 1);
+    let dry_run_decision = dry_run_explanations[0]["decision"]
+        .as_str()
+        .expect("decision must be a string");
+    // dryRunExplanations uses snake_case field names (direct serde serialization).
+    let dry_run_policy_version = dry_run_explanations[0]["policy_version"]
+        .as_u64()
+        .expect("policy_version must be an integer");
+    assert_eq!(
+        dry_run_decision, "allow",
+        "analyst read must be allowed by the candidate v2 policy"
+    );
+    assert_eq!(dry_run_policy_version, 2);
+
+    // Activate v2 (not a dry-run) and re-evaluate with the active explainPolicy.
+    let activate = gql_as(
+        &server,
+        "manager",
+        r#"mutation {
+            putSchema(input: {
+                collection: "parity_subject"
+                schema: {
+                    version: 2
+                    entitySchema: {
+                        type: "object"
+                        properties: { status: { type: "string" } }
+                    }
+                    accessControl: {
+                        read: {
+                            allow: [
+                                { name: "manager-only", when: { subject: "user_id", eq: "manager" } }
+                                { name: "analyst-read", when: { subject: "user_id", eq: "analyst" } }
+                            ]
+                        }
+                        update: {
+                            allow: [{ name: "manager-update", when: { subject: "user_id", eq: "manager" } }]
+                        }
+                    }
+                }
+            }) { dryRun schema }
+        }"#,
+    )
+    .await;
+    assert!(activate["errors"].is_null(), "activation must succeed: {activate}");
+    assert_eq!(activate["data"]["putSchema"]["dryRun"], false);
+    assert_eq!(activate["data"]["putSchema"]["schema"]["version"], 2);
+
+    // Active explainPolicy for the same (analyst, read, ps1) tuple.
+    let active_explain = gql_as(
+        &server,
+        "analyst",
+        r#"{
+            explainPolicy(input: {
+                operation: "read"
+                collection: "parity_subject"
+                entityId: "ps1"
+            }) {
+                decision
+                policyVersion
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        active_explain["errors"].is_null(),
+        "active explainPolicy must not error: {active_explain}"
+    );
+    let active_decision = active_explain["data"]["explainPolicy"]["decision"]
+        .as_str()
+        .expect("decision must be a string");
+    let active_policy_version = active_explain["data"]["explainPolicy"]["policyVersion"]
+        .as_u64()
+        .expect("policyVersion must be an integer");
+
+    // The dry-run explanation must faithfully predict the activated policy result.
+    assert_eq!(
+        dry_run_decision, active_decision,
+        "dry-run explain must predict the same decision as the activated policy"
+    );
+    assert_eq!(
+        dry_run_policy_version, active_policy_version,
+        "dry-run explain and activated policy must agree on policy version"
+    );
+}

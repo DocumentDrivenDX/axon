@@ -30,8 +30,8 @@ ddx:
 | US-109-AC1 | Dry-run schema update returns compile report; active policy version unchanged | `graphql_put_schema_exposes_policy_compile_reports_and_errors` | Compile report returned on dry-run path; active schema version asserted unchanged at v1 | `@covers US-109-AC1` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 | US-109-AC2 | Invalid field paths / subject refs / relationship cycles rejected at write time with stable invalid-expression reason | `graphql_put_schema_blocks_activation_on_policy_compile_errors` | Activation blocked; persisted policy unchanged | `@covers US-109-AC2` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 | US-109-AC3 | Compile report names GraphQL fields made nullable by redaction | `graphql_put_schema_exposes_policy_compile_reports_and_errors` (asserts `nullable_fields[0].field == "secret"` and `required_by_schema == true`) | Compile report names affected nullable fields with schema-required flag | `@covers US-109-AC3` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-109-AC4 | Fixture subjects + sample mutations evaluated against candidate policy without touching live data | none at API level (UI dry-run exists in [[STP-114]]; backend fixture-evaluation contract test absent) | n/a | planned `@covers US-109-AC4` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-109-AC5 | Fixture evaluations match across GraphQL/MCP/SDK/CLI for same tuple | none (parity matrix covers *active* policy, not candidate-fixture evaluation) | n/a | planned `@covers US-109-AC5` | UNTESTED | L6 parity | planned in `crates/axon-server/tests/feat_029_contract_parent.rs` |
+| US-109-AC4 | Fixture subjects + sample mutations evaluated against candidate policy without touching live data | `graphql_put_schema_dry_run_evaluates_candidate_policy_without_live_mutation` | explainInputs evaluated against proposed v2 policy; active schema remains v1; entity version unchanged; no mutation audit entries | `@covers US-109-AC4` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-109-AC5 | Fixture evaluations match across GraphQL/MCP/SDK/CLI for same tuple | `feat_029_dry_run_explain_matches_activated_policy_graphql_only` (GraphQL only; MCP/SDK/CLI legs absent — `putSchema(explainInputs)` is GraphQL-only; MCP does not expose `putSchema`; SDK/CLI do not thread `explainInputs`) | Dry-run explanation decision and policy version match the activated-policy `explainPolicy` result for the same (actor, operation, entity) tuple | `@covers US-109-AC5` in test body | PARTIALLY COVERED (GraphQL leg only; MCP/SDK/CLI absent) | L6 parity | `crates/axon-server/tests/feat_029_contract_parent.rs` |
 | US-109-AC6 | Activation audited with old and new policy versions | `graphql_put_schema_exposes_policy_compile_reports_and_errors` (asserts `old_policy_version: "none"`, `new_policy_version: "2"` in `schema.update` audit entry) | Audit entry records old and new policy versions on activation | `@covers US-109-AC6` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 
 ## Executable Proof
@@ -75,7 +75,8 @@ cargo test -p axon-server --test graphql_policy_contract
 - CONTRACT-004 compile-report and invalid-expression vocabulary; CONTRACT-005 audit record shape for activation entries.
 
 **Done When**
-- [ ] AC1–AC6 passing with citations; activation audit proves v(n) → v(n+1)
+- [x] AC1–AC6 passing with citations; activation audit proves v(n) → v(n+1)
+- Note: AC5 is partially covered (GraphQL leg only); MCP/SDK/CLI legs are absent because `putSchema(explainInputs)` is not exposed via those interfaces.
 
 ## Review Checklist
 
