@@ -2,11 +2,15 @@
   "bead_id": "axon-074548a4",
   "attempt_id": "20260613T161650-41647de7",
   "base_rev": "1cdd716a1fc954f6621122e87ab1404a78659bc1",
-  "result_rev": "d112a775f57d2c8e0f33c88adb864cb5d22ac8fd",
+  "result_rev": "74c64ffd5acfb81bba4c4ccebf5831d3caf484c4",
   "implementation_rev": "d112a775f57d2c8e0f33c88adb864cb5d22ac8fd",
-  "outcome": "task_succeeded",
+  "landed_rev": "74c64ffd5acfb81bba4c4ccebf5831d3caf484c4",
+  "landed_branch": "master",
+  "evidence_rev": "74c64ffd5acfb81bba4c4ccebf5831d3caf484c4",
+  "outcome": "merged",
   "status": "success",
   "detail": "success",
+  "orchestrator_status": "success",
   "candidate_ref": "refs/ddx/iterations/20260613T161650-41647de7/0",
   "cycle_trace": [
     {
