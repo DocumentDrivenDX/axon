@@ -22,15 +22,15 @@ pub use axon_cypher_ast::validator;
 // ── Local modules: schema extension + executor-side ─────────────────────────
 // `schema` overrides axon_cypher_ast::schema; it re-exports everything from
 // there and adds the SchemaSnapshotExt extension trait.
-pub mod schema;
 pub mod executor;
 pub mod memory_store;
 pub mod planner;
+pub mod schema;
 pub mod storage_adapter_store;
 
 // ── Top-level re-exports for API compatibility ───────────────────────────────
-pub use axon_cypher_ast::parse;
 pub use ast::Query;
+pub use axon_cypher_ast::parse;
 pub use error::CypherError;
 pub use executor::{
     execute, execute_with_options, ExecutionClock, ExecutionOptions, Row, RowStream,

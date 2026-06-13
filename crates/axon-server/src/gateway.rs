@@ -13,18 +13,18 @@ use std::time::Instant;
 use axum::body::Bytes;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, get_service, post, put};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
-use async_graphql::http::{GraphQLPlaygroundConfig, playground_source};
+use async_graphql::http::{playground_source, GraphQLPlaygroundConfig};
 use axon_graphql::{BroadcastBroker, GraphqlIdempotencyScope};
 
 use crate::actor_scope::ActorScopeGuard;
@@ -33,7 +33,7 @@ use crate::collection_listing::{filter_audit_entries_to_database, list_collectio
 use crate::cors_config::CorsStore;
 use crate::idempotency::{IdempotencyStore, ReservationResult};
 use crate::mcp_http::{
-    McpHttpSessions, notify_entity_change, notify_entity_change_by_parts, notify_tool_list_changed,
+    notify_entity_change, notify_entity_change_by_parts, notify_tool_list_changed, McpHttpSessions,
 };
 use crate::rate_limit::{RateLimited, WriteRateLimiter};
 use axon_api::handler::AxonHandler;
@@ -48,13 +48,13 @@ use axon_api::request::{
     TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
-use axon_audit::AuditLog;
 use axon_audit::entry::{AuditAttribution, AuditEntry, MutationType};
+use axon_audit::AuditLog;
 use axon_core::auth::{CallerIdentity as CoreCallerIdentity, ResolvedIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA, EntityId, Namespace};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_core::types::{Entity, Link};
-use axon_schema::schema::{CollectionSchema, json_ld_reserved_field_aliases};
+use axon_schema::schema::{json_ld_reserved_field_aliases, CollectionSchema};
 use axon_storage::adapter::StorageAdapter;
 
 use crate::tenant_router::{TenantHandler, TenantRouter};
@@ -2845,8 +2845,8 @@ async fn commit_transaction(
     // The body field is canonical (CONTRACT-001). If the caller supplied the
     // key only via the legacy `Idempotency-Key` header we accept it but tag
     // the response with deprecation signals.
-    let idem_key_from_header_only = body.idempotency_key.is_none()
-        && headers.contains_key(IDEMPOTENCY_KEY_HEADER);
+    let idem_key_from_header_only =
+        body.idempotency_key.is_none() && headers.contains_key(IDEMPOTENCY_KEY_HEADER);
     let idem_key = match body.idempotency_key.clone() {
         Some(key) => Some(key),
         None => headers
@@ -4001,8 +4001,8 @@ mod tests {
     use crate::tenant_router::TenantRouter;
     use axon_core::id::{CollectionId, Namespace};
     use axon_schema::schema::{CollectionSchema, CollectionView, IndexDef, IndexType};
-    use axon_storage::SqliteStorageAdapter;
     use axon_storage::adapter::StorageAdapter;
+    use axon_storage::SqliteStorageAdapter;
     use axum::extract::connect_info::MockConnectInfo;
     use axum_test::TestServer;
     use serde_json::json;
@@ -4218,12 +4218,10 @@ mod tests {
         resp.assert_status(StatusCode::BAD_REQUEST);
         let body: Value = resp.json();
         assert_eq!(body["code"], "invalid_argument");
-        assert!(
-            body["detail"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("has no markdown template defined")
-        );
+        assert!(body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("has no markdown template defined"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -4261,12 +4259,10 @@ mod tests {
         resp.assert_header("content-type", "application/json");
         let body: Value = resp.json();
         assert_eq!(body["code"], "storage_error");
-        assert!(
-            body["detail"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("failed to render markdown")
-        );
+        assert!(body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("failed to render markdown"));
         assert_eq!(body["entity"]["collection"], "tasks");
         assert_eq!(body["entity"]["id"], "t-001");
         assert_eq!(body["entity"]["version"], 1);
@@ -4489,12 +4485,10 @@ mod tests {
         resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
         let body: Value = resp.json();
         assert_eq!(body["code"], "schema_validation");
-        assert!(
-            body["detail"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("template references field 'ghost'")
-        );
+        assert!(body["detail"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("template references field 'ghost'"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -4732,11 +4726,9 @@ mod tests {
             .as_array()
             .expect("path-scoped audit/entity should return an entries array");
         assert!(!path_scoped_entries.is_empty());
-        assert!(
-            path_scoped_entries
-                .iter()
-                .all(|entry| entry["collection"] == "prod.default.tasks")
-        );
+        assert!(path_scoped_entries
+            .iter()
+            .all(|entry| entry["collection"] == "prod.default.tasks"));
 
         // Cross-database: querying prod database for "default.default.tasks" (a
         // default-scope collection) must return empty — the namespaces don't overlap.
@@ -4950,11 +4942,9 @@ mod tests {
         let body: Value = resp.json();
         let entries3 = body["entries"].as_array().unwrap();
         assert_eq!(entries3.len(), 3);
-        assert!(
-            entries3
-                .iter()
-                .all(|e| e["collection"] == "tasks" || e["collection"] == "beads")
-        );
+        assert!(entries3
+            .iter()
+            .all(|e| e["collection"] == "tasks" || e["collection"] == "beads"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -5560,11 +5550,9 @@ mod tests {
         let body: Value = resp.json();
         assert_eq!(body["code"], "schema_validation");
         assert!(body["detail"]["message"].as_str().is_some());
-        assert!(
-            body["detail"]["field_errors"]
-                .as_array()
-                .is_some_and(|errors| !errors.is_empty())
-        );
+        assert!(body["detail"]["field_errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()));
         assert_eq!(
             body["detail"]["field_errors"][0]["field_path"]
                 .as_str()
@@ -6249,16 +6237,12 @@ mod tests {
         let default_entries = default_body["entries"]
             .as_array()
             .expect("default-scoped audit query should return an entries array");
-        assert!(
-            default_entries
-                .iter()
-                .any(|entry| entry["collection"] == "tasks")
-        );
-        assert!(
-            !default_entries
-                .iter()
-                .any(|entry| entry["collection"] == "prod.default.tasks")
-        );
+        assert!(default_entries
+            .iter()
+            .any(|entry| entry["collection"] == "tasks"));
+        assert!(!default_entries
+            .iter()
+            .any(|entry| entry["collection"] == "prod.default.tasks"));
 
         // Prod-scoped: audit query returns only entries for prod database.
         let path_scoped_resp = server
@@ -6270,11 +6254,9 @@ mod tests {
             .as_array()
             .expect("path scoped audit query should return an entries array");
         assert!(!path_scoped_entries.is_empty());
-        assert!(
-            path_scoped_entries
-                .iter()
-                .all(|entry| entry["collection"] == "prod.default.tasks")
-        );
+        assert!(path_scoped_entries
+            .iter()
+            .all(|entry| entry["collection"] == "prod.default.tasks"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -6312,11 +6294,9 @@ mod tests {
         let databases = body["databases"]
             .as_array()
             .expect("health databases should be an array");
-        assert!(
-            !databases
-                .iter()
-                .any(|database| database.as_str() == Some(DEFAULT_DATABASE))
-        );
+        assert!(!databases
+            .iter()
+            .any(|database| database.as_str() == Some(DEFAULT_DATABASE)));
     }
 
     // ── Embedded UI tests ─────────────────────────────────────────────────────

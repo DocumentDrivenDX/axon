@@ -1079,7 +1079,9 @@ except Exception as e:
 
     let json_str = serde_json::to_string(json_ld).map_err(|e| e.to_string())?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(json_str.as_bytes()).map_err(|e| e.to_string())?;
+        stdin
+            .write_all(json_str.as_bytes())
+            .map_err(|e| e.to_string())?;
     }
     let output = child.wait_with_output().map_err(|e| e.to_string())?;
     match output.status.code() {

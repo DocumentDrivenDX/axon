@@ -3755,18 +3755,9 @@ fn intent_lineage_object() -> Object {
             "grantVersion",
             TypeRef::named(TypeRef::INT),
         ))
-        .field(json_object_field(
-            "approver",
-            TypeRef::named("JSON"),
-        ))
-        .field(json_object_field(
-            "reason",
-            TypeRef::named(TypeRef::STRING),
-        ))
-        .field(json_object_field(
-            "origin",
-            TypeRef::named("JSON"),
-        ))
+        .field(json_object_field("approver", TypeRef::named("JSON")))
+        .field(json_object_field("reason", TypeRef::named(TypeRef::STRING)))
+        .field(json_object_field("origin", TypeRef::named("JSON")))
 }
 
 fn audit_entry_object() -> Object {
@@ -10448,8 +10439,7 @@ fn named_query_has_relationships(query: &CypherQuery) -> bool {
             _ => false,
         }
     }
-    patterns_have_steps(&query.matches)
-        || query.where_clause.as_ref().is_some_and(expr_has_rel)
+    patterns_have_steps(&query.matches) || query.where_clause.as_ref().is_some_and(expr_has_rel)
 }
 
 /// Returns true when the change event should trigger re-evaluation of a named
@@ -10512,50 +10502,59 @@ fn build_named_query_subscription_field<S: StorageAdapter + 'static>(
 ) -> SubscriptionField {
     let description = named_query.description.clone();
     let named_query_for_args = named_query.clone();
-    let conn_type = format!("{}Connection", pascal_case(result_schema.collection.as_str()));
-    let field = SubscriptionField::new(
-        field_name,
-        TypeRef::named_nn(conn_type),
-        move |ctx| {
-            let handler = Arc::clone(&handler);
-            let query_ast = query_ast.clone();
-            let result_schema = result_schema.clone();
-            let schemas_by_collection = schemas_by_collection.clone();
-            let named_query = named_query.clone();
-            let broker = broker.clone();
-            let scope = scope.clone();
-            let watched_collections = watched_collections.clone();
-            // Extract caller and args while the context is available.
-            let caller = caller_from_ctx(&ctx);
-            let params_result = named_query_parameters_from_ctx(&ctx, &named_query);
-            let first_result = parse_named_query_first(&ctx);
-            let after_result = parse_optional_string_arg(&ctx, "after");
-            SubscriptionFieldFuture::new(async move {
-                let params = params_result?;
-                let first = first_result?;
-                let after = after_result?;
-                // Initial snapshot (AC2).
-                let initial_value = {
-                    let guard = handler.lock().await;
-                    execute_named_query_connection(
-                        &guard,
-                        &query_ast,
-                        &result_schema,
-                        &schemas_by_collection,
-                        &caller,
-                        &params,
-                        first,
-                        after.as_deref(),
-                    )?
-                    .unwrap_or_else(|| {
-                        entity_connection_value(&[], 0, None, false, false, Some(&result_schema))
-                    })
-                };
-                let rx = broker.subscribe();
-                let initial_stream =
-                    tokio_stream::iter(std::iter::once(Ok::<_, GqlError>(initial_value)));
-                // Change stream: re-evaluate on relevant events.
-                let change_stream = {
+    let conn_type = format!(
+        "{}Connection",
+        pascal_case(result_schema.collection.as_str())
+    );
+    let field = SubscriptionField::new(field_name, TypeRef::named_nn(conn_type), move |ctx| {
+        let handler = Arc::clone(&handler);
+        let query_ast = query_ast.clone();
+        let result_schema = result_schema.clone();
+        let schemas_by_collection = schemas_by_collection.clone();
+        let named_query = named_query.clone();
+        let broker = broker.clone();
+        let scope = scope.clone();
+        let watched_collections = watched_collections.clone();
+        // Extract caller and args while the context is available.
+        let caller = caller_from_ctx(&ctx);
+        let params_result = named_query_parameters_from_ctx(&ctx, &named_query);
+        let first_result = parse_named_query_first(&ctx);
+        let after_result = parse_optional_string_arg(&ctx, "after");
+        SubscriptionFieldFuture::new(async move {
+            let params = params_result?;
+            let first = first_result?;
+            let after = after_result?;
+            // Initial snapshot (AC2).
+            let initial_value = {
+                let guard = handler.lock().await;
+                execute_named_query_connection(
+                    &guard,
+                    &query_ast,
+                    &result_schema,
+                    &schemas_by_collection,
+                    &caller,
+                    &params,
+                    first,
+                    after.as_deref(),
+                )?
+                .unwrap_or_else(|| {
+                    entity_connection_value(&[], 0, None, false, false, Some(&result_schema))
+                })
+            };
+            let rx = broker.subscribe();
+            let initial_stream =
+                tokio_stream::iter(std::iter::once(Ok::<_, GqlError>(initial_value)));
+            // Change stream: re-evaluate on relevant events.
+            let change_stream = {
+                let handler = Arc::clone(&handler);
+                let query_ast = query_ast.clone();
+                let result_schema = result_schema.clone();
+                let schemas_by_collection = schemas_by_collection.clone();
+                let caller = caller.clone();
+                let params = params.clone();
+                let scope = scope.clone();
+                let watched_collections = watched_collections.clone();
+                tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |result| {
                     let handler = Arc::clone(&handler);
                     let query_ast = query_ast.clone();
                     let result_schema = result_schema.clone();
@@ -10564,57 +10563,45 @@ fn build_named_query_subscription_field<S: StorageAdapter + 'static>(
                     let params = params.clone();
                     let scope = scope.clone();
                     let watched_collections = watched_collections.clone();
-                    tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-                        move |result| {
-                            let handler = Arc::clone(&handler);
-                            let query_ast = query_ast.clone();
-                            let result_schema = result_schema.clone();
-                            let schemas_by_collection = schemas_by_collection.clone();
-                            let caller = caller.clone();
-                            let params = params.clone();
-                            let scope = scope.clone();
-                            let watched_collections = watched_collections.clone();
-                            let after = after.clone();
-                            async move {
-                                let event = result.ok()?;
-                                if !named_query_event_is_relevant(
-                                    &event,
-                                    &watched_collections,
-                                    watch_links,
-                                    scope.as_ref(),
-                                ) {
-                                    return None;
-                                }
-                                let guard = handler.lock().await;
-                                match execute_named_query_connection(
-                                    &guard,
-                                    &query_ast,
-                                    &result_schema,
-                                    &schemas_by_collection,
-                                    &caller,
-                                    &params,
-                                    first,
-                                    after.as_deref(),
-                                ) {
-                                    Ok(Some(v)) => Some(Ok(v)),
-                                    Ok(None) => Some(Ok(entity_connection_value(
-                                        &[],
-                                        0,
-                                        None,
-                                        false,
-                                        false,
-                                        Some(&result_schema),
-                                    ))),
-                                    Err(e) => Some(Err(e)),
-                                }
-                            }
-                        },
-                    )
-                };
-                Ok(initial_stream.chain(change_stream))
-            })
-        },
-    )
+                    let after = after.clone();
+                    async move {
+                        let event = result.ok()?;
+                        if !named_query_event_is_relevant(
+                            &event,
+                            &watched_collections,
+                            watch_links,
+                            scope.as_ref(),
+                        ) {
+                            return None;
+                        }
+                        let guard = handler.lock().await;
+                        match execute_named_query_connection(
+                            &guard,
+                            &query_ast,
+                            &result_schema,
+                            &schemas_by_collection,
+                            &caller,
+                            &params,
+                            first,
+                            after.as_deref(),
+                        ) {
+                            Ok(Some(v)) => Some(Ok(v)),
+                            Ok(None) => Some(Ok(entity_connection_value(
+                                &[],
+                                0,
+                                None,
+                                false,
+                                false,
+                                Some(&result_schema),
+                            ))),
+                            Err(e) => Some(Err(e)),
+                        }
+                    }
+                })
+            };
+            Ok(initial_stream.chain(change_stream))
+        })
+    })
     .description(description)
     .argument(InputValue::new("first", TypeRef::named(TypeRef::INT)))
     .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING)));
@@ -11064,8 +11051,7 @@ mod tests {
             "open_tasks".into(),
             NamedQueryDef {
                 description: "Tasks with open status".into(),
-                cypher: "MATCH (t:Task {status: 'open'}) RETURN t ORDER BY t.priority DESC"
-                    .into(),
+                cypher: "MATCH (t:Task {status: 'open'}) RETURN t ORDER BY t.priority DESC".into(),
                 parameters: Vec::new(),
             },
         );
@@ -11882,9 +11868,8 @@ mod tests {
             lifecycles: Default::default(),
         };
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
-        let gql_schema =
-            build_schema_with_handler(&[schema_def], Arc::clone(&handler))
-                .expect("schema should build");
+        let gql_schema = build_schema_with_handler(&[schema_def], Arc::clone(&handler))
+            .expect("schema should build");
 
         // Transaction: create entity with status="open", then read it.
         // The entity is never persisted; the read relies on the shadow map.
@@ -12782,12 +12767,9 @@ mod tests {
         let schema_def = ddx_beads_named_query_schema();
         let broker = crate::subscriptions::BroadcastBroker::default();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
-        let schema = build_schema_with_handler_and_broker(
-            &[schema_def],
-            Arc::clone(&handler),
-            Some(broker),
-        )
-        .expect("schema should build");
+        let schema =
+            build_schema_with_handler_and_broker(&[schema_def], Arc::clone(&handler), Some(broker))
+                .expect("schema should build");
         let sdl = schema.schema.sdl();
         assert!(
             sdl.contains("type Subscription"),
@@ -12839,16 +12821,16 @@ mod tests {
             )
             .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
         );
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            stream.next(),
-        )
-        .await
-        .expect("initial snapshot should arrive within timeout")
-        .expect("stream should yield a response");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .expect("initial snapshot should arrive within timeout")
+            .expect("stream should yield a response");
         let data = response_data(response);
         let conn = &data["ready_beads"];
-        assert_eq!(conn["totalCount"], 1, "initial snapshot should include one entity");
+        assert_eq!(
+            conn["totalCount"], 1,
+            "initial snapshot should include one entity"
+        );
         assert_eq!(conn["edges"][0]["node"]["id"], "snap-ready");
     }
 
@@ -12872,13 +12854,10 @@ mod tests {
             .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
         );
         // Consume initial snapshot (empty).
-        let snapshot = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            stream.next(),
-        )
-        .await
-        .expect("initial snapshot arrives")
-        .expect("stream yields response");
+        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .expect("initial snapshot arrives")
+            .expect("stream yields response");
         assert_eq!(response_data(snapshot)["ready_beads"]["totalCount"], 0);
 
         // Mutate: add entity, then publish the change event.
@@ -12903,7 +12882,9 @@ mod tests {
             collection: "ddx_beads".into(),
             entity_id: "new-bead".into(),
             operation: "create".into(),
-            data: Some(json!({"title": "new-bead", "status": "open", "owner": "tester", "priority": 1})),
+            data: Some(
+                json!({"title": "new-bead", "status": "open", "owner": "tester", "priority": 1}),
+            ),
             previous_data: None,
             version: 1,
             previous_version: None,
@@ -12911,15 +12892,15 @@ mod tests {
             actor: "tester".into(),
         });
 
-        let update = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            stream.next(),
-        )
-        .await
-        .expect("update arrives after entity add")
-        .expect("stream yields update");
+        let update = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .expect("update arrives after entity add")
+            .expect("stream yields update");
         let data = response_data(update);
-        assert_eq!(data["ready_beads"]["totalCount"], 1, "update should reflect the new entity");
+        assert_eq!(
+            data["ready_beads"]["totalCount"], 1,
+            "update should reflect the new entity"
+        );
         assert_eq!(data["ready_beads"]["edges"][0]["node"]["id"], "new-bead");
     }
 
@@ -12951,14 +12932,14 @@ mod tests {
         .expect("schema should build");
 
         let mut stream = schema.schema.execute_stream(
-            async_graphql::Request::new(
-                r#"subscription { open_tasks(first: 10) { totalCount } }"#,
-            )
-            .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
+            async_graphql::Request::new(r#"subscription { open_tasks(first: 10) { totalCount } }"#)
+                .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
         );
         // Consume initial snapshot: 1 open task.
         let snap = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(response_data(snap)["open_tasks"]["totalCount"], 1);
 
         // Close the task via handler, then publish a change event.
@@ -12993,7 +12974,9 @@ mod tests {
         });
 
         let update = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             response_data(update)["open_tasks"]["totalCount"],
             0,
@@ -13038,7 +13021,9 @@ mod tests {
         );
         // Initial snapshot: both beads are ready (no blocking deps).
         let snap = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(response_data(snap)["ready_beads"]["totalCount"], 2);
 
         // Add a depends-on link from "candidate" → "blocker" (open),
@@ -13076,7 +13061,9 @@ mod tests {
         });
 
         let update = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             response_data(update)["ready_beads"]["totalCount"],
             1,
@@ -13121,7 +13108,9 @@ mod tests {
             .data(CallerIdentity::new("alice", axon_core::auth::Role::Read)),
         );
         let snap = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         let data = response_data(snap);
         let conn = &data["ready_beads"];
         assert_eq!(conn["totalCount"], 1, "alice should only see her own bead");
@@ -13151,9 +13140,14 @@ mod tests {
             );
             // Consume initial snapshot so the receiver is established.
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-                .await.unwrap().unwrap();
+                .await
+                .unwrap()
+                .unwrap();
             // At this point the receiver count should be at least 1.
-            assert!(broker.receiver_count() >= 1, "receiver should be registered while stream is alive");
+            assert!(
+                broker.receiver_count() >= 1,
+                "receiver should be registered while stream is alive"
+            );
             // Stream is dropped here.
         }
 

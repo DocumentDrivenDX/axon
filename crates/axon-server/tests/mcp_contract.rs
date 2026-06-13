@@ -2231,9 +2231,7 @@ async fn mcp_via_tenant_path(
     request: &Value,
 ) -> Value {
     server
-        .post(&format!(
-            "/tenants/{tenant}/databases/{database}/mcp"
-        ))
+        .post(&format!("/tenants/{tenant}/databases/{database}/mcp"))
         .json(request)
         .await
         .json::<Value>()

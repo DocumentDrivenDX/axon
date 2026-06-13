@@ -105,7 +105,6 @@ impl<'a, S: StorageAdapter> StorageAdapterQueryStore<'a, S> {
         }
     }
 
-
     /// Full range scan of a collection, filtering with `scan.property_filters`.
     ///
     /// Returns an error item if the storage layer fails; otherwise yields
@@ -130,7 +129,11 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
     /// Look up an entity by its encoded ID (`"{collection}\x1f{raw_id}"`).
     fn get_entity(&self, id: &str) -> Option<QueryEntity> {
         let (collection_id, entity_id) = decode_entity_id(id)?;
-        let entity = self.storage.get(&collection_id, &entity_id).ok().flatten()?;
+        let entity = self
+            .storage
+            .get(&collection_id, &entity_id)
+            .ok()
+            .flatten()?;
         Some(self.build_query_entity(&entity))
     }
 
@@ -152,18 +155,22 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
         let collection_id = CollectionId::new(&collection_name);
 
         // For equality filters, try index_lookup; fall back to range_scan on error.
-        let eq_filter = scan.property_filters.iter().find(|f| f.op == PropertyFilterOp::Eq);
+        let eq_filter = scan
+            .property_filters
+            .iter()
+            .find(|f| f.op == PropertyFilterOp::Eq);
 
         let entities: Vec<Result<QueryEntity, CypherError>> = if let Some(filter) = eq_filter {
             let property = filter.path.join(".");
             match json_to_index_value(&filter.value) {
                 Some(index_val) => {
-                    match self.storage.index_lookup(&collection_id, &property, &index_val) {
+                    match self
+                        .storage
+                        .index_lookup(&collection_id, &property, &index_val)
+                    {
                         Ok(ids) => ids
                             .into_iter()
-                            .filter_map(|eid| {
-                                self.storage.get(&collection_id, &eid).ok().flatten()
-                            })
+                            .filter_map(|eid| self.storage.get(&collection_id, &eid).ok().flatten())
                             .filter(|entity| {
                                 data_matches_filters(&entity.data, &scan.property_filters)
                             })
@@ -210,20 +217,24 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
         };
 
         let raw: Vec<Result<Link, CypherError>> = match traversal.direction {
-            Direction::Outgoing => match self
-                .storage
-                .list_outbound_links(&collection_id, &entity_id, type_hint)
-            {
-                Ok(links) => links.into_iter().map(Ok).collect(),
-                Err(err) => vec![Err(CypherError::Storage(err.to_string()))],
-            },
-            Direction::Incoming => match self
-                .storage
-                .list_inbound_links(&collection_id, &entity_id, type_hint)
-            {
-                Ok(links) => links.into_iter().map(Ok).collect(),
-                Err(err) => vec![Err(CypherError::Storage(err.to_string()))],
-            },
+            Direction::Outgoing => {
+                match self
+                    .storage
+                    .list_outbound_links(&collection_id, &entity_id, type_hint)
+                {
+                    Ok(links) => links.into_iter().map(Ok).collect(),
+                    Err(err) => vec![Err(CypherError::Storage(err.to_string()))],
+                }
+            }
+            Direction::Incoming => {
+                match self
+                    .storage
+                    .list_inbound_links(&collection_id, &entity_id, type_hint)
+                {
+                    Ok(links) => links.into_iter().map(Ok).collect(),
+                    Err(err) => vec![Err(CypherError::Storage(err.to_string()))],
+                }
+            }
             Direction::Either => {
                 match self
                     .storage
@@ -246,20 +257,21 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
             }
         };
 
-        Box::new(raw.into_iter().filter_map(move |link_result| {
-            match link_result {
-                Err(err) => Some(Err(err)),
-                Ok(link) => {
-                    if traversal.relationship_types.is_empty()
-                        || traversal.relationship_types.contains(&link.link_type)
-                    {
-                        Some(Ok(build_query_link(&link)))
-                    } else {
-                        None
+        Box::new(
+            raw.into_iter()
+                .filter_map(move |link_result| match link_result {
+                    Err(err) => Some(Err(err)),
+                    Ok(link) => {
+                        if traversal.relationship_types.is_empty()
+                            || traversal.relationship_types.contains(&link.link_type)
+                        {
+                            Some(Ok(build_query_link(&link)))
+                        } else {
+                            None
+                        }
                     }
-                }
-            }
-        }))
+                }),
+        )
     }
 }
 
@@ -468,14 +480,20 @@ mod tests {
 
     // ── AC2: scan / index lookup ─────────────────────────────────────────────
 
-    fn collect_entities(store: &StorageAdapterQueryStore<'_, MemoryStorageAdapter>, scan: EntityScan) -> Vec<QueryEntity> {
+    fn collect_entities(
+        store: &StorageAdapterQueryStore<'_, MemoryStorageAdapter>,
+        scan: EntityScan,
+    ) -> Vec<QueryEntity> {
         store
             .scan_entities(scan)
             .map(|r| r.expect("storage scan should not error"))
             .collect()
     }
 
-    fn collect_links(store: &StorageAdapterQueryStore<'_, MemoryStorageAdapter>, traversal: LinkTraversal) -> Vec<QueryLink> {
+    fn collect_links(
+        store: &StorageAdapterQueryStore<'_, MemoryStorageAdapter>,
+        traversal: LinkTraversal,
+    ) -> Vec<QueryLink> {
         store
             .traverse_links(traversal)
             .map(|r| r.expect("storage traverse should not error"))
@@ -504,11 +522,9 @@ mod tests {
         let entities = collect_entities(&store, scan);
         assert_eq!(entities.len(), 2, "only bead-a and bead-b are open");
         assert!(
-            entities.iter().all(|e| e
-                .properties
-                .get("status")
-                .and_then(Value::as_str)
-                == Some("open")),
+            entities
+                .iter()
+                .all(|e| e.properties.get("status").and_then(Value::as_str) == Some("open")),
             "all returned entities should have status=open"
         );
     }
@@ -538,7 +554,9 @@ mod tests {
     fn get_entity_returns_entity_for_valid_encoded_id() {
         let (storage, schema) = setup();
         let store = StorageAdapterQueryStore::new(&storage, &schema);
-        let entity = store.get_entity(&encoded("bead-a")).expect("entity should exist");
+        let entity = store
+            .get_entity(&encoded("bead-a"))
+            .expect("entity should exist");
         assert_eq!(
             entity.properties.get("title").and_then(Value::as_str),
             Some("first")
@@ -653,10 +671,7 @@ mod tests {
             .expect("should execute");
 
         assert_eq!(rows.len(), 1, "only bead-a has an open dependency");
-        assert_eq!(
-            rows[0].get("title").and_then(Value::as_str),
-            Some("first")
-        );
+        assert_eq!(rows[0].get("title").and_then(Value::as_str), Some("first"));
     }
 
     #[test]
@@ -685,10 +700,7 @@ mod tests {
 
         // bead-b is open but has no outgoing DEPENDS_ON link.
         assert_eq!(rows.len(), 1, "only bead-b has no open dependency");
-        assert_eq!(
-            rows[0].get("title").and_then(Value::as_str),
-            Some("second")
-        );
+        assert_eq!(rows[0].get("title").and_then(Value::as_str), Some("second"));
     }
 
     // ── AC3: expand (variable-length path) via executor ─────────────────────

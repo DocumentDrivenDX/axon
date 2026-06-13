@@ -103,8 +103,7 @@ fn index_defs() -> Vec<IndexDef> {
 /// 15-link DDx graph.  Only `StorageAdapter` trait methods are called —
 /// no raw SQL, no JSON path operators (ADR-010 compliant).
 fn ddx_sqlite_store() -> SqliteStorageAdapter {
-    let mut storage =
-        SqliteStorageAdapter::open_in_memory().expect("sqlite in-memory should open");
+    let mut storage = SqliteStorageAdapter::open_in_memory().expect("sqlite in-memory should open");
 
     let col = CollectionId::new("ddx_beads");
     let indexes = index_defs();

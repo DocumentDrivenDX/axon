@@ -133,8 +133,8 @@ where
             };
             let alias = plan.alias.clone();
             let predicate = plan.predicate.clone();
-            Box::new(store.scan_entities(scan).filter_map(move |entity_result| {
-                match entity_result {
+            Box::new(store.scan_entities(scan).filter_map(
+                move |entity_result| match entity_result {
                     Err(err) => Some(Err(err)),
                     Ok(entity) => {
                         let mut row = BindingRow::new();
@@ -145,8 +145,8 @@ where
                             Err(err) => Some(Err(err)),
                         }
                     }
-                }
-            }))
+                },
+            ))
         }
         PlanOperator::IndexLookup(plan) => index_lookup_stream(plan, store),
         PlanOperator::Expand(plan) => expand_stream(plan, store),
@@ -207,8 +207,9 @@ where
     let alias = plan.alias.clone();
     let predicate = index_predicate_expression(plan);
     let stream_alias = alias.clone();
-    let iter = store.scan_entities(scan).filter_map(move |entity_result| {
-        match entity_result {
+    let iter = store
+        .scan_entities(scan)
+        .filter_map(move |entity_result| match entity_result {
             Err(err) => Some(Err(err)),
             Ok(entity) => {
                 let mut row = BindingRow::new();
@@ -219,8 +220,7 @@ where
                     Err(err) => Some(Err(err)),
                 }
             }
-        }
-    });
+        });
 
     if plan.ordered_by.is_empty() {
         Box::new(iter)
@@ -1457,10 +1457,9 @@ mod tests {
     #[test]
     fn storage_traverse_error_propagates_through_expand() {
         let schema = test_fixtures::ddx_beads();
-        let query = parse(
-            "MATCH (b:DdxBead {id: 'bead-a'})-[:DEPENDS_ON]->(d:DdxBead) RETURN d.id AS id",
-        )
-        .expect("query should parse");
+        let query =
+            parse("MATCH (b:DdxBead {id: 'bead-a'})-[:DEPENDS_ON]->(d:DdxBead) RETURN d.id AS id")
+                .expect("query should parse");
         let plan = plan(&query, &schema).expect("query should plan");
 
         // The FailingStore returns one entity (via scan first pass... but since

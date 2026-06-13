@@ -2243,7 +2243,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // free: a `create` at step N makes the entity available as
         // `current_data` for subsequent `update`/`patch`/`delete`/`read`
         // steps that reference the same `(collection, entity_id)` pair.
-        self.explain_transaction_inner(req.operations, caller, attribution, operation_index, preview)
+        self.explain_transaction_inner(
+            req.operations,
+            caller,
+            attribution,
+            operation_index,
+            preview,
+        )
     }
 
     /// Explain a transaction (ordered list of operations) against the **active**
@@ -2409,9 +2415,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     .as_ref()
                     .zip(req.entity_id.as_ref())
                     .zip(req.data.as_ref())
-                    .map(|((col, eid), data)| {
-                        ((col.to_string(), eid.to_string()), data.clone())
-                    });
+                    .map(|((col, eid), data)| ((col.to_string(), eid.to_string()), data.clone()));
                 let result = self.explain_update_policy_with_shadow(
                     req,
                     caller,
@@ -17040,7 +17044,10 @@ ORDER BY b.priority DESC, b.updated_at DESC
         assert_eq!(resp.decision, "allow", "aggregate should be allow");
         assert_eq!(resp.operations.len(), 2, "two child explanations expected");
         assert_eq!(resp.operations[0].decision, "allow", "create step allowed");
-        assert_eq!(resp.operations[1].decision, "allow", "read step allowed via shadow");
+        assert_eq!(
+            resp.operations[1].decision, "allow",
+            "read step allowed via shadow"
+        );
     }
 
     /// Three-step transaction: create with status="open", update to keep
@@ -17136,7 +17143,10 @@ ORDER BY b.priority DESC, b.updated_at DESC
             .unwrap();
 
         assert_eq!(resp.operations[0].decision, "allow", "create allowed");
-        assert_eq!(resp.operations[1].decision, "deny", "read denied: status closed");
+        assert_eq!(
+            resp.operations[1].decision, "deny",
+            "read denied: status closed"
+        );
         // Aggregate rolls up to deny because at least one step is denied.
         assert_eq!(resp.decision, "deny", "aggregate deny");
         assert_eq!(resp.reason, "transaction_denied");
@@ -17226,8 +17236,14 @@ ORDER BY b.priority DESC, b.updated_at DESC
             resp.operations[1].decision, "needs_approval",
             "update to critical status requires approval"
         );
-        assert_eq!(resp.operations[2].decision, "allow", "post-update read allowed");
-        assert_eq!(resp.decision, "needs_approval", "aggregate is needs_approval");
+        assert_eq!(
+            resp.operations[2].decision, "allow",
+            "post-update read allowed"
+        );
+        assert_eq!(
+            resp.decision, "needs_approval",
+            "aggregate is needs_approval"
+        );
     }
 
     /// Delete step removes the entity from shadows so a subsequent read would
@@ -17280,21 +17296,19 @@ ORDER BY b.priority DESC, b.updated_at DESC
         })
         .unwrap();
 
-        let ops = vec![
-            ExplainPolicyRequest {
-                operation: "delete".into(),
-                collection: Some(col.clone()),
-                entity_id: Some(EntityId::new("g-1")),
-                expected_version: None,
-                data: None,
-                patch: None,
-                lifecycle_name: None,
-                target_state: None,
-                to_version: None,
-                operations: Vec::new(),
-                actor_override: None,
-            },
-        ];
+        let ops = vec![ExplainPolicyRequest {
+            operation: "delete".into(),
+            collection: Some(col.clone()),
+            entity_id: Some(EntityId::new("g-1")),
+            expected_version: None,
+            data: None,
+            patch: None,
+            lifecycle_name: None,
+            target_state: None,
+            to_version: None,
+            operations: Vec::new(),
+            actor_override: None,
+        }];
         let resp = h
             .explain_transaction_with_caller(ops, &admin_caller(), None)
             .unwrap();

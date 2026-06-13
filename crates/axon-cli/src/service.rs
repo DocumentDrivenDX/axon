@@ -467,7 +467,10 @@ mod tests {
             .replace("{binary_path}", "/usr/bin/axon")
             .replace("@NO_AUTH_FLAG@", "--no-auth ")
             .replace("@SQLITE_PATH@", "/var/lib/axon/axon.db")
-            .replace("@CONTROL_PLANE_PATH@", "/var/lib/axon/axon-control-plane.db");
+            .replace(
+                "@CONTROL_PLANE_PATH@",
+                "/var/lib/axon/axon-control-plane.db",
+            );
         assert!(
             unit.contains("serve --no-auth --tls-self-signed"),
             "explicit --no-auth opt-in must appear in generated unit",
@@ -480,7 +483,10 @@ mod tests {
             .replace("{binary_path}", "/usr/bin/axon")
             .replace("@NO_AUTH_FLAG@", "")
             .replace("@SQLITE_PATH@", "/var/lib/axon/axon.db")
-            .replace("@CONTROL_PLANE_PATH@", "/var/lib/axon/axon-control-plane.db");
+            .replace(
+                "@CONTROL_PLANE_PATH@",
+                "/var/lib/axon/axon-control-plane.db",
+            );
         assert!(
             !unit.contains("--no-auth"),
             "default install (no opt-in) must not contain --no-auth",
@@ -493,7 +499,10 @@ mod tests {
             .replace("{binary_path}", "/usr/local/bin/axon")
             .replace("@NO_AUTH_ARG@", "        <string>--no-auth</string>\n")
             .replace("@SQLITE_PATH@", "/var/lib/axon/axon.db")
-            .replace("@CONTROL_PLANE_PATH@", "/var/lib/axon/axon-control-plane.db");
+            .replace(
+                "@CONTROL_PLANE_PATH@",
+                "/var/lib/axon/axon-control-plane.db",
+            );
         assert!(
             plist.contains("<string>--no-auth</string>"),
             "explicit --no-auth opt-in must appear in generated plist",
@@ -506,7 +515,10 @@ mod tests {
             .replace("{binary_path}", "/usr/local/bin/axon")
             .replace("@NO_AUTH_ARG@", "")
             .replace("@SQLITE_PATH@", "/var/lib/axon/axon.db")
-            .replace("@CONTROL_PLANE_PATH@", "/var/lib/axon/axon-control-plane.db");
+            .replace(
+                "@CONTROL_PLANE_PATH@",
+                "/var/lib/axon/axon-control-plane.db",
+            );
         assert!(
             !plist.contains("--no-auth"),
             "default install (no opt-in) must not contain --no-auth in plist",

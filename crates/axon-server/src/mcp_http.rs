@@ -444,8 +444,7 @@ fn build_mcp_server<S: StorageAdapter + 'static>(
     tenant: Option<&str>,
 ) -> Result<McpServer, McpError> {
     let tools = build_tool_registry(Arc::clone(&handler), current_database, &[], caller)?;
-    let resources =
-        build_resource_registry(Arc::clone(&handler), current_database, &[], tenant)?;
+    let resources = build_resource_registry(Arc::clone(&handler), current_database, &[], tenant)?;
     let prompts = build_prompt_registry(handler, current_database);
     Ok(McpServer::new(tools, resources, prompts))
 }
@@ -458,8 +457,7 @@ fn refresh_mcp_server<S: StorageAdapter + 'static>(
     tenant: Option<&str>,
 ) -> Result<(), McpError> {
     let tools = build_tool_registry(Arc::clone(&handler), current_database, &[], caller)?;
-    let resources =
-        build_resource_registry(Arc::clone(&handler), current_database, &[], tenant)?;
+    let resources = build_resource_registry(Arc::clone(&handler), current_database, &[], tenant)?;
     let prompts = build_prompt_registry(handler, current_database);
     server.refresh_registries(tools, resources, prompts);
     Ok(())
@@ -822,20 +820,19 @@ async fn handle_mcp_sse<S: StorageAdapter + 'static>(
 ) -> Response {
     let session = resolve_session_from_request(&current_database, &headers, &query);
     let session_key = session.key.clone();
-    let receiver =
-        match tokio::task::spawn_blocking(move || {
-            sessions.connect(session_key, handler, caller, None)
-        })
-        .await
-        {
-            Ok(Ok(receiver)) => receiver,
-            Ok(Err(error)) => return json_rpc_error_response(error),
-            Err(error) => {
-                return json_rpc_error_response(McpError::Internal(format!(
-                    "failed to join MCP SSE worker: {error}"
-                )));
-            }
-        };
+    let receiver = match tokio::task::spawn_blocking(move || {
+        sessions.connect(session_key, handler, caller, None)
+    })
+    .await
+    {
+        Ok(Ok(receiver)) => receiver,
+        Ok(Err(error)) => return json_rpc_error_response(error),
+        Err(error) => {
+            return json_rpc_error_response(McpError::Internal(format!(
+                "failed to join MCP SSE worker: {error}"
+            )));
+        }
+    };
 
     let ready = tokio_stream::once(Ok(Event::default().event("ready").data("{}")));
     let updates = UnboundedReceiverStream::new(receiver)
