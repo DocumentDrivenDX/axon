@@ -1,0 +1,42 @@
+{
+  "attempt_id": "20260613T191911-71885963",
+  "bead_id": "axon-1b84154d",
+  "base_rev": "456a18e90fcaa9aab0b5dd475fe427931916cc04",
+  "created_at": "2026-06-13T19:19:14.388313599Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-1b84154d",
+    "title": "test: prove rollback repair and audit diff/blame flows",
+    "description": "Context: The PRD repair principle requires audit and change capture so rollback and repair are possible when preventive guardrails fail. FEAT-023 and CONTRACT-005/008 call for rollback dry-runs, commit flows, diff/log/blame-style views, conflict reporting, and audited recovery. Gap assessment found this not yet autonomously proven across surfaces.\n\nIn-scope files: audit/rollback tests and implementation in `crates/axon-api/`, `crates/axon-server/tests/`, and `crates/axon-cli/src/` only where needed for repair proof.\nOut-of-scope: CDC envelope implementation and UI polish.\nImplementation hint: build a failing business mutation fixture, inspect audit diff/blame, dry-run rollback, commit rollback through governed path, then assert audit lineage for both original and repair mutations.",
+    "acceptance": "1. `cargo test -p axon-api` passes.\n2. `cargo test -p axon-server` passes for rollback/audit contract tests touched by this bead.\n3. If CLI repair commands are touched, `cargo test -p axon-cli` passes.\n4. Tests cite relevant `@covers` IDs or the STP/test-plan rows updated by this bead remain honest about untested surfaces.",
+    "labels": [
+      "helix",
+      "plan:spec-gap-2026-06-12",
+      "area:audit",
+      "area:rollback",
+      "kind:task"
+    ],
+    "metadata": {
+      "spec-id": "TP-001"
+    }
+  },
+  "governing": [
+    {
+      "id": "TP-001",
+      "path": "docs/helix/03-test/test-plan.md",
+      "title": "Axon Test Plan"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260613T191911-71885963",
+    "prompt": ".ddx/executions/20260613T191911-71885963/prompt.md",
+    "manifest": ".ddx/executions/20260613T191911-71885963/manifest.json",
+    "result": ".ddx/executions/20260613T191911-71885963/result.json",
+    "checks": ".ddx/executions/20260613T191911-71885963/checks.json",
+    "usage": ".ddx/executions/20260613T191911-71885963/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-1b84154d-20260613T191911-71885963"
+  },
+  "prompt_sha": "c0a1a501d172bf9f8ad965b126a3621b62319d3a42448b7d45fe6503a69a2738"
+}
