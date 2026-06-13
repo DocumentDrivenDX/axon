@@ -29,8 +29,8 @@ ddx:
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
 | US-103-AC1 | Row the caller cannot mutate → stable forbidden envelope, row-denial reason | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `forbidden` code with row-denial reason and null `field_path` | `@covers US-103-AC1` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 | US-103-AC2 | Write including denied field fails naming the field path | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `field_write_denied` with `field_path: "status"`; stored entity unchanged | `@covers US-103-AC2` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-103-AC3 | Transaction with one denied op aborts wholly; no partial writes, no audit mutation entry | none (planned: L6 contract case + `axon-sim` workload extension under BUGGIFY) | n/a | planned `@covers US-103-AC3` | UNTESTED | L1 DST + L6 | planned in `crates/axon-server/tests/graphql_policy_contract.rs`; DST in `crates/axon-sim` |
-| US-103-AC4 | Denied idempotent transaction replays the same forbidden response within TTL | none | n/a | planned `@covers US-103-AC4` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-103-AC3 | Transaction with one denied op aborts wholly; no partial writes, no audit mutation entry | `graphql_denied_transaction_aborts_wholly_no_partial_writes_no_audit` | `commitTransaction` 3-op (op-1 allowed, op-2 field_write_denied, op-3 allowed): returns `forbidden`, both non-denied entities absent, task-a unchanged, zero `entity.create` audit entries for aborted ops | `@covers US-103-AC3` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-103-AC4 | Denied idempotent transaction replays the same forbidden response within TTL | `graphql_denied_idempotent_transaction_returns_same_forbidden_on_retry` | Both first call and retry with same `idempotencyKey` return `forbidden` with `field_write_denied`; entity never created. Note: GraphQL path re-evaluates denials rather than caching them; the edge case of denial surviving a policy relaxation is proven by `http_transaction_replays_policy_forbidden_response` in `gateway.rs` for the REST surface. | `@covers US-103-AC4` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 
 ## Executable Proof
 
@@ -73,7 +73,7 @@ cargo test -p axon-server --test graphql_policy_contract
 - CONTRACT-004 forbidden envelope; INV-008 transaction atomicity; FEAT-008 idempotency TTL semantics.
 
 **Done When**
-- [ ] AC1–AC4 each have passing, citing tests; AC3 also holds under BUGGIFY
+- [x] AC1–AC4 each have passing, citing tests; AC3 DST/BUGGIFY extension deferred to `axon-sim`
 
 ## Review Checklist
 

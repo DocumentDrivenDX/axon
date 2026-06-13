@@ -2687,3 +2687,347 @@ async fn graphql_required_field_with_read_deny_is_nullable_in_introspection_and_
         "allowed subject must see the full value of a required-but-redactable field: {admin_read}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_denied_transaction_aborts_wholly_no_partial_writes_no_audit() {
+    // @covers US-103-AC3
+    let server = test_server();
+    seed_policy_fixture(&server).await;
+
+    // 3-op transaction: op-1 (allowed create), op-2 (denied: finance-agent cannot
+    // write secret field), op-3 (allowed create).  The whole transaction must
+    // abort with no partial writes and no mutation audit entries.
+    let denied_tx = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            commitTransaction(input: {
+                operations: [
+                    { createEntity: {
+                        collection: "task"
+                        id: "tx-partial-1"
+                        data: {
+                            title: "Should not exist"
+                            requester_id: "requester"
+                            assigned_contractor_id: "contractor"
+                            budget_cents: 100
+                            status: "draft"
+                        }
+                    }}
+                    { updateEntity: {
+                        collection: "task"
+                        id: "task-a"
+                        expectedVersion: 1
+                        data: {
+                            title: "Updated"
+                            requester_id: "requester"
+                            assigned_contractor_id: "contractor"
+                            budget_cents: 5000
+                            secret: "new-secret"
+                            status: "draft"
+                        }
+                    }}
+                    { createEntity: {
+                        collection: "task"
+                        id: "tx-partial-2"
+                        data: {
+                            title: "Also should not exist"
+                            requester_id: "requester"
+                            assigned_contractor_id: "contractor"
+                            budget_cents: 200
+                            status: "draft"
+                        }
+                    }}
+                ]
+            }) { transactionId }
+        }"#,
+    )
+    .await;
+
+    assert_eq!(
+        denied_tx["errors"][0]["extensions"]["code"],
+        "forbidden",
+        "denied transaction must return forbidden: {denied_tx}"
+    );
+    assert_eq!(
+        denied_tx["errors"][0]["extensions"]["detail"]["reason"],
+        "field_write_denied",
+        "denial reason must be field_write_denied: {denied_tx}"
+    );
+
+    // Op-1 entity must not exist — no partial writes landed.
+    let absent_1 = gql_as(
+        &server,
+        "admin",
+        r#"{ entity(collection: "task", id: "tx-partial-1") { id } }"#,
+    )
+    .await;
+    assert!(
+        absent_1["errors"].is_null(),
+        "unexpected errors querying tx-partial-1: {absent_1}"
+    );
+    assert_eq!(
+        absent_1["data"]["entity"],
+        Value::Null,
+        "op-1 entity must not exist after aborted transaction: {absent_1}"
+    );
+
+    // Op-3 entity must not exist.
+    let absent_2 = gql_as(
+        &server,
+        "admin",
+        r#"{ entity(collection: "task", id: "tx-partial-2") { id } }"#,
+    )
+    .await;
+    assert_eq!(
+        absent_2["data"]["entity"],
+        Value::Null,
+        "op-3 entity must not exist after aborted transaction: {absent_2}"
+    );
+
+    // task-a must be unchanged (secret and title at their seeded values).
+    let task_a = gql_as(
+        &server,
+        "admin",
+        r#"{ entity(collection: "task", id: "task-a") { data } }"#,
+    )
+    .await;
+    assert_eq!(task_a["data"]["entity"]["data"]["secret"], "alpha");
+    assert_eq!(task_a["data"]["entity"]["data"]["title"], "Visible A");
+
+    // No entity.create audit entry must exist for either aborted entity.
+    let audit_1 = gql_as(
+        &server,
+        "admin",
+        r#"{ auditLog(collection: "task", entityId: "tx-partial-1", operation: "entity.create") { totalCount } }"#,
+    )
+    .await;
+    assert_eq!(
+        audit_1["data"]["auditLog"]["totalCount"],
+        0,
+        "no entity.create audit entry must exist for op-1: {audit_1}"
+    );
+
+    let audit_2 = gql_as(
+        &server,
+        "admin",
+        r#"{ auditLog(collection: "task", entityId: "tx-partial-2", operation: "entity.create") { totalCount } }"#,
+    )
+    .await;
+    assert_eq!(
+        audit_2["data"]["auditLog"]["totalCount"],
+        0,
+        "no entity.create audit entry must exist for op-3: {audit_2}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_denied_idempotent_transaction_returns_same_forbidden_on_retry() {
+    // @covers US-103-AC4
+    let server = test_server();
+    seed_policy_fixture(&server).await;
+
+    // finance-agent submits a transaction that includes a denied field write,
+    // with an idempotency key.  Both the first call and the retry with the
+    // same key must return forbidden, and the entity must never be created.
+    let first = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            commitTransaction(input: {
+                idempotencyKey: "denied-idem-tx-1"
+                operations: [
+                    { createEntity: {
+                        collection: "task"
+                        id: "denied-idem-entity"
+                        data: {
+                            title: "Should never exist"
+                            requester_id: "requester"
+                            assigned_contractor_id: "contractor"
+                            budget_cents: 100
+                            secret: "classified"
+                            status: "draft"
+                        }
+                    }}
+                ]
+            }) { transactionId }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        first["errors"][0]["extensions"]["code"],
+        "forbidden",
+        "first call must return forbidden: {first}"
+    );
+    assert_eq!(
+        first["errors"][0]["extensions"]["detail"]["reason"],
+        "field_write_denied",
+        "first denial reason must be field_write_denied: {first}"
+    );
+
+    let retry = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            commitTransaction(input: {
+                idempotencyKey: "denied-idem-tx-1"
+                operations: [
+                    { createEntity: {
+                        collection: "task"
+                        id: "denied-idem-entity"
+                        data: {
+                            title: "Should never exist"
+                            requester_id: "requester"
+                            assigned_contractor_id: "contractor"
+                            budget_cents: 100
+                            secret: "classified"
+                            status: "draft"
+                        }
+                    }}
+                ]
+            }) { transactionId }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        retry["errors"][0]["extensions"]["code"],
+        "forbidden",
+        "retry with same idempotency key must also return forbidden: {retry}"
+    );
+    assert_eq!(
+        retry["errors"][0]["extensions"]["detail"]["reason"],
+        "field_write_denied",
+        "retry denial reason must be field_write_denied: {retry}"
+    );
+
+    // The entity must never have been created by either call.
+    let check = gql_as(
+        &server,
+        "admin",
+        r#"{ entity(collection: "task", id: "denied-idem-entity") { id } }"#,
+    )
+    .await;
+    assert_eq!(
+        check["data"]["entity"],
+        Value::Null,
+        "entity must not exist after denied idempotent transaction: {check}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_execution_reevaluates_policy_regardless_of_stale_explain() {
+    // @covers US-104-AC4
+    let server = test_server();
+    seed_policy_fixture(&server).await;
+
+    // Step 1: explainPolicy returns "allow" for finance-agent updating task-a
+    // (no secret field in the payload, budget under threshold).
+    let explain_allow = explain_policy_as(
+        &server,
+        "finance-agent",
+        r#"{
+            operation: "update",
+            collection: "task",
+            entityId: "task-a",
+            data: {
+                title: "Updated title",
+                requester_id: "requester",
+                assigned_contractor_id: "contractor",
+                budget_cents: 5000,
+                status: "draft"
+            }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        explain_allow["decision"],
+        "allow",
+        "explainPolicy must allow finance-agent to update task-a before policy change: {explain_allow}"
+    );
+
+    // Step 2: Narrow the policy via putSchema so finance-agent may no longer
+    // update tasks.  This is the TOCTOU moment: the explain result is now stale.
+    let narrow = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            putSchema(input: {
+                collection: "task",
+                schema: {
+                    version: 2,
+                    entitySchema: {
+                        type: "object",
+                        properties: {
+                            title: { type: "string" },
+                            requester_id: { type: "string" },
+                            assigned_contractor_id: { type: "string" },
+                            budget_cents: { type: "integer" },
+                            secret: { type: "string" },
+                            status: { type: "string" }
+                        }
+                    },
+                    accessControl: {
+                        read: {
+                            allow: [
+                                { name: "admins-and-finance-read",
+                                  when: { subject: "user_id", in: ["admin", "finance-agent"] } },
+                                { name: "requesters-read-own",
+                                  where: { field: "requester_id", eq_subject: "user_id" } }
+                            ]
+                        },
+                        update: {
+                            allow: [{ name: "admins-only-update",
+                                      when: { subject: "user_id", eq: "admin" } }]
+                        }
+                    }
+                }
+            }) { dryRun schema }
+        }"#,
+    )
+    .await;
+    assert!(
+        narrow["errors"].is_null(),
+        "putSchema narrowing must succeed: {narrow}"
+    );
+    assert_eq!(narrow["data"]["putSchema"]["schema"]["version"], 2);
+
+    // Step 3: Execute the exact same update as finance-agent.  The prior
+    // "allow" explain is stale; execution must re-evaluate the current policy
+    // and deny.
+    let denied = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            updateTask(
+                id: "task-a",
+                version: 1,
+                input: {
+                    title: "Updated title"
+                    requester_id: "requester"
+                    assigned_contractor_id: "contractor"
+                    budget_cents: 5000
+                    status: "draft"
+                }
+            ) { id version }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        denied["errors"][0]["extensions"]["code"],
+        "forbidden",
+        "execution must re-evaluate and deny despite stale allow explain: {denied}"
+    );
+
+    // task-a must remain at version 1 — execution did not mutate.
+    let task_a = gql_as(
+        &server,
+        "admin",
+        r#"{ entity(collection: "task", id: "task-a") { data } }"#,
+    )
+    .await;
+    assert_eq!(
+        task_a["data"]["entity"]["data"]["title"],
+        "Visible A",
+        "task-a must be unchanged after denied execution: {task_a}"
+    );
+}

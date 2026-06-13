@@ -30,7 +30,7 @@ ddx:
 | US-104-AC1 | Effective collection policy returns allowed ops, redacted/denied fields, policy version | `graphql_effective_policy_reports_subject_capabilities` | Capabilities + `redactedFields` + version returned per subject/collection | `@covers US-104-AC1` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 | US-104-AC2 | Dry-run explanation returns decision, reason, matching policy, field paths; no execution | `graphql_explain_policy_reports_rules_denials_and_approval_envelopes` | Explain reports rules/denials/approval envelopes without mutating | `@covers US-104-AC2` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 | US-104-AC3 | Same tuple via MCP/SDK/CLI/operator preserves GraphQL decision metadata | `graphql_mcp_policy_parity_matrix_matches_expected_decisions`; `mcp_tools_list_exposes_policy_metadata_matching_graphql_effective_policy` | MCP policy metadata equals GraphQL effective policy for the same subject | `@covers US-104-AC3` in test bodies | COVERED | L6 parity | `crates/axon-server/tests/mcp_contract.rs` — SDK/CLI legs still absent |
-| US-104-AC4 | Execution re-evaluates enforcement regardless of stale advisory answer | none (planned: narrow policy after explain returns allow, assert execution denies) | n/a | planned `@covers US-104-AC4` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-104-AC4 | Execution re-evaluates enforcement regardless of stale advisory answer | `graphql_execution_reevaluates_policy_regardless_of_stale_explain` | `explainPolicy` returns `allow` for finance-agent; `putSchema` narrows policy to deny that subject; subsequent `updateTask` returns `forbidden` with no mutation to the entity | `@covers US-104-AC4` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 
 ## Executable Proof
 
@@ -72,7 +72,7 @@ cargo test -p axon-server --test mcp_contract
 - CONTRACT-004 explanation vocabulary; parity is decision-for-decision, not text-for-text.
 
 **Done When**
-- [ ] AC1–AC4 passing with citations; SDK/CLI parity gap explicitly tracked
+- [x] AC1–AC4 passing with citations; SDK/CLI parity gap explicitly tracked
 
 ## Review Checklist
 
