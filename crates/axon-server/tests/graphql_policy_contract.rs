@@ -471,6 +471,11 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_policy_read_semantics_are_safe() {
+    // @covers US-101-AC1
+    // @covers US-101-AC2
+    // @covers US-101-AC3
+    // @covers US-101-AC4
+    // @covers US-102-AC2
     let server = test_server();
     seed_policy_fixture(&server).await;
 
@@ -588,6 +593,7 @@ async fn graphql_policy_read_semantics_are_safe() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_nexiq_reference_policy_set_applies_visibility_and_redaction() {
+    // @covers US-102-AC2
     let (server, handler) = test_server_with_handler();
     let fixture = seed_nexiq_fixture(&handler).await;
 
@@ -763,6 +769,8 @@ async fn graphql_nexiq_reference_policy_set_applies_visibility_and_redaction() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_nexiq_reference_policy_set_returns_stable_write_denials() {
+    // @covers US-103-AC1
+    // @covers US-103-AC2
     let (server, handler) = test_server_with_handler();
     let fixture = seed_nexiq_fixture(&handler).await;
 
@@ -859,6 +867,7 @@ async fn graphql_nexiq_reference_policy_set_returns_stable_write_denials() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_effective_policy_reports_subject_capabilities() {
+    // @covers US-104-AC1
     let server = test_server();
     seed_policy_fixture(&server).await;
 
@@ -926,6 +935,7 @@ async fn graphql_effective_policy_reports_subject_capabilities() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
+    // @covers US-104-AC2
     let server = test_server();
     seed_policy_fixture(&server).await;
 
@@ -1079,6 +1089,8 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_preview_mutation_records_policy_diff_and_never_writes_entity_state() {
+    // @covers US-105-AC1
+    // @covers US-105-AC3
     let server = test_server();
     seed_policy_fixture(&server).await;
 
@@ -1240,6 +1252,7 @@ async fn graphql_preview_mutation_records_policy_diff_and_never_writes_entity_st
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_preview_mutation_binds_versions_for_all_operation_shapes() {
+    // @covers US-105-AC5
     let server = test_server();
     seed_policy_fixture(&server).await;
 
@@ -1885,6 +1898,9 @@ async fn graphql_approval_inbox_lists_reviews_and_scopes_mutation_intents() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_put_schema_exposes_policy_compile_reports_and_errors() {
+    // @covers US-109-AC1
+    // @covers US-109-AC3
+    // @covers US-109-AC6
     let server = test_server();
 
     server
@@ -2229,6 +2245,7 @@ async fn graphql_put_schema_exposes_policy_compile_reports_and_errors() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_put_schema_blocks_activation_on_policy_compile_errors() {
+    // @covers US-109-AC2
     use axum::http::StatusCode;
     use serde_json::json;
 

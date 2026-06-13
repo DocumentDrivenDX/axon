@@ -27,8 +27,8 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-103-AC1 | Row the caller cannot mutate → stable forbidden envelope, row-denial reason | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `forbidden` code with row-denial reason and null `field_path` | missing — add `@covers US-103-AC1` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-103-AC2 | Write including denied field fails naming the field path | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `field_write_denied` with `field_path: "status"`; stored entity unchanged | missing — add `@covers US-103-AC2` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-103-AC1 | Row the caller cannot mutate → stable forbidden envelope, row-denial reason | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `forbidden` code with row-denial reason and null `field_path` | `@covers US-103-AC1` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-103-AC2 | Write including denied field fails naming the field path | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `field_write_denied` with `field_path: "status"`; stored entity unchanged | `@covers US-103-AC2` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 | US-103-AC3 | Transaction with one denied op aborts wholly; no partial writes, no audit mutation entry | none (planned: L6 contract case + `axon-sim` workload extension under BUGGIFY) | n/a | planned `@covers US-103-AC3` | UNTESTED | L1 DST + L6 | planned in `crates/axon-server/tests/graphql_policy_contract.rs`; DST in `crates/axon-sim` |
 | US-103-AC4 | Denied idempotent transaction replays the same forbidden response within TTL | none | n/a | planned `@covers US-103-AC4` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_policy_contract.rs` |
 

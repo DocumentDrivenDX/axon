@@ -257,6 +257,7 @@ async fn audit_by_intent(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
+    // @covers US-108-AC2
     let server = test_server();
     seed_intent_collection(&server).await;
 
@@ -484,6 +485,8 @@ async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn generated_mcp_tools_report_stale_commit_conflict() {
+    // @covers US-107-AC1
+    // @covers US-108-AC5
     let server = test_server();
     seed_intent_collection(&server).await;
 
@@ -539,6 +542,8 @@ async fn generated_mcp_tools_report_stale_commit_conflict() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn axon_query_intent_mutations_match_graphql_review_flow() {
+    // @covers US-105-AC6
+    // @covers US-108-AC4
     let server = test_server();
     seed_intent_collection(&server).await;
 
@@ -749,6 +754,8 @@ async fn axon_query_intent_mutations_match_graphql_review_flow() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn axon_query_intent_commit_conflict_matches_graphql_error_extensions() {
+    // @covers US-107-AC1
+    // @covers US-108-AC5
     let graph_server = test_server();
     seed_intent_collection(&graph_server).await;
     let mcp_server = test_server();

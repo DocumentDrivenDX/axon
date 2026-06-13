@@ -304,6 +304,8 @@ fn assert_error_code(body: &Value, expected: &str) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn under_threshold_allow_commit_and_replay_rejects() {
+    // @covers US-106-AC1
+    // @covers US-107-AC5
     let server = test_server();
     seed_intent_fixture(&server).await;
 
@@ -327,6 +329,10 @@ async fn under_threshold_allow_commit_and_replay_rejects() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn over_threshold_intent_can_be_approved_and_committed() {
+    // @covers US-106-AC1
+    // @covers US-106-AC2
+    // @covers US-106-AC4
+    // @covers US-106-AC5
     let server = test_server();
     seed_intent_fixture(&server).await;
 
@@ -511,6 +517,7 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pending_intent_queries_return_pending_reviews() {
+    // @covers US-106-AC2
     let server = test_server();
     seed_intent_fixture(&server).await;
 
@@ -577,6 +584,7 @@ async fn pending_intent_queries_return_pending_reviews() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn approval_requires_current_approver_role() {
+    // @covers US-106-AC4
     let server = test_server();
     seed_intent_fixture(&server).await;
 
@@ -665,6 +673,7 @@ async fn separation_of_duties_blocks_self_approval() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rejected_intent_cannot_commit() {
+    // @covers US-106-AC4
     let server = test_server();
     seed_intent_fixture(&server).await;
 
@@ -709,6 +718,7 @@ async fn rejected_intent_cannot_commit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn expired_intent_cannot_commit() {
+    // @covers US-107-AC5
     let server = test_server();
     seed_intent_fixture(&server).await;
 
@@ -727,6 +737,7 @@ async fn expired_intent_cannot_commit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pending_query_materializes_and_audits_expired_intent_lineage() {
+    // @covers US-107-AC5
     let server = test_server();
     seed_intent_fixture(&server).await;
 
@@ -787,6 +798,7 @@ async fn pending_query_materializes_and_audits_expired_intent_lineage() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn denied_preview_has_no_executable_token() {
+    // @covers US-105-AC2
     let server = test_server();
     seed_intent_fixture(&server).await;
 

@@ -29,10 +29,10 @@ No test currently cites an AC ID; statuses are honest as of 2026-06-10.
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-101-AC1 | Hidden entity point read ≡ missing entity, never forbidden | `graphql_policy_read_semantics_are_safe` | Point read of policy-hidden row returns the missing-entity shape with no policy error | missing — add `@covers US-101-AC1` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-101-AC2 | Lists/connections omit hidden rows without error | `graphql_policy_read_semantics_are_safe` | List returns only visible rows, `errors` is null | missing — add `@covers US-101-AC2` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-101-AC3 | Pagination windows and totals computed after policy filtering | `graphql_policy_read_semantics_are_safe` | `totalCount == 2` (visible only), `pageInfo` paged over filtered set | missing — add `@covers US-101-AC3` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-101-AC4 | Hidden traversal/relationship targets not materialized | `graphql_policy_read_semantics_are_safe` | Relationship resolution omits hidden link target | missing — add `@covers US-101-AC4` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-101-AC1 | Hidden entity point read ≡ missing entity, never forbidden | `graphql_policy_read_semantics_are_safe` | Point read of policy-hidden row returns the missing-entity shape with no policy error | `@covers US-101-AC1` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-101-AC2 | Lists/connections omit hidden rows without error | `graphql_policy_read_semantics_are_safe` | List returns only visible rows, `errors` is null | `@covers US-101-AC2` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-101-AC3 | Pagination windows and totals computed after policy filtering | `graphql_policy_read_semantics_are_safe` | `totalCount == 2` (visible only), `pageInfo` paged over filtered set | `@covers US-101-AC3` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-101-AC4 | Hidden traversal/relationship targets not materialized | `graphql_policy_read_semantics_are_safe` | Relationship resolution omits hidden link target | `@covers US-101-AC4` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 
 ## Executable Proof
 

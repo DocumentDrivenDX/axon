@@ -546,6 +546,7 @@ async fn mcp_tools_list_includes_crud_after_collection_created() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_tools_list_exposes_policy_metadata_matching_graphql_effective_policy() {
+    // @covers US-104-AC3
     let server = test_server();
     seed_policy_collection(&server).await;
     server
@@ -699,6 +700,7 @@ async fn mcp_tools_list_exposes_policy_metadata_matching_graphql_effective_polic
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_tool_descriptions_summarize_autonomous_and_approval_envelopes() {
+    // @covers US-108-AC1
     let server = test_server();
     server
         .post("/tenants/default/databases/default/collections/policy_invoice")
@@ -1019,6 +1021,8 @@ async fn mcp_tools_list_refreshes_policy_metadata_after_schema_update() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_mcp_policy_parity_matrix_matches_expected_decisions() {
+    // @covers US-104-AC3
+    // @covers US-108-AC3
     let server = test_server();
     seed_policy_collection(&server).await;
     server
