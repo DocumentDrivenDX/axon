@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: a49d41a2ce0d5214277cc1ecfe9942b9b8ba2979055c8a47687bed4268b40773
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # US-119: Inspect MCP-Originated Policy And Intent Outcomes

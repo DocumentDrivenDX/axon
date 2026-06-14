@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: f5ef9c92e022907c992bc43fcba94818f678c3a622243b4231b0f22a6891af61
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # US-089: First-Class User with Tailscale Auto-Provisioning

@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 43bb11bcdf0931947f1a936c574e8ad78118b786f283baf8693fef29e1ad3b3b
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # US-047: Attribute-Based Write Control

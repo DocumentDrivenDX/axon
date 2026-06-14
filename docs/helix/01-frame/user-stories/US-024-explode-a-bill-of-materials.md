@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: d3fd60732ae266c7f896a7ccf6ccdca7c9791f18c7c7d2972a5f111f80b32940
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # US-024: Explode a Bill of Materials

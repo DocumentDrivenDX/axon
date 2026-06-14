@@ -6,8 +6,8 @@ ddx:
   review:
     self_hash: 5ff1ca8b03318957e25d5a3752ebf8999a45378a7b83aa6c2978739263ac3603
     deps:
-      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
-    reviewed_at: "2026-06-14T03:52:45Z"
+      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # Feature Specification: FEAT-025 — BYOC Deployment Control Plane
 

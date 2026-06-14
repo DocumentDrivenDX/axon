@@ -14,8 +14,8 @@ ddx:
       ADR-011: 128732e07720a3aee6e4d88295cae04893d5c661d8744246532cccb1e667ea58
       ADR-012: cea81e56e4101b53f6b9a2e98c796278756bc657b895398ae226b6bc4f1f0188
       ADR-017: f728a498d6498055fa260edf63ca07dee16c4101800198e8b5b59427fe29c045
-      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
-    reviewed_at: "2026-06-14T03:52:45Z"
+      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # ADR-018: Tenant as Global Account Boundary, M:N Users, JWT Credentials, and Path-Based Wire Protocol
 

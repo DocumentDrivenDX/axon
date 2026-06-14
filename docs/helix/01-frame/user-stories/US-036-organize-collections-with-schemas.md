@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 2d4484d4771ef0149f241add7337cb36ac096695c16a7282e67a770637ce95b9
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # US-036: Organize Collections with Schemas
 

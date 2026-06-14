@@ -6,8 +6,8 @@ ddx:
   review:
     self_hash: 8751e34ac2140fb80077b881290769d82b1d39e7cb1fbaa60404bc82eae1b07b
     deps:
-      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
-    reviewed_at: "2026-06-14T03:52:45Z"
+      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # Feature Specification: FEAT-026 — Markdown Template Rendering
 

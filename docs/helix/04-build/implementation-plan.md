@@ -5,17 +5,17 @@ ddx:
     - helix.prd
     - TP-001
   review:
-    self_hash: dd7ecc71fc54b04e83916f7b1d93e384305c5d00210808c21efc7ebdf8671241
+    self_hash: c00ab6585798f23953b7f0a7a496bdd4e6d4c8668cdb0557c40dc2ac40b55c03
     deps:
       TP-001: b2fd65f5c9fee74cac32a456a2eb53e5f492374e51469bbfdfce158ade121821
-      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
-    reviewed_at: "2026-06-14T03:52:45Z"
+      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # Build Plan: Axon
 
-**Version**: 0.3.0
+**Version**: 0.7.1
 **Date**: 2026-04-10
-**Revised**: 2026-06-10
+**Revised**: 2026-06-14
 **Status**: Living document
 
 This is the build sequencing and execution-readiness artifact. It is the one
@@ -27,9 +27,10 @@ artifact in the stack where implementation status belongs; feature-spec
 ## Scope
 
 **Governing Artifacts**:
-- PRD v0.4.0 — `docs/helix/01-frame/prd.md`
+- PRD v0.7.1 release target — `docs/helix/01-frame/prd.md`
 - Feature specifications FEAT-001..031 (all rewritten to helix 0.6.1 on
-  2026-06-10) — `docs/helix/01-frame/features/`
+  2026-06-10 and release-aligned to the 0.7.1 planning target on 2026-06-14)
+  — `docs/helix/01-frame/features/`
 - Interface contracts CONTRACT-001..010 —
   `docs/helix/02-design/contracts/`
 - Architecture record: ADR-001..024 — `docs/helix/02-design/adr/`
@@ -109,7 +110,7 @@ the two design-first P1 expansions, then coverage closeout.
 | B-102 | FEAT-021 Kafka CDC transport (envelope + JSONL/in-memory sinks exist; Kafka producer, delivery semantics, config) | FEAT-021, CONTRACT-006, ADR-014 | B-101 (config surface frozen by CONTRACT-008 amendment) | Integration test publishes CDC envelopes to a Kafka testcontainer and replays them; `cargo test -p axon-audit` passes | Completes the last unimplemented FEAT-021 transport |
 | B-103 | FEAT-022 remaining guardrail scope (semantic validation hooks; rate limiting + actor scope already shipped) | FEAT-022, ADR-016, ADR-024 | B-101 | Guardrail hook tests in `crates/axon-server` exercise hook rejection paths; `cargo test -p axon-server` passes | Completes the P0 safety-guardrail vision scope |
 | B-104 | Serializable isolation (P1): read-set tracking to detect write skew; effective-isolation inspectability | FEAT-008 (TXN-05, Constraints), ADR-004 | B-101 | axon-sim `CycleWorkload` extended with a write-skew workload that fails under SI and passes under serializable; `cargo test -p axon-sim` | Upgrades the corrected SI baseline; do not relabel docs until this lands |
-| B-105 | Local-first sync (FR-32, newly promoted P1) — **design first**: ADR + solution design before any build issue | PRD v0.4.0 FR-32 | None for design; build blocked on accepted ADR | ADR merged in `docs/helix/02-design/adr/`; design review recorded | No build scope may be invented before the ADR exists |
+| B-105 | Local-first sync (FR-32, newly promoted P1) — **design first**: ADR + solution design before any build issue | PRD v0.7.1 FR-32 | None for design; build blocked on accepted ADR | ADR merged in `docs/helix/02-design/adr/`; design review recorded | No build scope may be invented before the ADR exists |
 | B-106 | BYOC (FR-27 P1) remaining scope beyond shipped control plane (tenant/user/credential/database/member mgmt is live) | PRD FR-27, ADR-017, FEAT-025 | B-101 | Control-plane monitoring + remaining FEAT-025 acceptance criteria pass in `crates/axon-control-plane`/`axon-server` tests | Scope = FEAT-025 "monitoring not implemented" remainder plus BYOC packaging |
 | B-107 | Story-test-plan / coverage closeout: PROP-002..005 property tests, L6 contract-suite completion, story-test-plans for remaining non-guardrail features per test-plan §AC allocation | test-plan.md, feature-story-e2e-traceability.md, STP set | B-101..B-104 (tests target final surfaces) | `cargo test` workspace green; traceability doc shows no unallocated ACs | Last: validates the completed surfaces, not the interim ones |
 

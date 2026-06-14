@@ -28,8 +28,8 @@ ddx:
       ADR-019: 3d6482363128cb8e6bc2cb86023a0a66c6a1c3027fab72ad99938d8136bb9732
       ADR-020: ed351273fc7b4c46f5114aa6f0e1e942ae3fcd2e7ca74ad989b23ea730d23790
       ADR-021: 7672758c3841fb3871bc2b8f90aeb7c63d5453c42dae5bedf5cf27d6394dda78
-      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
-    reviewed_at: "2026-06-14T03:52:45Z"
+      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # Architecture

@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: ca317b29072be09db1c8ad4abfbd974afa5a873f5ef24c9f02ec39f3e3dba4af
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # US-019: Query Across Entity-Link Graph

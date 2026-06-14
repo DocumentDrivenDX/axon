@@ -9,7 +9,7 @@ ddx:
     deps:
       ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
       ADR-010: 80dcbb947056ff9555019c8cbc3c3a6e9dbe67cdaa668402b15d7bbc5d905930
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # ADR-011: Multi-Tenancy, Namespace Hierarchy, and Node Topology
 

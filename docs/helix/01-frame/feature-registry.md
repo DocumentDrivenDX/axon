@@ -4,10 +4,10 @@ ddx:
   depends_on:
     - helix.prd
   review:
-    self_hash: 3b6e84c6fb059072a1fc5b1c9a8f12e9c83039967b1d6239b1efb547a7126474
+    self_hash: e274f95d36a550a5e82c16900412a48e567aed8937e50c3dbe29c59ebfdb531f
     deps:
-      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
-    reviewed_at: "2026-06-14T03:52:45Z"
+      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # Feature Registry
@@ -15,11 +15,19 @@ ddx:
 **Project**: Axon
 **Status**: Active
 **Registry Owner**: erik
-**Last Updated**: 2026-06-10
+**Last Updated**: 2026-06-14
 
 Compact source of truth for feature IDs, names, status, priority, owner,
 dependencies, and trace links. Full behavior lives in the feature specs under
 [`features/`](features/); requirements live in the [PRD](prd.md).
+
+## Release Alignment
+
+This registry is aligned to PRD release target **0.7.1** as of 2026-06-14. The
+feature set remains FEAT-001 through FEAT-031; no feature IDs were added,
+removed, or renumbered for this release-alignment pass. Repository release
+evidence still shows local and `origin` tags ending at `v0.2.8`, so this
+registry records the HELIX planning target rather than a published binary tag.
 
 ## Active Features
 

@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 427f05a898510e9e3cec69633eb48c4584bd9ffb21767644cbecf627086e8933
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # Story Test Plan: STP-073-discover-links-via-mcp

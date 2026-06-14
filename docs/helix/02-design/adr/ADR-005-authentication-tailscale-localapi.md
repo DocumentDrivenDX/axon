@@ -10,8 +10,8 @@ ddx:
     deps:
       ADR-001: 926aafe1f5bdedd6dd2a49f3343bfaaae3c100fd01333a424c22401596b21041
       FEAT-005: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
-      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
-    reviewed_at: "2026-06-14T03:52:45Z"
+      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # ADR-005: Authentication via Tailscale LocalAPI
 

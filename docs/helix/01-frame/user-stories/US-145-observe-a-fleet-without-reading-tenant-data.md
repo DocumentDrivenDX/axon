@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 835d27de5c0f2ceca1de5aaf42d7d45d87828dad8cfc5222d77b261d719082d1
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # US-145: Observe a Fleet Without Reading Tenant Data

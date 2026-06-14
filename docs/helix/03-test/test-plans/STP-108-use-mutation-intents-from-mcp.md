@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 9fa6304fb065a3a7bf70cb349bad7f1433910c576495a8b815f1620c0cf3910b
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # Story Test Plan: STP-108-use-mutation-intents-from-mcp

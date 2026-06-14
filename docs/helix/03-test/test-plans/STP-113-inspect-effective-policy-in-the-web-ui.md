@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 31fb2eb41996ee7d6c7af244866d1df56d1ffcc072c67b50d2f249cab4c0a4dc
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # Story Test Plan: STP-113-inspect-effective-policy-in-the-web-ui

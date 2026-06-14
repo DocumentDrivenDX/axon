@@ -13,7 +13,7 @@ ddx:
       ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
       ADR-019: 3d6482363128cb8e6bc2cb86023a0a66c6a1c3027fab72ad99938d8136bb9732
       FEAT-022: 63ecd2aff32e4cc0aa516c6cc8632ffb5ed3a004a6b633edf60dfc0b038f0fc6
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # ADR-024: Rate Limiting Semantics — Per-Actor Sliding Window
 

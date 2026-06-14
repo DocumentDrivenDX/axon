@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: dc09017f7cb3d0ba47be3489da713e9e4f1046bd3c73f8136ef5d2d43df8f6b1
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # Story Test Plan: STP-106-route-risky-writes-for-approval

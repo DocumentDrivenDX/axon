@@ -4,23 +4,34 @@ ddx:
   depends_on:
     - helix.product-vision
   review:
-    self_hash: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    self_hash: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
     deps:
       helix.product-vision: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 kind: product
 ---
 
 # Product Requirements Document: Axon
 
-**Version**: 0.4.0
+**Version**: 0.7.1
 **Date**: 2026-04-04
-**Revised**: 2026-06-10
-**Status**: Draft
+**Revised**: 2026-06-14
+**Status**: Release-aligned draft
 **Author**: Erik LaBianca
 
 > **Variant guidance.** This is a product PRD. Data-product variant sections
 > from the shared HELIX PRD template do not apply.
+
+## Release Alignment
+
+This PRD is aligned to the operator-requested Axon **0.7.1** release target as
+of 2026-06-14. The release target is a documentation and planning authority:
+the repository evidence available during alignment showed local and
+`origin` Git tags ending at `v0.2.8`, and `Cargo.toml` still declaring workspace
+version `0.2.8`. Therefore, this PRD does not by itself prove that a `v0.7.1`
+GitHub release, package version, or binary artifact has been published. Any
+release/tag/package promotion must be handled by release workflow work outside
+this PRD.
 
 ## Summary
 

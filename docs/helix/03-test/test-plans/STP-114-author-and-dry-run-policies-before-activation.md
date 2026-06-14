@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: aa1da87feee7be2479d60f64dc71f5b9bb484e17515fca87e3398dd85453a88d
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # Story Test Plan: STP-114-author-and-dry-run-policies-before-activation

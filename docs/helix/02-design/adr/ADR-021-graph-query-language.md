@@ -28,8 +28,8 @@ ddx:
       FEAT-015: c75ebd606ba19b7ac509eefcd0bb47c229433b5a14b1110fcae70d6c3898bd6f
       FEAT-016: 9a2522adbeae59163b67207dc28717d0abc0f7ff65bdb155bd6b23d490d1ba5e
       FEAT-029: f548dd83b06d298a7e8c575870ae1a06e5e9c53e94d6ccb64b2b876daf7b3b0c
-      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
-    reviewed_at: "2026-06-14T03:52:45Z"
+      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # ADR-021: Graph Query Language — openCypher Subset
 

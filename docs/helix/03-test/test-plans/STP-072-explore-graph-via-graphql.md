@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 9fefe0a8bac78aff398f91f6df15432607cb7d2c5d0d08364c4a17e9da9a7994
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # Story Test Plan: STP-072-explore-graph-via-graphql

@@ -15,7 +15,7 @@ ddx:
       ADR-008: 9c129ed10278306924eac7b4b3915894f3584f4cfe22243bbf486afdac2fccfc
       FEAT-002: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
       FEAT-019: ddf48d3192c435e1b9a40b2dc77ec60f363bfd91230e99fab336ebf4232785c4
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # Contract

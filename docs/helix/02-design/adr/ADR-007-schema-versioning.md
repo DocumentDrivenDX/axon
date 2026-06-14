@@ -9,7 +9,7 @@ ddx:
     deps:
       ADR-002: 914b8c8b1a9829504c826ae36b8d8b48a6118b0268c6c8c562fc446ee01b9a77
       FEAT-002: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 # ADR-007: Schema Versioning and Link Type Validation
 

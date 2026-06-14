@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 9df93980dca1aee893828b4749732f359c1bffec2729ef9845dca81caaec18e6
     deps: {}
-    reviewed_at: "2026-06-14T03:52:45Z"
+    reviewed_at: "2026-06-14T04:25:45Z"
 ---
 
 # US-040: Navigate the Tenant and Database Model
