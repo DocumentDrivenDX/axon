@@ -562,8 +562,7 @@ mod tests {
         issue.assert_status(StatusCode::CREATED);
         let body: Value = issue.json();
         assert_eq!(body["scope"], "metrics_read");
-        let ttl = body["expires_at_ms"].as_u64().unwrap()
-            - body["issued_at_ms"].as_u64().unwrap();
+        let ttl = body["expires_at_ms"].as_u64().unwrap() - body["issued_at_ms"].as_u64().unwrap();
         assert_eq!(ttl, 7_200_000);
     }
 
@@ -599,14 +598,9 @@ mod tests {
     async fn expired_credential_rejected_with_401() {
         let store: Arc<dyn ControlPlaneStore> = Arc::new(InMemoryControlPlaneStore::new());
         // Issue at t=0, verify at t=2 (past ttl=1ms expiry).
-        let svc_past = ControlPlaneService::with_clock(
-            Arc::clone(&store),
-            Arc::new(FixedClock(0)),
-        );
-        let svc_present = ControlPlaneService::with_clock(
-            Arc::clone(&store),
-            Arc::new(FixedClock(2)),
-        );
+        let svc_past = ControlPlaneService::with_clock(Arc::clone(&store), Arc::new(FixedClock(0)));
+        let svc_present =
+            ControlPlaneService::with_clock(Arc::clone(&store), Arc::new(FixedClock(2)));
 
         let tenant = svc_past
             .provision_tenant(crate::model::TenantSpec {
@@ -619,11 +613,7 @@ mod tests {
             .unwrap();
 
         let cred = svc_past
-            .issue_observation_credential(
-                &tenant.id,
-                crate::model::ObservationScope::HealthOnly,
-                1,
-            )
+            .issue_observation_credential(&tenant.id, crate::model::ObservationScope::HealthOnly, 1)
             .unwrap();
         assert_eq!(cred.expires_at_ms, 1, "sanity: expires at ms 1");
 
@@ -662,9 +652,7 @@ mod tests {
 
         // Delete it.
         let del = server
-            .delete(&format!(
-                "/tenants/{id}/observation-credentials/{cred_id}"
-            ))
+            .delete(&format!("/tenants/{id}/observation-credentials/{cred_id}"))
             .await;
         del.assert_status(StatusCode::NO_CONTENT);
 

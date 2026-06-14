@@ -1167,7 +1167,10 @@ async fn feat_029_dry_run_explain_matches_activated_policy_graphql_only() {
         }"#,
     )
     .await;
-    assert!(activate["errors"].is_null(), "activation must succeed: {activate}");
+    assert!(
+        activate["errors"].is_null(),
+        "activation must succeed: {activate}"
+    );
     assert_eq!(activate["data"]["putSchema"]["dryRun"], false);
     assert_eq!(activate["data"]["putSchema"]["schema"]["version"], 2);
 

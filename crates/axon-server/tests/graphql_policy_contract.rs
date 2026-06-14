@@ -2500,8 +2500,7 @@ async fn graphql_abac_mirror_subject_symmetry_applies_write_grants_symmetrically
     )
     .await;
     assert_eq!(
-        alpha_deny["errors"][0]["extensions"]["code"],
-        "forbidden",
+        alpha_deny["errors"][0]["extensions"]["code"], "forbidden",
         "writer-alpha should be denied in mirror_b: {alpha_deny}"
     );
 
@@ -2526,8 +2525,7 @@ async fn graphql_abac_mirror_subject_symmetry_applies_write_grants_symmetrically
     )
     .await;
     assert_eq!(
-        beta_deny["errors"][0]["extensions"]["code"],
-        "forbidden",
+        beta_deny["errors"][0]["extensions"]["code"], "forbidden",
         "writer-beta should be denied in mirror_a: {beta_deny}"
     );
 
@@ -2665,8 +2663,7 @@ async fn graphql_required_field_with_read_deny_is_nullable_in_introspection_and_
         "required field with read-deny must be null for masked subject: {restricted_read}"
     );
     assert_eq!(
-        restricted_read["data"]["entity"]["data"]["title"],
-        "Test item",
+        restricted_read["data"]["entity"]["data"]["title"], "Test item",
         "non-denied required field must be visible: {restricted_read}"
     );
 
@@ -2682,8 +2679,7 @@ async fn graphql_required_field_with_read_deny_is_nullable_in_introspection_and_
         "unexpected admin read errors: {admin_read}"
     );
     assert_eq!(
-        admin_read["data"]["entity"]["data"]["secret_code"],
-        "XYZZY",
+        admin_read["data"]["entity"]["data"]["secret_code"], "XYZZY",
         "allowed subject must see the full value of a required-but-redactable field: {admin_read}"
     );
 }
@@ -2745,13 +2741,11 @@ async fn graphql_denied_transaction_aborts_wholly_no_partial_writes_no_audit() {
     .await;
 
     assert_eq!(
-        denied_tx["errors"][0]["extensions"]["code"],
-        "forbidden",
+        denied_tx["errors"][0]["extensions"]["code"], "forbidden",
         "denied transaction must return forbidden: {denied_tx}"
     );
     assert_eq!(
-        denied_tx["errors"][0]["extensions"]["detail"]["reason"],
-        "field_write_denied",
+        denied_tx["errors"][0]["extensions"]["detail"]["reason"], "field_write_denied",
         "denial reason must be field_write_denied: {denied_tx}"
     );
 
@@ -2803,8 +2797,7 @@ async fn graphql_denied_transaction_aborts_wholly_no_partial_writes_no_audit() {
     )
     .await;
     assert_eq!(
-        audit_1["data"]["auditLog"]["totalCount"],
-        0,
+        audit_1["data"]["auditLog"]["totalCount"], 0,
         "no entity.create audit entry must exist for op-1: {audit_1}"
     );
 
@@ -2815,8 +2808,7 @@ async fn graphql_denied_transaction_aborts_wholly_no_partial_writes_no_audit() {
     )
     .await;
     assert_eq!(
-        audit_2["data"]["auditLog"]["totalCount"],
-        0,
+        audit_2["data"]["auditLog"]["totalCount"], 0,
         "no entity.create audit entry must exist for op-3: {audit_2}"
     );
 }
@@ -2855,13 +2847,11 @@ async fn graphql_denied_idempotent_transaction_returns_same_forbidden_on_retry()
     )
     .await;
     assert_eq!(
-        first["errors"][0]["extensions"]["code"],
-        "forbidden",
+        first["errors"][0]["extensions"]["code"], "forbidden",
         "first call must return forbidden: {first}"
     );
     assert_eq!(
-        first["errors"][0]["extensions"]["detail"]["reason"],
-        "field_write_denied",
+        first["errors"][0]["extensions"]["detail"]["reason"], "field_write_denied",
         "first denial reason must be field_write_denied: {first}"
     );
 
@@ -2890,13 +2880,11 @@ async fn graphql_denied_idempotent_transaction_returns_same_forbidden_on_retry()
     )
     .await;
     assert_eq!(
-        retry["errors"][0]["extensions"]["code"],
-        "forbidden",
+        retry["errors"][0]["extensions"]["code"], "forbidden",
         "retry with same idempotency key must also return forbidden: {retry}"
     );
     assert_eq!(
-        retry["errors"][0]["extensions"]["detail"]["reason"],
-        "field_write_denied",
+        retry["errors"][0]["extensions"]["detail"]["reason"], "field_write_denied",
         "retry denial reason must be field_write_denied: {retry}"
     );
 
@@ -3013,8 +3001,7 @@ async fn graphql_execution_reevaluates_policy_regardless_of_stale_explain() {
     )
     .await;
     assert_eq!(
-        denied["errors"][0]["extensions"]["code"],
-        "forbidden",
+        denied["errors"][0]["extensions"]["code"], "forbidden",
         "execution must re-evaluate and deny despite stale allow explain: {denied}"
     );
 
@@ -3026,8 +3013,7 @@ async fn graphql_execution_reevaluates_policy_regardless_of_stale_explain() {
     )
     .await;
     assert_eq!(
-        task_a["data"]["entity"]["data"]["title"],
-        "Visible A",
+        task_a["data"]["entity"]["data"]["title"], "Visible A",
         "task-a must be unchanged after denied execution: {task_a}"
     );
 }
@@ -3208,10 +3194,7 @@ async fn graphql_put_schema_dry_run_evaluates_candidate_policy_without_live_muta
         .await;
     audit.assert_status_ok();
     assert_eq!(
-        audit.json::<Value>()["entries"]
-            .as_array()
-            .unwrap()
-            .len(),
+        audit.json::<Value>()["entries"].as_array().unwrap().len(),
         0,
         "candidate policy fixture evaluation must not produce mutation audit entries"
     );

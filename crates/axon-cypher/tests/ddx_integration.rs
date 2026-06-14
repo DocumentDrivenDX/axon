@@ -392,9 +392,24 @@ fn cycle_store() -> MemoryQueryStore {
         props.insert("priority".to_string(), json!(1_i64));
         store.insert_entity(QueryEntity::new(id, ["DdxBead"], props));
     }
-    store.insert_link(QueryLink::new("cycle-a", "DEPENDS_ON", "cycle-b", BTreeMap::new()));
-    store.insert_link(QueryLink::new("cycle-b", "DEPENDS_ON", "cycle-c", BTreeMap::new()));
-    store.insert_link(QueryLink::new("cycle-c", "DEPENDS_ON", "cycle-a", BTreeMap::new()));
+    store.insert_link(QueryLink::new(
+        "cycle-a",
+        "DEPENDS_ON",
+        "cycle-b",
+        BTreeMap::new(),
+    ));
+    store.insert_link(QueryLink::new(
+        "cycle-b",
+        "DEPENDS_ON",
+        "cycle-c",
+        BTreeMap::new(),
+    ));
+    store.insert_link(QueryLink::new(
+        "cycle-c",
+        "DEPENDS_ON",
+        "cycle-a",
+        BTreeMap::new(),
+    ));
     store
 }
 
@@ -448,7 +463,12 @@ fn two_link_store() -> MemoryQueryStore {
         props.insert("id".to_string(), json!(id));
         store.insert_entity(QueryEntity::new(id, ["Node"], props));
     }
-    store.insert_link(QueryLink::new("node-a", "CONNECTS", "node-b", BTreeMap::new()));
+    store.insert_link(QueryLink::new(
+        "node-a",
+        "CONNECTS",
+        "node-b",
+        BTreeMap::new(),
+    ));
     store.insert_link(QueryLink::new("node-b", "LINKS", "node-c", BTreeMap::new()));
     store
 }
@@ -549,7 +569,11 @@ fn self_loop_terminates_with_depth_cap() {
         &schema,
         &store,
     );
-    assert_eq!(rows.len(), 1, "self-loop must return exactly one DISTINCT node");
+    assert_eq!(
+        rows.len(),
+        1,
+        "self-loop must return exactly one DISTINCT node"
+    );
     assert_eq!(rows[0]["id"], json!("self-node"));
 }
 

@@ -1307,7 +1307,11 @@ mod tests {
             log.replay_from_cursor(&store, "sse", Some(&col), 100),
             "collection-filtered cursor replay should succeed",
         );
-        assert_eq!(envelopes.len(), 1, "only the second tasks event should replay");
+        assert_eq!(
+            envelopes.len(),
+            1,
+            "only the second tasks event should replay"
+        );
         assert_eq!(envelopes[0].source.collection, "tasks");
     }
 

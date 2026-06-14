@@ -168,7 +168,14 @@ fn schema_to_entry(subject: &str, version: u32, schema: &CollectionSchema) -> Sc
 }
 
 fn err_response(status: StatusCode, error_code: u32, message: impl Into<String>) -> Response {
-    (status, Json(RegistryError { error_code, message: message.into() })).into_response()
+    (
+        status,
+        Json(RegistryError {
+            error_code,
+            message: message.into(),
+        }),
+    )
+        .into_response()
 }
 
 /// Resolve effective compatibility for a subject (subject-level overrides global).
@@ -207,8 +214,10 @@ async fn list_subjects(State(state): State<RegistryState>) -> Response {
     let storage = state.storage.lock().await;
     match storage.list_collections() {
         Ok(collections) => {
-            let subjects: Vec<String> =
-                collections.iter().map(|c| collection_to_subject(c.as_str())).collect();
+            let subjects: Vec<String> = collections
+                .iter()
+                .map(|c| collection_to_subject(c.as_str()))
+                .collect();
             Json(subjects).into_response()
         }
         Err(e) => {
@@ -266,7 +275,9 @@ async fn get_version(
     } else {
         let version: u32 = match version_str.parse() {
             Ok(v) => v,
-            Err(_) => return err_response(StatusCode::UNPROCESSABLE_ENTITY, 42202, "Invalid version."),
+            Err(_) => {
+                return err_response(StatusCode::UNPROCESSABLE_ENTITY, 42202, "Invalid version.")
+            }
         };
         match storage.get_schema_version(&collection, version) {
             Ok(Some(s)) => s,
@@ -361,10 +372,7 @@ async fn register_schema(
 }
 
 /// `GET /schemas/ids/{id}` — look up a schema by its global ID.
-async fn get_schema_by_id(
-    State(state): State<RegistryState>,
-    Path(id): Path<u32>,
-) -> Response {
+async fn get_schema_by_id(State(state): State<RegistryState>, Path(id): Path<u32>) -> Response {
     let storage = state.storage.lock().await;
     let collections = match storage.list_collections() {
         Ok(c) => c,
@@ -401,7 +409,10 @@ async fn get_schema_by_id(
 /// `GET /config` — return global compatibility level.
 async fn get_global_config(State(state): State<RegistryState>) -> Response {
     let compat = state.global_compat.lock().await.clone();
-    Json(ConfigResponse { compatibility: compat }).into_response()
+    Json(ConfigResponse {
+        compatibility: compat,
+    })
+    .into_response()
 }
 
 /// `PUT /config` — set global compatibility level.
@@ -410,7 +421,10 @@ async fn set_global_config(
     Json(body): Json<ConfigBody>,
 ) -> Response {
     *state.global_compat.lock().await = body.compatibility.clone();
-    Json(ConfigResponse { compatibility: body.compatibility }).into_response()
+    Json(ConfigResponse {
+        compatibility: body.compatibility,
+    })
+    .into_response()
 }
 
 /// `GET /config/{subject}` — return per-subject compatibility, falling back to global.
@@ -419,7 +433,10 @@ async fn get_subject_config(
     Path(subject): Path<String>,
 ) -> Response {
     let compat = effective_compat(&state, &subject).await;
-    Json(ConfigResponse { compatibility: compat }).into_response()
+    Json(ConfigResponse {
+        compatibility: compat,
+    })
+    .into_response()
 }
 
 /// `PUT /config/{subject}` — set per-subject compatibility level.
@@ -428,8 +445,15 @@ async fn set_subject_config(
     Path(subject): Path<String>,
     Json(body): Json<ConfigBody>,
 ) -> Response {
-    state.subject_compat.lock().await.insert(subject, body.compatibility.clone());
-    Json(ConfigResponse { compatibility: body.compatibility }).into_response()
+    state
+        .subject_compat
+        .lock()
+        .await
+        .insert(subject, body.compatibility.clone());
+    Json(ConfigResponse {
+        compatibility: body.compatibility,
+    })
+    .into_response()
 }
 
 /// `POST /compatibility/subjects/{subject}/versions/{version}` — check schema compatibility.
@@ -459,11 +483,7 @@ async fn check_compatibility(
         let version: u32 = match version_str.parse() {
             Ok(v) => v,
             Err(_) => {
-                return err_response(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    42202,
-                    "Invalid version.",
-                );
+                return err_response(StatusCode::UNPROCESSABLE_ENTITY, 42202, "Invalid version.");
             }
         };
         match storage.get_schema_version(&collection, version) {
@@ -476,10 +496,12 @@ async fn check_compatibility(
 
     let compat_level = effective_compat(&state, &subject).await;
     let existing_value = existing_schema.and_then(|s| s.entity_schema);
-    let compatible =
-        is_schema_compatible(existing_value.as_ref(), Some(&proposed), &compat_level);
+    let compatible = is_schema_compatible(existing_value.as_ref(), Some(&proposed), &compat_level);
 
-    Json(CompatCheckResponse { is_compatible: compatible }).into_response()
+    Json(CompatCheckResponse {
+        is_compatible: compatible,
+    })
+    .into_response()
 }
 
 // ── Router builder ──────────────────────────────────────────────────────────
@@ -490,11 +512,17 @@ async fn check_compatibility(
 pub fn registry_router(state: RegistryState) -> Router {
     Router::new()
         .route("/subjects", get(list_subjects))
-        .route("/subjects/{subject}/versions", get(list_versions).post(register_schema))
+        .route(
+            "/subjects/{subject}/versions",
+            get(list_versions).post(register_schema),
+        )
         .route("/subjects/{subject}/versions/{version}", get(get_version))
         .route("/schemas/ids/{id}", get(get_schema_by_id))
         .route("/config", get(get_global_config).put(set_global_config))
-        .route("/config/{subject}", get(get_subject_config).put(set_subject_config))
+        .route(
+            "/config/{subject}",
+            get(get_subject_config).put(set_subject_config),
+        )
         .route(
             "/compatibility/subjects/{subject}/versions/{version}",
             post(check_compatibility),
@@ -537,7 +565,9 @@ mod tests {
         // Pre-register the collection so list_collections returns it.
         {
             let mut storage = state.storage.lock().await;
-            storage.register_collection(&CollectionId::new("tasks")).unwrap();
+            storage
+                .register_collection(&CollectionId::new("tasks"))
+                .unwrap();
         }
         let server = TestServer::new(registry_router(state));
 
@@ -585,12 +615,18 @@ mod tests {
 
     #[tokio::test]
     async fn schema_id_differs_by_version() {
-        assert_ne!(stable_schema_id("tasks-value", 1), stable_schema_id("tasks-value", 2));
+        assert_ne!(
+            stable_schema_id("tasks-value", 1),
+            stable_schema_id("tasks-value", 2)
+        );
     }
 
     #[tokio::test]
     async fn schema_id_differs_by_subject() {
-        assert_ne!(stable_schema_id("tasks-value", 1), stable_schema_id("users-value", 1));
+        assert_ne!(
+            stable_schema_id("tasks-value", 1),
+            stable_schema_id("users-value", 1)
+        );
     }
 
     #[tokio::test]
@@ -605,7 +641,10 @@ mod tests {
     #[tokio::test]
     async fn set_global_config_none() {
         let server = test_server();
-        let resp = server.put("/config").json(&json!({"compatibility": "NONE"})).await;
+        let resp = server
+            .put("/config")
+            .json(&json!({"compatibility": "NONE"}))
+            .await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["compatibility"], "NONE");
@@ -619,7 +658,10 @@ mod tests {
     #[tokio::test]
     async fn set_subject_config_overrides_global() {
         let server = test_server();
-        server.put("/config").json(&json!({"compatibility": "BACKWARD"})).await;
+        server
+            .put("/config")
+            .json(&json!({"compatibility": "BACKWARD"}))
+            .await;
         server
             .put("/config/tasks-value")
             .json(&json!({"compatibility": "NONE"}))

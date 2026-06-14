@@ -2209,10 +2209,7 @@ fn run_audit(
         } => {
             let entries = handler
                 .audit_log()
-                .query_by_entity(
-                    &CollectionId::new(&collection),
-                    &EntityId::new(&entity_id),
-                )
+                .query_by_entity(&CollectionId::new(&collection), &EntityId::new(&entity_id))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             let to_show: Vec<&axon_audit::AuditEntry> = if let Some(entry_id) = entry {
@@ -2228,7 +2225,8 @@ fn run_audit(
             let diffs: Vec<Value> = to_show
                 .iter()
                 .map(|e| {
-                    let field_diff = compute_field_diff(e.data_before.as_ref(), e.data_after.as_ref());
+                    let field_diff =
+                        compute_field_diff(e.data_before.as_ref(), e.data_after.as_ref());
                     serde_json::json!({
                         "audit_id": e.id,
                         "mutation": e.mutation.to_string(),
@@ -2246,8 +2244,10 @@ fn run_audit(
                     for d in &diffs {
                         println!(
                             "[{}] {} v{} actor={} diff={}",
-                            d["audit_id"], d["mutation"].as_str().unwrap_or(""),
-                            d["version"], d["actor"].as_str().unwrap_or(""),
+                            d["audit_id"],
+                            d["mutation"].as_str().unwrap_or(""),
+                            d["version"],
+                            d["actor"].as_str().unwrap_or(""),
                             d["diff"],
                         );
                     }
@@ -2261,10 +2261,7 @@ fn run_audit(
         } => {
             let mut entries = handler
                 .audit_log()
-                .query_by_entity(
-                    &CollectionId::new(&collection),
-                    &EntityId::new(&entity_id),
-                )
+                .query_by_entity(&CollectionId::new(&collection), &EntityId::new(&entity_id))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             if let Some(n) = limit {
@@ -2468,7 +2465,12 @@ fn run_policy(
 
 fn run_mutation(cmd: MutationCmd, format: &OutputFormat) -> Result<()> {
     let (error_msg, intent_id_label) = match &cmd {
-        MutationCmd::Preview { collection, entity_id, operation, .. } => (
+        MutationCmd::Preview {
+            collection,
+            entity_id,
+            operation,
+            ..
+        } => (
             format!(
                 "mutation preview requires a running Axon server with policy enforcement enabled; \
                  start one with 'axon serve' or use --server to connect to an existing server. \
@@ -2551,7 +2553,11 @@ fn run_rollback(
                                 "  {}/{}: {}",
                                 detail.collection,
                                 detail.id,
-                                if detail.success { "ok" } else { detail.error.as_deref().unwrap_or("failed") },
+                                if detail.success {
+                                    "ok"
+                                } else {
+                                    detail.error.as_deref().unwrap_or("failed")
+                                },
                             );
                         }
                     }
@@ -2573,10 +2579,17 @@ fn run_rollback(
                 match format {
                     OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
                     OutputFormat::Table => match &resp {
-                        RollbackEntityResponse::DryRun { current, target, diff } => {
+                        RollbackEntityResponse::DryRun {
+                            current,
+                            target,
+                            diff,
+                        } => {
                             println!("dry-run rollback of {ecoll}/{eid} to v{version}");
                             if current.is_some() {
-                                println!("  current version: {}", current.as_ref().unwrap().version);
+                                println!(
+                                    "  current version: {}",
+                                    current.as_ref().unwrap().version
+                                );
                             } else {
                                 println!("  entity would be recreated (currently deleted)");
                             }
@@ -2640,7 +2653,10 @@ fn run_rollback(
                 match format {
                     OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
                     OutputFormat::Table => match &resp {
-                        RollbackEntityResponse::Applied { entity, audit_entry } => {
+                        RollbackEntityResponse::Applied {
+                            entity,
+                            audit_entry,
+                        } => {
                             println!(
                                 "rolled back {}/{} to v{} (audit entry {})",
                                 entity.collection, entity.id, entity.version, audit_entry.id,
@@ -3507,10 +3523,7 @@ mod tests {
         run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
 
         // Use "read" operation which needs no data; no-policy collection returns "allow".
-        let cli = make_cli(
-            &db,
-            &["policy", "explain", "tasks", "--operation", "read"],
-        );
+        let cli = make_cli(&db, &["policy", "explain", "tasks", "--operation", "read"]);
         run(cli).unwrap();
     }
 
@@ -3521,7 +3534,15 @@ mod tests {
 
         let cli = make_cli(
             &db,
-            &["--output", "json", "policy", "test", "tasks", "--operation", "read"],
+            &[
+                "--output",
+                "json",
+                "policy",
+                "test",
+                "tasks",
+                "--operation",
+                "read",
+            ],
         );
         run(cli).unwrap();
     }
@@ -3535,10 +3556,15 @@ mod tests {
         let cli = make_cli(
             &db,
             &[
-                "--output", "json",
-                "policy", "explain", "tasks",
-                "--operation", "create",
-                "--data", r#"{"title":"test"}"#,
+                "--output",
+                "json",
+                "policy",
+                "explain",
+                "tasks",
+                "--operation",
+                "create",
+                "--data",
+                r#"{"title":"test"}"#,
             ],
         );
         run(cli).unwrap();
@@ -3552,29 +3578,37 @@ mod tests {
         let cli = make_cli(
             &db,
             &[
-                "mutation", "preview", "tasks",
-                "--entity-id", "t-001",
-                "--operation", "create",
-                "--data", r#"{"title":"test"}"#,
+                "mutation",
+                "preview",
+                "tasks",
+                "--entity-id",
+                "t-001",
+                "--operation",
+                "create",
+                "--data",
+                r#"{"title":"test"}"#,
             ],
         );
         let result = run(cli);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("server"), "expected server-required error, got: {err}");
+        assert!(
+            err.contains("server"),
+            "expected server-required error, got: {err}"
+        );
     }
 
     #[test]
     fn mutation_commit_returns_server_required_error() {
         let (_f, db) = tmp_db();
-        let cli = make_cli(
-            &db,
-            &["mutation", "commit", "--token", "dummy-token"],
-        );
+        let cli = make_cli(&db, &["mutation", "commit", "--token", "dummy-token"]);
         let result = run(cli);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("server"), "expected server-required error, got: {err}");
+        assert!(
+            err.contains("server"),
+            "expected server-required error, got: {err}"
+        );
     }
 
     #[test]
@@ -3654,7 +3688,9 @@ mod tests {
 
         use axon_api::response::RollbackEntityResponse;
         match &resp {
-            RollbackEntityResponse::DryRun { current, target, .. } => {
+            RollbackEntityResponse::DryRun {
+                current, target, ..
+            } => {
                 let cur = current.as_ref().unwrap();
                 assert_eq!(cur.version, 2, "entity should still be at v2 (dry-run)");
                 assert_eq!(target.data["title"], "v1", "target data should be v1");
@@ -3723,10 +3759,19 @@ mod tests {
         assert_eq!(entries.len(), 2, "expected create + update audit entries");
 
         let update_entry = entries.iter().find(|e| e.data_before.is_some()).unwrap();
-        let diff = compute_field_diff(update_entry.data_before.as_ref(), update_entry.data_after.as_ref());
+        let diff = compute_field_diff(
+            update_entry.data_before.as_ref(),
+            update_entry.data_after.as_ref(),
+        );
         let obj = diff.as_object().unwrap();
-        assert!(obj.contains_key("title"), "title should appear in diff: {diff}");
-        assert!(obj.contains_key("status"), "status should appear in diff: {diff}");
+        assert!(
+            obj.contains_key("title"),
+            "title should appear in diff: {diff}"
+        );
+        assert!(
+            obj.contains_key("status"),
+            "status should appear in diff: {diff}"
+        );
         assert_eq!(obj["title"]["before"], "v1");
         assert_eq!(obj["title"]["after"], "v2");
     }

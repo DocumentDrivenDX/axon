@@ -3825,10 +3825,7 @@ mod tests {
 #[cfg(test)]
 fn pg_conformance_superadmin_dsn() -> Option<String> {
     use std::sync::OnceLock;
-    use testcontainers_modules::{
-        postgres,
-        testcontainers::runners::SyncRunner,
-    };
+    use testcontainers_modules::{postgres, testcontainers::runners::SyncRunner};
 
     // Cache: None means "already decided no Postgres available".
     static DSN: OnceLock<Option<String>> = OnceLock::new();

@@ -1273,10 +1273,42 @@ fn us_025_ac2_reachable_short_circuits_on_first_path_found() {
         .unwrap();
     }
     // Two independent paths to target.
-    link(&mut h, "nodes", "source", "nodes", "path-a", "edge", json!(null));
-    link(&mut h, "nodes", "source", "nodes", "path-b", "edge", json!(null));
-    link(&mut h, "nodes", "path-a", "nodes", "target", "edge", json!(null));
-    link(&mut h, "nodes", "path-b", "nodes", "target", "edge", json!(null));
+    link(
+        &mut h,
+        "nodes",
+        "source",
+        "nodes",
+        "path-a",
+        "edge",
+        json!(null),
+    );
+    link(
+        &mut h,
+        "nodes",
+        "source",
+        "nodes",
+        "path-b",
+        "edge",
+        json!(null),
+    );
+    link(
+        &mut h,
+        "nodes",
+        "path-a",
+        "nodes",
+        "target",
+        "edge",
+        json!(null),
+    );
+    link(
+        &mut h,
+        "nodes",
+        "path-b",
+        "nodes",
+        "target",
+        "edge",
+        json!(null),
+    );
 
     let result = h
         .reachable(ReachableRequest {
@@ -1559,7 +1591,10 @@ fn us_095_rollback_dry_run_returns_diff_without_mutating() {
     // ENTITY MUST NOT BE MUTATED (US-095-AC1: entity still at v2 after dry-run).
     let still_v2 = get(&h, "invoices", "inv-repair-001").unwrap();
     assert_eq!(still_v2.version, 2, "dry-run must not mutate the entity");
-    assert_eq!(still_v2.data["amount"], 999, "entity data unchanged after dry-run");
+    assert_eq!(
+        still_v2.data["amount"], 999,
+        "entity data unchanged after dry-run"
+    );
 
     // AUDIT LOG MUST HAVE NO NEW ENTRIES (dry-run produces no audit entries).
     let audit = h
@@ -1658,7 +1693,10 @@ fn us_096_rollback_commit_restores_state_and_audits_lineage() {
     // US-096-AC1: entity state equals v1 content; version advances.
     assert_eq!(restored.version, 3, "version must advance (not rewritten)");
     assert_eq!(restored.data["amount"], 3000, "amount restored to v1 value");
-    assert_eq!(restored.data["status"], "pending", "status restored to v1 value");
+    assert_eq!(
+        restored.data["status"], "pending",
+        "status restored to v1 value"
+    );
 
     // US-096-AC2: old versions are not rewritten — audit still has 3 entries (create, bad update, rollback).
     let final_audit = h
@@ -1693,7 +1731,9 @@ fn us_096_rollback_commit_restores_state_and_audits_lineage() {
 
     // US-096-AC3: rollback entry references the source audit entry it restored from.
     assert!(
-        rollback_entry.metadata.contains_key("reverted_from_entry_id"),
+        rollback_entry
+            .metadata
+            .contains_key("reverted_from_entry_id"),
         "rollback entry must reference source audit entry"
     );
 
@@ -1817,7 +1857,10 @@ fn us_096_ac6_rollback_of_rollback_reapplies_later_state() {
     .unwrap();
     let v3 = get(&h, "tasks", "task-rollback-001").unwrap();
     assert_eq!(v3.version, 3);
-    assert_eq!(v3.data["title"], "Good state", "v3 should be the repaired state");
+    assert_eq!(
+        v3.data["title"], "Good state",
+        "v3 should be the repaired state"
+    );
 
     // Now roll back the rollback (i.e., re-apply the bad v2 state).
     // Rollback targeting the v2 audit entry restores that state as v4.
@@ -1832,8 +1875,14 @@ fn us_096_ac6_rollback_of_rollback_reapplies_later_state() {
     .unwrap();
 
     let v4 = get(&h, "tasks", "task-rollback-001").unwrap();
-    assert_eq!(v4.version, 4, "rollback of rollback creates a new write at v4");
-    assert_eq!(v4.data["title"], "Bad state", "v4 re-applies the bad v2 state");
+    assert_eq!(
+        v4.version, 4,
+        "rollback of rollback creates a new write at v4"
+    );
+    assert_eq!(
+        v4.data["title"], "Bad state",
+        "v4 re-applies the bad v2 state"
+    );
 
     // Full history: 4 entries — no rewriting, only forward-only appends.
     let audit = h
@@ -1843,7 +1892,11 @@ fn us_096_ac6_rollback_of_rollback_reapplies_later_state() {
             ..Default::default()
         })
         .unwrap();
-    assert_eq!(audit.entries.len(), 4, "4 audit entries: create, update, revert, revert");
+    assert_eq!(
+        audit.entries.len(),
+        4,
+        "4 audit entries: create, update, revert, revert"
+    );
     assert_eq!(audit.entries[0].mutation, MutationType::EntityCreate);
     assert_eq!(audit.entries[1].mutation, MutationType::EntityUpdate);
     assert_eq!(audit.entries[2].mutation, MutationType::EntityRevert);
@@ -1860,8 +1913,18 @@ fn us_097_ac1_transaction_rollback_reverts_all_entities_atomically() {
     let mut h = handler();
 
     // SETUP: two accounts and a ledger entry.
-    create(&mut h, "accounts", "acc-001", json!({"balance": 1000, "name": "Alice"}));
-    create(&mut h, "accounts", "acc-002", json!({"balance": 500, "name": "Bob"}));
+    create(
+        &mut h,
+        "accounts",
+        "acc-001",
+        json!({"balance": 1000, "name": "Alice"}),
+    );
+    create(
+        &mut h,
+        "accounts",
+        "acc-002",
+        json!({"balance": 500, "name": "Bob"}),
+    );
 
     let acc1 = get(&h, "accounts", "acc-001").unwrap();
     let acc2 = get(&h, "accounts", "acc-002").unwrap();
@@ -1897,7 +1960,10 @@ fn us_097_ac1_transaction_rollback_reverts_all_entities_atomically() {
 
     // Verify bad state is in place.
     assert_eq!(get(&h, "accounts", "acc-001").unwrap().data["balance"], 200);
-    assert_eq!(get(&h, "accounts", "acc-002").unwrap().data["balance"], 1300);
+    assert_eq!(
+        get(&h, "accounts", "acc-002").unwrap().data["balance"],
+        1300
+    );
 
     // TRANSACTION ROLLBACK: atomically revert the bad transaction.
     let resp = h
@@ -1932,7 +1998,11 @@ fn us_097_ac1_transaction_rollback_reverts_all_entities_atomically() {
             ..Default::default()
         })
         .unwrap();
-    assert_eq!(audit_acc1.entries.len(), 3, "create + bad update + rollback = 3");
+    assert_eq!(
+        audit_acc1.entries.len(),
+        3,
+        "create + bad update + rollback = 3"
+    );
     assert_eq!(
         audit_acc1.entries.last().unwrap().mutation,
         MutationType::EntityRevert,
@@ -2011,14 +2081,12 @@ fn us_097_ac2_transaction_rollback_applies_compensating_write_over_intermediate_
     // intermediate modifications).
     let a3_final = get(&h, "accounts", "acc-003").unwrap();
     assert_eq!(
-        a3_final.data["balance"],
-        100,
+        a3_final.data["balance"], 100,
         "acc-003 restored to pre-bad-transaction balance, overriding intermediate write"
     );
     let a4_final = get(&h, "accounts", "acc-004").unwrap();
     assert_eq!(
-        a4_final.data["balance"],
-        200,
+        a4_final.data["balance"], 200,
         "acc-004 restored to pre-bad-transaction balance"
     );
 

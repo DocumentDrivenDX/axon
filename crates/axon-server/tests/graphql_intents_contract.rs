@@ -1067,7 +1067,9 @@ async fn policy_version_drift_before_commit_rejects_as_stale() {
         .as_array()
         .unwrap();
     assert!(
-        stale_dims.iter().any(|d| d["dimension"] == "policy_version"),
+        stale_dims
+            .iter()
+            .any(|d| d["dimension"] == "policy_version"),
         "stale rejection must name the policy_version dimension: {stale_dims:?}"
     );
 
@@ -1192,9 +1194,7 @@ async fn multi_entity_intent_one_stale_entity_invalidates_whole_intent() {
     assert!(
         stale_dims.iter().any(|d| {
             d["dimension"] == "pre_image"
-                && d["path"]
-                    .as_str()
-                    .map_or(false, |p| p.contains("task-b"))
+                && d["path"].as_str().map_or(false, |p| p.contains("task-b"))
         }),
         "stale rejection must name the task-b pre_image dimension: {stale_dims:?}"
     );

@@ -449,8 +449,14 @@ mod tests {
             expires_at_ms: 4_600_000, // 1h TTL
             scope: ObservationScope::HealthOnly,
         };
-        assert!(!cred.is_expired(4_599_999), "must be valid 1ms before expiry");
-        assert!(cred.is_expired(4_600_000), "must be expired at exact expiry");
+        assert!(
+            !cred.is_expired(4_599_999),
+            "must be valid 1ms before expiry"
+        );
+        assert!(
+            cred.is_expired(4_600_000),
+            "must be expired at exact expiry"
+        );
         assert!(cred.is_expired(4_600_001), "must be expired after expiry");
     }
 

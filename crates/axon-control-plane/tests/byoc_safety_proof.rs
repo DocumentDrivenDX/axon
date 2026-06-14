@@ -152,10 +152,16 @@ async fn dashboard_row_contains_no_entity_data_keys() {
 async fn tenant_records_are_isolated_by_id() {
     let (server, _) = server();
 
-    let a = server.post("/tenants").json(&byoc_spec("tenant-alpha")).await;
+    let a = server
+        .post("/tenants")
+        .json(&byoc_spec("tenant-alpha"))
+        .await;
     let a_id = a.json::<Value>()["id"].as_str().unwrap().to_string();
 
-    let b = server.post("/tenants").json(&byoc_spec("tenant-beta")).await;
+    let b = server
+        .post("/tenants")
+        .json(&byoc_spec("tenant-beta"))
+        .await;
     let b_id = b.json::<Value>()["id"].as_str().unwrap().to_string();
 
     // Each tenant is accessible by its own ID with correct metadata.
@@ -247,7 +253,11 @@ fn observation_credential_ttl_and_expiry_shape() {
         scope: ObservationScope::HealthOnly,
     };
 
-    assert_eq!(cred.ttl_ms(), one_hour_ms, "TTL must equal expires_at - issued_at");
+    assert_eq!(
+        cred.ttl_ms(),
+        one_hour_ms,
+        "TTL must equal expires_at - issued_at"
+    );
     assert!(
         !cred.is_expired(cred.expires_at_ms - 1),
         "credential must be valid 1ms before expiry"
@@ -323,7 +333,10 @@ async fn provision_emits_audit_event() {
         .expect("provision must emit an audit event");
 
     assert_eq!(ev.actor, "operator");
-    assert!(ev.occurred_at_ms > 0, "audit event must have a non-zero timestamp");
+    assert!(
+        ev.occurred_at_ms > 0,
+        "audit event must have a non-zero timestamp"
+    );
     assert_eq!(ev.previous_status, None, "provision has no previous state");
     assert_eq!(ev.new_status, Some(TenantStatus::Provisioning));
 }
@@ -333,7 +346,10 @@ async fn provision_emits_audit_event() {
 async fn activate_emits_audit_event() {
     let (server, svc) = server();
 
-    let resp = server.post("/tenants").json(&hosted_spec("audit-activate")).await;
+    let resp = server
+        .post("/tenants")
+        .json(&hosted_spec("audit-activate"))
+        .await;
     let id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
 
     server
@@ -357,13 +373,19 @@ async fn activate_emits_audit_event() {
 async fn suspend_emits_audit_event() {
     let (server, svc) = server();
 
-    let resp = server.post("/tenants").json(&hosted_spec("audit-suspend")).await;
+    let resp = server
+        .post("/tenants")
+        .json(&hosted_spec("audit-suspend"))
+        .await;
     let id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
     server
         .post(&format!("/tenants/{id}/activate"))
         .json(&json!({}))
         .await;
-    server.post(&format!("/tenants/{id}/suspend")).await.assert_status_ok();
+    server
+        .post(&format!("/tenants/{id}/suspend"))
+        .await
+        .assert_status_ok();
 
     let events = svc.audit_events();
     let ev = events
@@ -380,7 +402,10 @@ async fn suspend_emits_audit_event() {
 async fn deprovision_emits_audit_event() {
     let (server, svc) = server();
 
-    let resp = server.post("/tenants").json(&hosted_spec("audit-deprov")).await;
+    let resp = server
+        .post("/tenants")
+        .json(&hosted_spec("audit-deprov"))
+        .await;
     let id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
     server
         .post(&format!("/tenants/{id}/activate"))
@@ -405,7 +430,10 @@ async fn deprovision_emits_audit_event() {
 async fn terminate_emits_audit_event() {
     let (server, svc) = server();
 
-    let resp = server.post("/tenants").json(&hosted_spec("audit-term")).await;
+    let resp = server
+        .post("/tenants")
+        .json(&hosted_spec("audit-term"))
+        .await;
     let id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
     server
         .post(&format!("/tenants/{id}/activate"))
@@ -472,14 +500,23 @@ async fn full_lifecycle_produces_ordered_audit_trail() {
         .await
         .assert_status_ok();
 
-    server.post(&format!("/tenants/{id}/suspend")).await.assert_status_ok();
+    server
+        .post(&format!("/tenants/{id}/suspend"))
+        .await
+        .assert_status_ok();
     server
         .post(&format!("/tenants/{id}/activate"))
         .json(&json!({}))
         .await
         .assert_status_ok();
-    server.post(&format!("/tenants/{id}/deprovision")).await.assert_status_ok();
-    server.post(&format!("/tenants/{id}/terminate")).await.assert_status_ok();
+    server
+        .post(&format!("/tenants/{id}/deprovision"))
+        .await
+        .assert_status_ok();
+    server
+        .post(&format!("/tenants/{id}/terminate"))
+        .await
+        .assert_status_ok();
 
     let events: Vec<_> = svc
         .audit_events()
@@ -488,12 +525,30 @@ async fn full_lifecycle_produces_ordered_audit_trail() {
         .collect();
 
     let ops: Vec<&str> = events.iter().map(|e| e.operation.as_str()).collect();
-    assert!(ops.contains(&"provision"), "provision must be in audit trail; got {ops:?}");
-    assert!(ops.contains(&"register_byoc"), "register_byoc must be in audit trail; got {ops:?}");
-    assert!(ops.contains(&"suspend"), "suspend must be in audit trail; got {ops:?}");
-    assert!(ops.contains(&"mark_active"), "mark_active must be in audit trail; got {ops:?}");
-    assert!(ops.contains(&"deprovision"), "deprovision must be in audit trail; got {ops:?}");
-    assert!(ops.contains(&"terminate"), "terminate must be in audit trail; got {ops:?}");
+    assert!(
+        ops.contains(&"provision"),
+        "provision must be in audit trail; got {ops:?}"
+    );
+    assert!(
+        ops.contains(&"register_byoc"),
+        "register_byoc must be in audit trail; got {ops:?}"
+    );
+    assert!(
+        ops.contains(&"suspend"),
+        "suspend must be in audit trail; got {ops:?}"
+    );
+    assert!(
+        ops.contains(&"mark_active"),
+        "mark_active must be in audit trail; got {ops:?}"
+    );
+    assert!(
+        ops.contains(&"deprovision"),
+        "deprovision must be in audit trail; got {ops:?}"
+    );
+    assert!(
+        ops.contains(&"terminate"),
+        "terminate must be in audit trail; got {ops:?}"
+    );
 
     // Timestamps must be non-decreasing (events are in chronological order).
     let timestamps: Vec<u64> = events.iter().map(|e| e.occurred_at_ms).collect();
@@ -511,7 +566,10 @@ async fn full_lifecycle_produces_ordered_audit_trail() {
         unique_ids.len(),
         "all audit event IDs must be unique"
     );
-    assert!(ids.iter().all(|id| !id.is_empty()), "all audit event IDs must be non-empty");
+    assert!(
+        ids.iter().all(|id| !id.is_empty()),
+        "all audit event IDs must be non-empty"
+    );
 }
 
 /// Each audit event captures the full before/after status transition.
@@ -543,7 +601,10 @@ async fn audit_events_capture_status_transitions() {
         .iter()
         .find(|e| e.operation == "mark_active")
         .expect("mark_active event must exist");
-    assert_eq!(activate_ev.previous_status, Some(TenantStatus::Provisioning));
+    assert_eq!(
+        activate_ev.previous_status,
+        Some(TenantStatus::Provisioning)
+    );
     assert_eq!(activate_ev.new_status, Some(TenantStatus::Active));
 
     let suspend_ev = events

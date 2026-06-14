@@ -650,22 +650,13 @@ mod tests {
             }
         }
 
-        let svc_past = ControlPlaneService::with_clock(
-            Arc::clone(&store),
-            Arc::new(FixedClock(0)),
-        );
-        let svc_present = ControlPlaneService::with_clock(
-            Arc::clone(&store),
-            Arc::new(FixedClock(2)),
-        );
+        let svc_past = ControlPlaneService::with_clock(Arc::clone(&store), Arc::new(FixedClock(0)));
+        let svc_present =
+            ControlPlaneService::with_clock(Arc::clone(&store), Arc::new(FixedClock(2)));
 
         let t = svc_past.provision_tenant(hosted_spec("t")).unwrap();
         let cred = svc_past
-            .issue_observation_credential(
-                &t.id,
-                crate::model::ObservationScope::HealthOnly,
-                1,
-            )
+            .issue_observation_credential(&t.id, crate::model::ObservationScope::HealthOnly, 1)
             .unwrap();
         assert_eq!(cred.expires_at_ms, 1);
 
@@ -692,9 +683,7 @@ mod tests {
 
         svc.revoke_observation_credential(&t.id, &cred.id).unwrap();
 
-        let err = svc
-            .get_observation_credential(&t.id, &cred.id)
-            .unwrap_err();
+        let err = svc.get_observation_credential(&t.id, &cred.id).unwrap_err();
         assert!(matches!(err, ControlPlaneError::CredentialNotFound(_)));
     }
 

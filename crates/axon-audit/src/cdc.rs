@@ -339,8 +339,7 @@ impl KafkaConfig {
 
     /// Serialize the event key to a JSON string for use as a Kafka message key.
     pub fn event_key_string(source: &CdcSource) -> String {
-        serde_json::to_string(&Self::event_key(source))
-            .unwrap_or_else(|_| source.entity_id.clone())
+        serde_json::to_string(&Self::event_key(source)).unwrap_or_else(|_| source.entity_id.clone())
     }
 }
 
@@ -694,17 +693,26 @@ mod tests {
         assert!(envelope.after.is_some(), "after must be present for create");
 
         let src = &envelope.source;
-        assert_eq!(src.version, "0.1.0", "source.version must be Axon server version");
+        assert_eq!(
+            src.version, "0.1.0",
+            "source.version must be Axon server version"
+        );
         assert_eq!(src.connector, "axon", "source.connector must be 'axon'");
         assert_eq!(src.name, "axon-prod", "source.name must be instance name");
         assert_eq!(src.ts_ms, 1000, "source.ts_ms must be milliseconds");
         assert_eq!(src.tenant, "acme", "source.tenant required (CONTRACT-006)");
         assert_eq!(src.db, "finance", "source.db required (CONTRACT-006)");
-        assert_eq!(src.schema, "public", "source.schema required (CONTRACT-006)");
+        assert_eq!(
+            src.schema, "public",
+            "source.schema required (CONTRACT-006)"
+        );
         assert_eq!(src.collection, "tasks", "source.collection required");
         assert_eq!(src.entity_id, "t-001", "source.entity_id required");
         assert_eq!(src.audit_id, 42, "source.audit_id required");
-        assert!(src.transaction_id.is_none(), "source.transaction_id null when no tx");
+        assert!(
+            src.transaction_id.is_none(),
+            "source.transaction_id null when no tx"
+        );
     }
 
     #[test]
@@ -716,7 +724,10 @@ mod tests {
         );
 
         assert_eq!(envelope.op, CdcOp::Update, "op must be 'u' for update");
-        assert!(envelope.before.is_some(), "before must be present for update");
+        assert!(
+            envelope.before.is_some(),
+            "before must be present for update"
+        );
         assert!(envelope.after.is_some(), "after must be present for update");
 
         let src = &envelope.source;
@@ -740,7 +751,10 @@ mod tests {
         );
 
         assert_eq!(envelope.op, CdcOp::Delete, "op must be 'd' for delete");
-        assert!(envelope.before.is_some(), "before must be present for delete");
+        assert!(
+            envelope.before.is_some(),
+            "before must be present for delete"
+        );
         assert!(envelope.after.is_none(), "after must be null for delete");
 
         let src = &envelope.source;
@@ -758,18 +772,15 @@ mod tests {
     #[test]
     fn contract_006_snapshot_read_op_r() {
         let ctx = tenant_ctx();
-        let envelope = CdcEnvelope::snapshot(
-            &ctx,
-            "tasks",
-            "t-001",
-            json!({"title": "hello"}),
-            42,
-            1000,
-        );
+        let envelope =
+            CdcEnvelope::snapshot(&ctx, "tasks", "t-001", json!({"title": "hello"}), 42, 1000);
 
         assert_eq!(envelope.op, CdcOp::Read, "snapshot must have op 'r'");
         assert!(envelope.before.is_none(), "snapshot before must be null");
-        assert!(envelope.after.is_some(), "snapshot after must carry entity data");
+        assert!(
+            envelope.after.is_some(),
+            "snapshot after must carry entity data"
+        );
 
         let src = &envelope.source;
         assert_eq!(src.version, "0.1.0");
@@ -1116,8 +1127,14 @@ mod tests {
         let config = KafkaConfig::default();
         assert_eq!(config.brokers, "localhost:9092");
         assert!(!config.enabled);
-        assert!(config.topic_template.contains("{tenant}"), "default template must include tenant");
-        assert!(config.topic_template.contains("{instance}"), "default template must include instance");
+        assert!(
+            config.topic_template.contains("{tenant}"),
+            "default template must include tenant"
+        );
+        assert!(
+            config.topic_template.contains("{instance}"),
+            "default template must include instance"
+        );
     }
 
     // ── Kafka CDC sink stub tests (no `kafka` feature) ────────────────────
@@ -1161,7 +1178,10 @@ mod tests {
         assert_eq!(sink.sent.len(), 1);
 
         let (topic, key_str, json) = &sink.sent[0];
-        assert_eq!(topic, "axon-prod.acme.finance.public.tasks", "topic must be tenant-aware");
+        assert_eq!(
+            topic, "axon-prod.acme.finance.public.tasks",
+            "topic must be tenant-aware"
+        );
 
         // Key must be a JSON object with tenant/db/schema/collection/id.
         let key: Value = must_ok(
@@ -1201,8 +1221,14 @@ mod tests {
             "entity update should produce a CDC envelope",
         );
 
-        must_ok(sink.emit(&e1), "Kafka sink should emit first partitioned event");
-        must_ok(sink.emit(&e2), "Kafka sink should emit second partitioned event");
+        must_ok(
+            sink.emit(&e1),
+            "Kafka sink should emit first partitioned event",
+        );
+        must_ok(
+            sink.emit(&e2),
+            "Kafka sink should emit second partitioned event",
+        );
 
         // Keys are JSON strings; parse and check the entity id dimension.
         let k1: Value = serde_json::from_str(&sink.sent[0].1).unwrap();
@@ -1227,14 +1253,24 @@ mod tests {
         must_ok(sink.emit(&envelope), "emit should succeed for delete");
 
         // CONTRACT-006: delete envelope + tombstone = 2 messages
-        assert_eq!(sink.sent.len(), 2, "delete must emit envelope then tombstone");
+        assert_eq!(
+            sink.sent.len(),
+            2,
+            "delete must emit envelope then tombstone"
+        );
 
         let (del_topic, del_key, del_payload) = &sink.sent[0];
         let (tomb_topic, tomb_key, tomb_payload) = &sink.sent[1];
 
-        assert_eq!(del_topic, tomb_topic, "tombstone topic must match delete topic");
+        assert_eq!(
+            del_topic, tomb_topic,
+            "tombstone topic must match delete topic"
+        );
         // Same key ensures log compaction removes the entity's history
-        assert_eq!(del_key, tomb_key, "tombstone key must match delete key (CONTRACT-006)");
+        assert_eq!(
+            del_key, tomb_key,
+            "tombstone key must match delete key (CONTRACT-006)"
+        );
         assert_eq!(tomb_payload, "null", "tombstone payload must be null");
 
         let parsed: CdcEnvelope = must_ok(
@@ -1258,7 +1294,11 @@ mod tests {
             "create should produce a CDC envelope",
         );
         must_ok(sink.emit(&envelope), "emit should succeed for create");
-        assert_eq!(sink.sent.len(), 1, "create must emit exactly one message (no tombstone)");
+        assert_eq!(
+            sink.sent.len(),
+            1,
+            "create must emit exactly one message (no tombstone)"
+        );
     }
 
     #[cfg(not(feature = "kafka"))]
@@ -1428,8 +1468,14 @@ mod tests {
             let msgs = sent.lock().unwrap();
             let k1: Value = serde_json::from_str(&msgs[0].1).unwrap();
             let k2: Value = serde_json::from_str(&msgs[1].1).unwrap();
-            assert_eq!(k1["id"], "t-001", "key 'id' should be entity_id for first event");
-            assert_eq!(k2["id"], "t-002", "key 'id' should be entity_id for second event");
+            assert_eq!(
+                k1["id"], "t-001",
+                "key 'id' should be entity_id for first event"
+            );
+            assert_eq!(
+                k2["id"], "t-002",
+                "key 'id' should be entity_id for second event"
+            );
         }
 
         #[test]
@@ -1445,12 +1491,22 @@ mod tests {
             let (del_topic, del_key, del_payload) = &msgs[0];
             let (tomb_topic, tomb_key, tomb_payload) = &msgs[1];
 
-            assert_eq!(del_topic, tomb_topic, "tombstone topic must match delete topic");
-            assert_eq!(del_key, tomb_key, "tombstone key must match delete key (CONTRACT-006)");
+            assert_eq!(
+                del_topic, tomb_topic,
+                "tombstone topic must match delete topic"
+            );
+            assert_eq!(
+                del_key, tomb_key,
+                "tombstone key must match delete key (CONTRACT-006)"
+            );
             assert_eq!(tomb_payload, "null", "tombstone payload must be null");
 
             let parsed: CdcEnvelope = serde_json::from_str(del_payload).unwrap();
-            assert_eq!(parsed.op, CdcOp::Delete, "first message must be the delete envelope");
+            assert_eq!(
+                parsed.op,
+                CdcOp::Delete,
+                "first message must be the delete envelope"
+            );
         }
 
         #[test]
@@ -1459,7 +1515,11 @@ mod tests {
             let ctx = default_ctx();
             let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry(), &ctx).unwrap();
             sink.emit(&envelope).unwrap();
-            assert_eq!(sent.lock().unwrap().len(), 1, "create must not emit tombstone");
+            assert_eq!(
+                sent.lock().unwrap().len(),
+                1,
+                "create must not emit tombstone"
+            );
         }
 
         #[test]
@@ -1473,7 +1533,10 @@ mod tests {
             let (_, _, json) = &msgs[0];
             let v: serde_json::Value = serde_json::from_str(json).unwrap();
             assert!(v.get("op").is_some(), "envelope must have 'op' field");
-            assert!(v.get("source").is_some(), "envelope must have 'source' field");
+            assert!(
+                v.get("source").is_some(),
+                "envelope must have 'source' field"
+            );
             assert!(v.get("ts_ms").is_some(), "envelope must have 'ts_ms' field");
             assert_eq!(v["op"], "c");
             assert_eq!(v["source"]["connector"], "axon");
