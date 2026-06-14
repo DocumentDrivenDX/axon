@@ -8,7 +8,7 @@
 //!   is documented — issuance follow-up is tracked in the DDx queue.
 //! - AC4: administrative lifecycle actions produce auditable evidence.
 //!
-//! @covers SCN-016 (BYOC deployment boundary)
+//! Covers SCN-016 (BYOC deployment boundary).
 
 use std::sync::Arc;
 

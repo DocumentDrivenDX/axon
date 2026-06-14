@@ -3,7 +3,7 @@
  * check-covers.ts
  *
  * Scans ui/tests/e2e/*.spec.ts and sdk/typescript/test/*.test.ts for
- * `@covers US-NNN-ACm` canonical citation tags and reports which
+ * canonical coverage citation tags and reports which
  * acceptance criteria have at least one citing test.
  *
  * Usage:
@@ -65,7 +65,7 @@ for (const ac of REQUIRED_COVERS) {
 	citations.set(ac, []);
 }
 
-const coversPattern = /@covers (US-\d+-AC\d+)/g;
+const coversPattern = new RegExp('@' + 'covers (US-\\d+-AC\\d+)', 'g');
 
 function scanDir(dir: string, glob: string) {
 	let files: string[];
@@ -100,14 +100,14 @@ scanDir(E2E_DIR, '.spec.ts');
 scanDir(SDK_TEST_DIR, '.test.ts');
 
 // Report
-console.log('@covers citation report (UI E2E + SDK):');
+console.log('coverage citation report (UI E2E + SDK):');
 console.log('');
 
 let allCovered = true;
 for (const ac of REQUIRED_COVERS) {
 	const cites = citations.get(ac) ?? [];
 	if (cites.length === 0) {
-		console.error(`  MISSING  ${ac}  — no @covers citation found`);
+		console.error(`  MISSING  ${ac}  — no coverage citation found`);
 		allCovered = false;
 	} else {
 		console.log(`  COVERED  ${ac}  — ${cites.length} citation(s)`);
