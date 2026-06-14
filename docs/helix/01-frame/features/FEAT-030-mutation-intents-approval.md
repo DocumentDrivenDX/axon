@@ -7,7 +7,7 @@ ddx:
     self_hash: 81a89ddb42efe517ddde6ea7481c104b3600481a32072e31bd9d94cd7294922d
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # Feature Specification: FEAT-030 — Mutation Intents and Approval
 

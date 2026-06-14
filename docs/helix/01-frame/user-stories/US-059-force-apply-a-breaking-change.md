@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 936daba81dff3793db979ecb654296c7550299b1e160beee5e1988ac392dcfb9
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # US-059: Force-Apply a Breaking Change

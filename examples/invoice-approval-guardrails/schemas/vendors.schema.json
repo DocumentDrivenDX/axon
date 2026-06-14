@@ -1,0 +1,20 @@
+{
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "risk": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "risk"
+  ],
+  "type": "object"
+}

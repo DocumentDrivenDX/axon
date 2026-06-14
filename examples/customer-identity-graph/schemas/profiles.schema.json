@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "canonical_email": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "segment": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "canonical_email",
+    "confidence",
+    "segment"
+  ],
+  "type": "object"
+}

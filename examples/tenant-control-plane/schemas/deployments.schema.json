@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "region",
+    "status"
+  ],
+  "type": "object"
+}

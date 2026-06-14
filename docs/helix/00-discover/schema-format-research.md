@@ -7,7 +7,7 @@ ddx:
     self_hash: d406401334b2fe65ee66b390a3f9ecbc03f436aefb2bdf5c8812333293cd434c
     deps:
       helix.product-vision: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # Research: Schema Format Landscape for Entity-Graph-Relational Data Models
 

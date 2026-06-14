@@ -1,0 +1,15 @@
+{
+  "properties": {
+    "handle": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "handle",
+    "role"
+  ],
+  "type": "object"
+}

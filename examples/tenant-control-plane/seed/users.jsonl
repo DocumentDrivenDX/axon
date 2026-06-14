@@ -1,0 +1,2 @@
+{"data": {"email": "alice@example.com", "role": "admin"}, "id": "user-alice"}
+{"data": {"email": "bob@example.com", "role": "read"}, "id": "user-bob"}

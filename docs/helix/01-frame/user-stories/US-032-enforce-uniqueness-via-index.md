@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 3ab4e78b28a4284634a74b1e25bf16b3971837bb339ee28cdec4622424d3b8cd
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # US-032: Enforce Uniqueness via Index
 

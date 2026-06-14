@@ -13,7 +13,7 @@ ddx:
       FEAT-003: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
       FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
       FEAT-023: 24416c13b9a48e864ae43e3967c63d2711763c745905850dbb4f03768ffc7949
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # ADR-015: Rollback and Recovery — Compensating Transaction Semantics
 

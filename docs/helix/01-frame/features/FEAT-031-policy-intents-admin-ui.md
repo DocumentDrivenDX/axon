@@ -7,7 +7,7 @@ ddx:
     self_hash: 6949273cd3f6b1e8f7fe71591cad9457da82bb6dd9fcea05f20228dd5a1ef0b8
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # Feature Specification: FEAT-031 — Policy and Intents Admin UI
 

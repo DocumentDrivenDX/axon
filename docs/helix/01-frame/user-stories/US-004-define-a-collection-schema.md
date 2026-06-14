@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: fb1c7a6fa0c42accb2d0c76d86bae9a10d06c5b0063178d42ce984e210407069
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # US-004: Define a Collection Schema

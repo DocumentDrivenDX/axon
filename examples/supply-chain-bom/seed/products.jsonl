@@ -1,0 +1,4 @@
+{"data": {"kind": "finished-good", "name": "Widget A", "sku": "WIDGET-A"}, "id": "widget-a"}
+{"data": {"kind": "assembly", "name": "Sub Assembly B", "sku": "SUB-B"}, "id": "sub-b"}
+{"data": {"kind": "part", "name": "Component C", "sku": "COMP-C"}, "id": "component-c"}
+{"data": {"kind": "part", "name": "Component D", "sku": "COMP-D"}, "id": "component-d"}

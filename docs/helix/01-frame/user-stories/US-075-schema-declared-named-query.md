@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 5e18cb10c7beae1a3cc65c936ce489a99538139461de160ef1c78609985a3c4d
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # US-075: Schema-Declared Named Query

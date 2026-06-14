@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "version": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "name",
+    "status",
+    "version"
+  ],
+  "type": "object"
+}

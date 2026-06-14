@@ -1,7 +1,7 @@
 ---
 title: Getting Started
 weight: 1
-next: /docs/concepts
+next: concepts/
 ---
 
 Get Axon running and create your first entity in under 5 minutes.
@@ -129,7 +129,7 @@ axon doctor
 ## Next steps
 
 {{< cards >}}
-  {{< card link="/docs/concepts" title="Core Concepts" subtitle="Understand collections, schema evolution, links, and the audit model." >}}
-  {{< card link="/docs/cli" title="CLI Reference" subtitle="Complete reference for every axon subcommand." >}}
-  {{< card link="/docs/demos" title="Full Demo" subtitle="Watch the complete lifecycle walkthrough." >}}
+  {{< card link="../concepts/" title="Core Concepts" subtitle="Understand collections, schema evolution, links, and the audit model." >}}
+  {{< card link="../cli/" title="CLI Reference" subtitle="Complete reference for every axon subcommand." >}}
+  {{< card link="../demo-reels/" title="Demo Reels" subtitle="Browse the HELIX-mapped reel catalog and quickstart cast." >}}
 {{< /cards >}}

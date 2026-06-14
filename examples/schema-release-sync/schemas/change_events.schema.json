@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "collection": {
+      "type": "string"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "operation": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "collection",
+    "operation",
+    "offset"
+  ],
+  "type": "object"
+}

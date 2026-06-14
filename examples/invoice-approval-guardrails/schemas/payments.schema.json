@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "amount": {
+      "type": "number"
+    },
+    "reference": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "reference",
+    "amount",
+    "status"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,2 @@
+{"data": {"risk": "low", "status": "ready", "summary": "Update invoice memo"}, "id": "intent-001"}
+{"data": {"risk": "high", "status": "pending_approval", "summary": "Approve high-value invoice"}, "id": "intent-002"}

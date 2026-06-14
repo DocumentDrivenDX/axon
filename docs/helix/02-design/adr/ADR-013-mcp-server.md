@@ -21,7 +21,7 @@ ddx:
       FEAT-005: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
       FEAT-013: e218b7499012d56e569acc094cc40b47360b34fda601b473ac425af2cec09b27
       FEAT-015: c75ebd606ba19b7ac509eefcd0bb47c229433b5a14b1110fcae70d6c3898bd6f
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # ADR-013: MCP Server (Model Context Protocol)
 

@@ -7,7 +7,7 @@ ddx:
     self_hash: e218b7499012d56e569acc094cc40b47360b34fda601b473ac425af2cec09b27
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # Feature Specification: FEAT-013 — Secondary Indexes and Query Acceleration
 

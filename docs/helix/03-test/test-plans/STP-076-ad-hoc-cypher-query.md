@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: aafb96e6f6c1722a76d64752eaf01339faf41593aa2cd9fbce9a5b9741c01fbe
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # Story Test Plan: STP-076-ad-hoc-cypher-query

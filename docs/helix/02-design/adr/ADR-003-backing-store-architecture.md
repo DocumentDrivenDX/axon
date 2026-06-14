@@ -15,7 +15,7 @@ ddx:
       FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
       SPIKE-001: 34d6ebc4525acb6bb446844abe815d33def8121d058a618c52ace6d3d8fcce01
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # ADR-003: Backing Store Architecture — SQLite + PostgreSQL with Application-Layer Audit
 

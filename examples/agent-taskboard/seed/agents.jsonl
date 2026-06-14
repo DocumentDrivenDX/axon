@@ -1,0 +1,2 @@
+{"data": {"name": "Agent Alpha", "role": "builder", "scope": "storage"}, "id": "agent-alpha"}
+{"data": {"name": "Agent Beta", "role": "reviewer", "scope": "policy"}, "id": "agent-beta"}

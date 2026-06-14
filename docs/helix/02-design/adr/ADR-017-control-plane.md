@@ -11,7 +11,7 @@ ddx:
       ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
       ADR-011: 128732e07720a3aee6e4d88295cae04893d5c661d8744246532cccb1e667ea58
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # ADR-017: Control Plane Topology and BYOC Deployment Model
 

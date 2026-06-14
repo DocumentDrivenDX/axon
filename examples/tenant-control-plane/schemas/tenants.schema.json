@@ -1,0 +1,15 @@
+{
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "plan": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "plan"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,28 @@
+{
+  "properties": {
+    "agent": {
+      "type": "string"
+    },
+    "priority": {
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "in_progress",
+        "review",
+        "done"
+      ],
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "status",
+    "priority"
+  ],
+  "type": "object"
+}

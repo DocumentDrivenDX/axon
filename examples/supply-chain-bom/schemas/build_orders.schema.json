@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "order_number": {
+      "type": "string"
+    },
+    "quantity": {
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "order_number",
+    "quantity",
+    "status"
+  ],
+  "type": "object"
+}

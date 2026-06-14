@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 760b38a6415c09c60b911a6f7dc5955787f288d01a976bbaf4cde279534b7396
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # Story Test Plan: STP-104-explain-effective-policy

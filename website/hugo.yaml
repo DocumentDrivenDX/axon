@@ -24,12 +24,18 @@ menu:
     - name: CLI Reference
       pageRef: /docs/cli
       weight: 2
-    - name: Demo
-      pageRef: /docs/demos
+    - name: Coverage
+      pageRef: /docs/coverage
       weight: 3
+    - name: Examples
+      pageRef: /docs/examples
+      weight: 4
+    - name: Demo Reels
+      pageRef: /docs/demo-reels
+      weight: 5
     - name: GitHub ↗
       url: https://github.com/DocumentDrivenDX/axon
-      weight: 4
+      weight: 6
 
 params:
   description: Schema-first, auditable entity store for agentic applications

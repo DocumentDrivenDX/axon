@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "scope": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "role",
+    "scope"
+  ],
+  "type": "object"
+}

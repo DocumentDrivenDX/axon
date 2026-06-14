@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "risk": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary",
+    "risk",
+    "status"
+  ],
+  "type": "object"
+}

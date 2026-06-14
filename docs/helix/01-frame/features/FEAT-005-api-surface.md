@@ -7,7 +7,7 @@ ddx:
     self_hash: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # Feature Specification: FEAT-005 — API Surface
 

@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "revision": {
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "status",
+    "revision"
+  ],
+  "type": "object"
+}

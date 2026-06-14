@@ -4,7 +4,7 @@ layout: hextra-home
 ---
 
 {{< hextra/hero-badge link="https://github.com/DocumentDrivenDX/axon" >}}
-  <span>Open Source · MIT</span>
+  <span>Open Source · MIT · HELIX 0.7.1 coverage target</span>
   {{< icon name="arrow-circle-right" attributes="height=14" >}}
 {{< /hextra/hero-badge >}}
 
@@ -16,13 +16,14 @@ layout: hextra-home
 
 <div class="hx-mb-12">
 {{< hextra/hero-subtitle >}}
-  Axon is a transactional entity store for agentic applications — structured storage with schema validation, immutable audit logs, graph relationships, and APIs designed for how agents actually consume data.
+  Axon is a transactional entity store for agentic applications — structured storage with schema validation, immutable audit logs, graph relationships, and APIs designed for how agents actually consume data. The microsite now maps every HELIX feature, story, scenario, and use case to a sample project and demo reel.
 {{< /hextra/hero-subtitle >}}
 </div>
 
 <div class="hx-mb-12">
 {{< hextra/hero-button text="Get Started" link="docs/getting-started" >}}
-{{< hextra/hero-button text="Watch Demo" link="docs/demos" style="alt" >}}
+{{< hextra/hero-button text="Explore Coverage" link="docs/coverage" style="alt" >}}
+{{< hextra/hero-button text="Demo Reels" link="docs/demo-reels" style="alt" >}}
 </div>
 
 <div class="hx-mt-8"></div>
@@ -54,6 +55,10 @@ layout: hextra-home
   {{< hextra/feature-card
     title="Embedded or server"
     subtitle="Run Axon in-process with SQLite or as a standalone server with PostgreSQL. Same API, same CLI, same audit guarantees."
+  >}}
+  {{< hextra/feature-card
+    title="HELIX coverage catalog"
+    subtitle="The site is generated from 31 feature specs, 140 user stories, 17 SCN scenarios, and 10 use-case domains with 100% mapped examples and reels."
   >}}
 {{< /hextra/feature-grid >}}
 

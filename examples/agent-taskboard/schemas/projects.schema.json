@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "phase": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "phase",
+    "owner"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,1841 @@
+{
+  "coverage": {
+    "coverage_percent": 100,
+    "features": 31,
+    "mapped": 198,
+    "scenarios": 17,
+    "stories": 140,
+    "unmapped": 0,
+    "use_cases": 10
+  },
+  "examples": {
+    "admin-policy-workbench": {
+      "demo_reel": "admin-policy-reel",
+      "path": "examples/admin-policy-workbench",
+      "summary": "Policy authoring, dry-runs, redacted browsing, intent queues, approval review, stale-intent handling, and UI parity with GraphQL/MCP.",
+      "title": "Admin Policy Workbench"
+    },
+    "agent-taskboard": {
+      "demo_reel": "agent-taskboard-reel",
+      "path": "examples/agent-taskboard",
+      "summary": "A governed task and bead queue that demonstrates collections, schemas, entity CRUD, links, graph traversal, audit, optimistic concurrency, MCP-oriented task discovery, and the unified CLI.",
+      "title": "Agent Taskboard"
+    },
+    "customer-identity-graph": {
+      "demo_reel": "customer-identity-reel",
+      "path": "examples/customer-identity-graph",
+      "summary": "CRM, CDP, and MDM flows for contact merge, identity resolution, golden record survivorship, relationship traversal, and provenance.",
+      "title": "Customer Identity Graph"
+    },
+    "invoice-approval-guardrails": {
+      "demo_reel": "finance-guardrails-reel",
+      "path": "examples/invoice-approval-guardrails",
+      "summary": "A finance workflow covering AP/AR partial payment, state machines, policy envelopes, mutation intent preview/approval, rollback, and audit-safe trusted agent writes.",
+      "title": "Invoice Approval Guardrails"
+    },
+    "schema-release-sync": {
+      "demo_reel": "schema-release-reel",
+      "path": "examples/schema-release-sync",
+      "summary": "Schema evolution, secondary indexes, validation rules, CDC, markdown templates, git mirror output, and rollback preview.",
+      "title": "Schema Release Sync"
+    },
+    "supply-chain-bom": {
+      "demo_reel": "supply-chain-reel",
+      "path": "examples/supply-chain-bom",
+      "summary": "ERP-style bill-of-materials traversal, recursive graph queries, reachability checks, aggregation, and link metadata.",
+      "title": "Supply Chain BOM"
+    },
+    "tenant-control-plane": {
+      "demo_reel": "tenant-control-reel",
+      "path": "examples/tenant-control-plane",
+      "summary": "Multi-tenant path routing, users, credentials, JWT grant bounds, revocation, deployment registration, and BYOC isolation.",
+      "title": "Tenant Control Plane"
+    }
+  },
+  "generated_date": "2026-06-14",
+  "items": [
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "FEAT-001",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/features/FEAT-001-collections.md",
+      "title": "Collections"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "FEAT-002",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/features/FEAT-002-schema-engine.md",
+      "title": "Schema Engine"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "FEAT-003",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/features/FEAT-003-audit-log.md",
+      "title": "Audit Log"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "FEAT-004",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/features/FEAT-004-entity-operations.md",
+      "title": "Entity Operations"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "FEAT-005",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/features/FEAT-005-api-surface.md",
+      "title": "API Surface"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "FEAT-006",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/features/FEAT-006-bead-storage-adapter.md",
+      "title": "Bead Storage Adapter"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "FEAT-007",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/01-frame/features/FEAT-007-entity-graph-model.md",
+      "title": "Entity-Graph Data Model"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "FEAT-008",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/features/FEAT-008-acid-transactions.md",
+      "title": "ACID Transactions"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "FEAT-009",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/features/FEAT-009-unified-graph-query.md",
+      "title": "Unified Graph Query (Cypher)"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "FEAT-010",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/features/FEAT-010-entity-state-machines.md",
+      "title": "Entity State Machines and Transition Guards"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "FEAT-011",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/features/FEAT-011-admin-web-ui.md",
+      "title": "Admin Web UI"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "FEAT-012",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/features/FEAT-012-authorization.md",
+      "title": "Authentication, Identity, and Authorization"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "FEAT-013",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/features/FEAT-013-secondary-indexes.md",
+      "title": "Secondary Indexes and Query Acceleration"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "FEAT-014",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/features/FEAT-014-multi-tenancy.md",
+      "title": "Tenancy, Namespace Hierarchy, and Path-Based Addressing"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "FEAT-015",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/features/FEAT-015-graphql-query-layer.md",
+      "title": "GraphQL Query Layer"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "FEAT-016",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/features/FEAT-016-mcp-server.md",
+      "title": "MCP Server"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "FEAT-017",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/features/FEAT-017-schema-evolution.md",
+      "title": "Schema Evolution and Migration"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "FEAT-018",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/features/FEAT-018-aggregation-queries.md",
+      "title": "Aggregation Queries"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "FEAT-019",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/features/FEAT-019-validation-rules.md",
+      "title": "Validation Rules and Actionable Errors"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "FEAT-020",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/01-frame/features/FEAT-020-link-discovery-and-graph-queries.md",
+      "title": "Link Discovery and Graph Queries"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "FEAT-021",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/features/FEAT-021-change-feeds-cdc.md",
+      "title": "Change Feeds (CDC)"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "FEAT-022",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/features/FEAT-022-agent-guardrails.md",
+      "title": "Agent Guardrails"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "FEAT-023",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/features/FEAT-023-rollback-recovery.md",
+      "title": "Rollback and Recovery"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "FEAT-024",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/features/FEAT-024-application-substrate.md",
+      "title": "Application Substrate"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "FEAT-025",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/features/FEAT-025-control-plane.md",
+      "title": "BYOC Deployment Control Plane"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "FEAT-026",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/features/FEAT-026-markdown-templates.md",
+      "title": "Markdown Template Rendering"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "FEAT-027",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/features/FEAT-027-git-mirror.md",
+      "title": "Git Mirror"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "FEAT-028",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/features/FEAT-028-unified-binary.md",
+      "title": "Unified Binary & Service Management"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "FEAT-029",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/features/FEAT-029-access-control.md",
+      "title": "Data-Layer Access Control Policies"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "FEAT-030",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/features/FEAT-030-mutation-intents-approval.md",
+      "title": "Mutation Intents and Approval"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "FEAT-031",
+      "kind": "feature",
+      "parent": "",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/features/FEAT-031-policy-intents-admin-ui.md",
+      "title": "Policy and Intents Admin UI"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "SCN-001",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "AP/AR - Payment Application with Partial Payment"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "SCN-002",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "CRM - Contact Merge (Duplicate Resolution)"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "SCN-003",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "CDP - Identity Resolution and Profile Merge"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "SCN-004",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "ERP - BOM Explosion via Recursive Traversal"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "SCN-005",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "Workflow - Invoice Approval Chain"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "SCN-006",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "Issue Tracking - Dependency DAG and Ready Queue"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "SCN-007",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "Agentic - Bead Lifecycle with Concurrent Agents"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "SCN-008",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "MDM - Golden Record Merge with Survivorship"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "SCN-009",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "Document Management - Version Chain"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "SCN-010",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "Time Tracking - Approval and Billing"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "SCN-011",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "Cross-Tenant Isolation via Path Routing (FEAT-014, ADR-018)"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "SCN-012",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "User in Two Tenants with Different Roles (FEAT-012, FEAT-014)"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "SCN-013",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "JWT Credential Grant Enforcement and Revocation (FEAT-012)"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "SCN-014",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "Authentication Rejection Matrix (ADR-018 \u00a74)"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "SCN-015",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "Default-Tenant Bootstrap Under Concurrency (FEAT-014, ADR-018 \u00a76)"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "SCN-016",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "BYOC Deployment Boundary (FEAT-025, ADR-017)"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "SCN-017",
+      "kind": "scenario",
+      "parent": "",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/03-test/test-plan.md",
+      "title": "Trusted Agent Invoice Write via GraphQL and MCP (FEAT-015, FEAT-016, FEAT-029, FEAT-030)"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-001",
+      "kind": "story",
+      "parent": "FEAT-001",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-001-create-a-collection.md",
+      "title": "Create a Collection"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-002",
+      "kind": "story",
+      "parent": "FEAT-001",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-002-list-and-inspect-collections.md",
+      "title": "List and Inspect Collections"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-003",
+      "kind": "story",
+      "parent": "FEAT-001",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-003-drop-a-collection.md",
+      "title": "Drop a Collection"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-004",
+      "kind": "story",
+      "parent": "FEAT-002",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-004-define-a-collection-schema.md",
+      "title": "Define a Collection Schema"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-005",
+      "kind": "story",
+      "parent": "FEAT-002",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-005-get-clear-validation-errors.md",
+      "title": "Get Clear Validation Errors"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-006",
+      "kind": "story",
+      "parent": "FEAT-002",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-006-inspect-a-schema.md",
+      "title": "Inspect a Schema"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-007",
+      "kind": "story",
+      "parent": "FEAT-003",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-007-query-the-audit-trail.md",
+      "title": "Query the Audit Trail"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-008",
+      "kind": "story",
+      "parent": "FEAT-003",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-008-revert-an-entity-to-previous-state.md",
+      "title": "Revert an Entity to Previous State"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-009",
+      "kind": "story",
+      "parent": "FEAT-003",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-009-attach-metadata-to-mutations.md",
+      "title": "Attach Metadata to Mutations"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-010",
+      "kind": "story",
+      "parent": "FEAT-004",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-010-crud-an-entity.md",
+      "title": "CRUD an Entity"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-011",
+      "kind": "story",
+      "parent": "FEAT-004",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-011-query-entities.md",
+      "title": "Query Entities"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-012",
+      "kind": "story",
+      "parent": "FEAT-004",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-012-partial-update.md",
+      "title": "Partial Update"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-013",
+      "kind": "story",
+      "parent": "FEAT-005",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-013-use-axon-from-an-agent.md",
+      "title": "Use Axon from an Agent"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-014",
+      "kind": "story",
+      "parent": "FEAT-005",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-014-use-axon-from-the-command-line.md",
+      "title": "Use Axon from the Command Line"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-015",
+      "kind": "story",
+      "parent": "FEAT-006",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-015-store-and-query-beads.md",
+      "title": "Store and Query Beads"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-016",
+      "kind": "story",
+      "parent": "FEAT-006",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-016-track-bead-dependencies.md",
+      "title": "Track Bead Dependencies"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "US-017",
+      "kind": "story",
+      "parent": "FEAT-007",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/01-frame/user-stories/US-017-model-entities-with-nested-structure.md",
+      "title": "Model Entities with Nested Structure"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "US-018",
+      "kind": "story",
+      "parent": "FEAT-007",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/01-frame/user-stories/US-018-create-and-traverse-links.md",
+      "title": "Create and Traverse Links"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "US-019",
+      "kind": "story",
+      "parent": "FEAT-007",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/01-frame/user-stories/US-019-query-across-entity-link-graph.md",
+      "title": "Query Across Entity-Link Graph"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-020",
+      "kind": "story",
+      "parent": "FEAT-008",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-020-atomic-multi-entity-update.md",
+      "title": "Atomic Multi-Entity Update"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-021",
+      "kind": "story",
+      "parent": "FEAT-008",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-021-concurrent-agent-safety.md",
+      "title": "Concurrent Agent Safety"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-022",
+      "kind": "story",
+      "parent": "FEAT-008",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-022-snapshot-isolation.md",
+      "title": "Snapshot Isolation"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-023",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-023-traverse-a-dependency-graph.md",
+      "title": "Traverse a Dependency Graph"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-024",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-024-explode-a-bill-of-materials.md",
+      "title": "Explode a Bill of Materials"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-025",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-025-check-reachability.md",
+      "title": "Check Reachability"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-026",
+      "kind": "story",
+      "parent": "FEAT-010",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-026-enforce-invoice-approval-workflow.md",
+      "title": "Enforce Invoice Approval Workflow"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-027",
+      "kind": "story",
+      "parent": "FEAT-010",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-027-bead-lifecycle-with-dependency-guards.md",
+      "title": "Bead Lifecycle with Dependency Guards"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-028",
+      "kind": "story",
+      "parent": "FEAT-010",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-028-query-valid-transitions.md",
+      "title": "Query Valid Transitions"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-031",
+      "kind": "story",
+      "parent": "FEAT-013",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-031-declare-a-secondary-index.md",
+      "title": "Declare a Secondary Index"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-032",
+      "kind": "story",
+      "parent": "FEAT-013",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-032-enforce-uniqueness-via-index.md",
+      "title": "Enforce Uniqueness via Index"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-033",
+      "kind": "story",
+      "parent": "FEAT-013",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-033-compound-index-for-multi-field-queries.md",
+      "title": "Compound Index for Multi-Field Queries"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-034",
+      "kind": "story",
+      "parent": "FEAT-013",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-034-background-index-build.md",
+      "title": "Background Index Build"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-035",
+      "kind": "story",
+      "parent": "FEAT-014",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-035-create-and-use-a-database.md",
+      "title": "Create and Use a Database (within a tenant)"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-036",
+      "kind": "story",
+      "parent": "FEAT-014",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-036-organize-collections-with-schemas.md",
+      "title": "Organize Collections with Schemas"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-037",
+      "kind": "story",
+      "parent": "FEAT-014",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-037-zero-config-default-tenant-for-dev-mode.md",
+      "title": "Zero-Config Default Tenant for Dev Mode"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-038",
+      "kind": "story",
+      "parent": "FEAT-014",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-038-scope-access-via-tenant-membership.md",
+      "title": "Scope Access to a Specific Database via Tenant Membership"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-039",
+      "kind": "story",
+      "parent": "FEAT-014",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-039-register-nodes-and-track-placement.md",
+      "title": "Register Nodes and Track Placement"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-040",
+      "kind": "story",
+      "parent": "FEAT-011",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-040-navigate-the-tenant-and-database-model.md",
+      "title": "Navigate the Tenant and Database Model"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-041",
+      "kind": "story",
+      "parent": "FEAT-011",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-041-administer-users-members-and-credentials.md",
+      "title": "Administer Users, Members, and Credentials"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-042",
+      "kind": "story",
+      "parent": "FEAT-011",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-042-manage-collections-and-entities.md",
+      "title": "Manage Collections and Entities"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-043",
+      "kind": "story",
+      "parent": "FEAT-012",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-043-authenticate-via-tailscale.md",
+      "title": "Authenticate via Tailscale"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-044",
+      "kind": "story",
+      "parent": "FEAT-012",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-044-role-based-access-control.md",
+      "title": "Role-Based Access Control"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-045",
+      "kind": "story",
+      "parent": "FEAT-011",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-045-use-advanced-database-tools.md",
+      "title": "Use Advanced Database Tools"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-046",
+      "kind": "story",
+      "parent": "FEAT-029",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-046-field-level-masking.md",
+      "title": "Field-Level Masking"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-047",
+      "kind": "story",
+      "parent": "FEAT-029",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-047-attribute-based-write-control.md",
+      "title": "Attribute-Based Write Control"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-048",
+      "kind": "story",
+      "parent": "FEAT-015",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-048-query-entities-with-relationships.md",
+      "title": "Query Entities with Relationships"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-049",
+      "kind": "story",
+      "parent": "FEAT-015",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-049-discover-the-api-via-introspection.md",
+      "title": "Discover the API via Introspection"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-050",
+      "kind": "story",
+      "parent": "FEAT-015",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-050-subscribe-to-entity-changes.md",
+      "title": "Subscribe to Entity Changes"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-051",
+      "kind": "story",
+      "parent": "FEAT-015",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-051-use-graphql-from-the-admin-ui.md",
+      "title": "Use GraphQL from the Admin UI"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-052",
+      "kind": "story",
+      "parent": "FEAT-016",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-052-agent-discovers-axon-via-mcp.md",
+      "title": "Agent Discovers Axon via MCP"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-053",
+      "kind": "story",
+      "parent": "FEAT-016",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-053-agent-cruds-entities-via-mcp.md",
+      "title": "Agent CRUDs Entities via MCP"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-054",
+      "kind": "story",
+      "parent": "FEAT-016",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-054-agent-queries-via-graphql-through-mcp.md",
+      "title": "Agent Queries via GraphQL through MCP"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-055",
+      "kind": "story",
+      "parent": "FEAT-016",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-055-agent-subscribes-to-changes-via-mcp.md",
+      "title": "Agent Subscribes to Changes via MCP"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-056",
+      "kind": "story",
+      "parent": "FEAT-016",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-056-local-agent-connects-via-stdio.md",
+      "title": "Local Agent Connects via Stdio"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-057",
+      "kind": "story",
+      "parent": "FEAT-015",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-057-mutate-entities-via-graphql.md",
+      "title": "Mutate Entities via GraphQL"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-058",
+      "kind": "story",
+      "parent": "FEAT-017",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-058-detect-breaking-schema-changes.md",
+      "title": "Detect Breaking Schema Changes"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-059",
+      "kind": "story",
+      "parent": "FEAT-017",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-059-force-apply-a-breaking-change.md",
+      "title": "Force-Apply a Breaking Change"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-060",
+      "kind": "story",
+      "parent": "FEAT-017",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-060-revalidate-entities-against-current-schema.md",
+      "title": "Revalidate Entities Against Current Schema"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-061",
+      "kind": "story",
+      "parent": "FEAT-017",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-061-view-schema-diff.md",
+      "title": "View Schema Diff"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-062",
+      "kind": "story",
+      "parent": "FEAT-018",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-062-count-entities-by-field.md",
+      "title": "Count Entities by Field"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-063",
+      "kind": "story",
+      "parent": "FEAT-018",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-063-compute-numeric-aggregations.md",
+      "title": "Compute Numeric Aggregations"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-064",
+      "kind": "story",
+      "parent": "FEAT-018",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-064-aggregate-via-graphql.md",
+      "title": "Aggregate via GraphQL"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-065",
+      "kind": "story",
+      "parent": "FEAT-018",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-065-aggregate-via-mcp.md",
+      "title": "Aggregate via MCP"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-066",
+      "kind": "story",
+      "parent": "FEAT-019",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-066-cross-field-validation-rules.md",
+      "title": "Cross-Field Validation Rules"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-067",
+      "kind": "story",
+      "parent": "FEAT-019",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-067-validation-gates.md",
+      "title": "Validation Gates"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-068",
+      "kind": "story",
+      "parent": "FEAT-019",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-068-actionable-error-messages.md",
+      "title": "Actionable Error Messages"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-069",
+      "kind": "story",
+      "parent": "FEAT-019",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-069-validate-rules-on-schema-save.md",
+      "title": "Validate Rules on Schema Save"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-070",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-070-find-link-targets.md",
+      "title": "Find Link Targets"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-071",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-071-list-entity-neighbors.md",
+      "title": "List Entity Neighbors"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-072",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-072-explore-graph-via-graphql.md",
+      "title": "Explore Graph via GraphQL"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-073",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-073-discover-links-via-mcp.md",
+      "title": "Discover Links via MCP"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-074",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-074-pattern-query-for-ready-blocked-queue.md",
+      "title": "Pattern Query for Ready/Blocked Queue"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-074b",
+      "kind": "story",
+      "parent": "FEAT-019",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-074b-query-by-gate-status.md",
+      "title": "Query by Gate Status"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-075",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-075-schema-declared-named-query.md",
+      "title": "Schema-Declared Named Query"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-076",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-076-ad-hoc-cypher-query.md",
+      "title": "Ad-hoc Cypher Query"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "US-077",
+      "kind": "story",
+      "parent": "FEAT-009",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/01-frame/user-stories/US-077-subscribe-to-a-named-query.md",
+      "title": "Subscribe to a Named Query"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-078",
+      "kind": "story",
+      "parent": "FEAT-015",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-078-json-ld-content-negotiation.md",
+      "title": "JSON-LD Content Negotiation"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-079",
+      "kind": "story",
+      "parent": "FEAT-003",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-079-multi-collection-audit-tail.md",
+      "title": "Multi-Collection Audit Tail"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-080",
+      "kind": "story",
+      "parent": "FEAT-004",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-080-consistent-point-in-time-snapshot.md",
+      "title": "Consistent Point-in-Time Snapshot"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-081",
+      "kind": "story",
+      "parent": "FEAT-008",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-081-idempotent-transaction-submission.md",
+      "title": "Idempotent Transaction Submission"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-087",
+      "kind": "story",
+      "parent": "FEAT-014",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-087-create-a-tenant-with-multiple-databases.md",
+      "title": "Create a Tenant with Multiple Databases"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-088",
+      "kind": "story",
+      "parent": "FEAT-014",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-088-users-are-members-of-multiple-tenants.md",
+      "title": "Users Are Members of Multiple Tenants"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-089",
+      "kind": "story",
+      "parent": "FEAT-012",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-089-first-class-user-with-tailscale-auto-provisioning.md",
+      "title": "First-Class User with Tailscale Auto-Provisioning"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-090",
+      "kind": "story",
+      "parent": "FEAT-012",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-090-jwt-credential-for-integration-access.md",
+      "title": "JWT Credential for Integration Access"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-091",
+      "kind": "story",
+      "parent": "FEAT-012",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-091-user-in-multiple-tenants.md",
+      "title": "User in Multiple Tenants"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-092",
+      "kind": "story",
+      "parent": "FEAT-022",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-092-keep-agent-writes-inside-assigned-scope.md",
+      "title": "Keep Agent Writes Inside Assigned Scope"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-093",
+      "kind": "story",
+      "parent": "FEAT-022",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-093-throttle-agent-mutation-bursts.md",
+      "title": "Throttle Agent Mutation Bursts"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-094",
+      "kind": "story",
+      "parent": "FEAT-022",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-094-configure-guardrails-per-agent-identity.md",
+      "title": "Configure Guardrails Per Agent Identity"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-095",
+      "kind": "story",
+      "parent": "FEAT-023",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-095-preview-recovery-before-commit.md",
+      "title": "Preview Recovery Before Commit"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-096",
+      "kind": "story",
+      "parent": "FEAT-023",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-096-revert-one-entity-safely.md",
+      "title": "Revert One Entity Safely"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-097",
+      "kind": "story",
+      "parent": "FEAT-023",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-097-undo-a-bad-transaction-or-time-window.md",
+      "title": "Undo a Bad Transaction or Time Window"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-098",
+      "kind": "story",
+      "parent": "FEAT-024",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-098-generate-a-typed-client-from-schema.md",
+      "title": "Generate a Typed Client from Schema"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-099",
+      "kind": "story",
+      "parent": "FEAT-024",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-099-generate-a-schema-driven-admin-app.md",
+      "title": "Generate a Schema-Driven Admin App"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-100",
+      "kind": "story",
+      "parent": "FEAT-024",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-100-deploy-a-schema-backed-app-with-one-command.md",
+      "title": "Deploy a Schema-Backed App with One Command"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-101",
+      "kind": "story",
+      "parent": "FEAT-029",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-101-hide-inaccessible-entities.md",
+      "title": "Hide Inaccessible Entities"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-102",
+      "kind": "story",
+      "parent": "FEAT-029",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-102-redact-sensitive-fields.md",
+      "title": "Redact Sensitive Fields"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-103",
+      "kind": "story",
+      "parent": "FEAT-029",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-103-reject-denied-writes.md",
+      "title": "Reject Denied Writes"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-104",
+      "kind": "story",
+      "parent": "FEAT-029",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-104-explain-effective-policy.md",
+      "title": "Explain Effective Policy"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-105",
+      "kind": "story",
+      "parent": "FEAT-030",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-105-preview-a-graphql-mutation.md",
+      "title": "Preview A GraphQL Mutation"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-106",
+      "kind": "story",
+      "parent": "FEAT-030",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-106-route-risky-writes-for-approval.md",
+      "title": "Route Risky Writes For Approval"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-107",
+      "kind": "story",
+      "parent": "FEAT-030",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-107-prevent-stale-approval-execution.md",
+      "title": "Prevent Stale Approval Execution"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-108",
+      "kind": "story",
+      "parent": "FEAT-030",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-108-use-mutation-intents-from-mcp.md",
+      "title": "Use Mutation Intents From MCP"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-109",
+      "kind": "story",
+      "parent": "FEAT-029",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-109-author-and-test-policy-before-activation.md",
+      "title": "Author And Test Policy Before Activation"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-110",
+      "kind": "story",
+      "parent": "FEAT-015",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-110-enforce-policy-across-graphql-traversal.md",
+      "title": "Enforce Policy Across GraphQL Traversal"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-111",
+      "kind": "story",
+      "parent": "FEAT-015",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-111-preview-and-commit-mutation-intents.md",
+      "title": "Preview And Commit Mutation Intents"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-112",
+      "kind": "story",
+      "parent": "FEAT-016",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-112-agent-discovers-policy-envelopes.md",
+      "title": "Agent Discovers Policy Envelopes"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-113",
+      "kind": "story",
+      "parent": "FEAT-031",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-113-inspect-effective-policy-in-the-web-ui.md",
+      "title": "Inspect Effective Policy In The Web UI"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-114",
+      "kind": "story",
+      "parent": "FEAT-031",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-114-author-and-dry-run-policies-before-activation.md",
+      "title": "Author And Dry-Run Policies Before Activation"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-115",
+      "kind": "story",
+      "parent": "FEAT-031",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-115-browse-entities-with-policy-safe-ui-semantics.md",
+      "title": "Browse Entities With Policy-Safe UI Semantics"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-116",
+      "kind": "story",
+      "parent": "FEAT-031",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-116-preview-and-commit-mutation-intents-from-the-web-ui.md",
+      "title": "Preview And Commit Mutation Intents From The Web UI"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-117",
+      "kind": "story",
+      "parent": "FEAT-031",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-117-review-approve-and-reject-pending-intents.md",
+      "title": "Review, Approve, And Reject Pending Intents"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-118",
+      "kind": "story",
+      "parent": "FEAT-031",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-118-handle-stale-and-mismatched-intents-safely.md",
+      "title": "Handle Stale And Mismatched Intents Safely"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-119",
+      "kind": "story",
+      "parent": "FEAT-031",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-119-inspect-mcp-originated-policy-and-intent-outcomes.md",
+      "title": "Inspect MCP-Originated Policy And Intent Outcomes"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "US-120",
+      "kind": "story",
+      "parent": "FEAT-003",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/01-frame/user-stories/US-120-prov-o-audit-shape.md",
+      "title": "PROV-O Audit Shape"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-121",
+      "kind": "story",
+      "parent": "FEAT-011",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-121-manage-schemas-visually.md",
+      "title": "Manage Schemas Visually"
+    },
+    {
+      "demo_reel": "admin-policy-reel",
+      "id": "US-122",
+      "kind": "story",
+      "parent": "FEAT-011",
+      "sample_project": "admin-policy-workbench",
+      "source_path": "docs/helix/01-frame/user-stories/US-122-inspect-audit-and-recover-entity-state.md",
+      "title": "Inspect Audit and Recover Entity State"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-123",
+      "kind": "story",
+      "parent": "FEAT-012",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-123-development-without-auth.md",
+      "title": "Development Without Auth"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-124",
+      "kind": "story",
+      "parent": "FEAT-012",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-124-per-principal-role-assignment.md",
+      "title": "Per-Principal Role Assignment"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-125",
+      "kind": "story",
+      "parent": "FEAT-017",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-125-lazy-read-schema-migration.md",
+      "title": "Lazy-Read Schema Migration"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-126",
+      "kind": "story",
+      "parent": "FEAT-028",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-126-start-axon-from-a-single-binary.md",
+      "title": "Start Axon from a single binary"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-127",
+      "kind": "story",
+      "parent": "FEAT-028",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-127-diagnose-axon-installation.md",
+      "title": "Diagnose Axon installation"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-128",
+      "kind": "story",
+      "parent": "FEAT-028",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-128-install-axon-as-a-system-service.md",
+      "title": "Install Axon as a system service"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-129",
+      "kind": "story",
+      "parent": "FEAT-028",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-129-use-cli-against-a-running-server.md",
+      "title": "Use CLI against a running server"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-130",
+      "kind": "story",
+      "parent": "FEAT-021",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-130-emit-cdc-events-to-kafka.md",
+      "title": "Emit CDC Events to Kafka"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-131",
+      "kind": "story",
+      "parent": "FEAT-028",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-131-install-axon-with-a-single-command.md",
+      "title": "Install Axon with a single command"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-132",
+      "kind": "story",
+      "parent": "FEAT-021",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-132-replay-events-from-a-point-in-time.md",
+      "title": "Replay Events from a Point in Time"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-133",
+      "kind": "story",
+      "parent": "FEAT-026",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-133-define-a-markdown-template.md",
+      "title": "Define a Markdown Template"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "US-134",
+      "kind": "story",
+      "parent": "FEAT-028",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/01-frame/user-stories/US-134-configure-axon-persistently.md",
+      "title": "Configure Axon persistently"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-135",
+      "kind": "story",
+      "parent": "FEAT-021",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-135-discover-entity-schemas-via-registry.md",
+      "title": "Discover Entity Schemas via Registry"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-136",
+      "kind": "story",
+      "parent": "FEAT-026",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-136-render-an-entity-as-markdown.md",
+      "title": "Render an Entity as Markdown"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-137",
+      "kind": "story",
+      "parent": "FEAT-021",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-137-stream-changes-without-kafka.md",
+      "title": "Stream Changes Without Kafka"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-138",
+      "kind": "story",
+      "parent": "FEAT-026",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-138-template-survives-schema-evolution.md",
+      "title": "Template Survives Schema Evolution"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-139",
+      "kind": "story",
+      "parent": "FEAT-021",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-139-link-events-in-cdc.md",
+      "title": "Link Events in CDC"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-140",
+      "kind": "story",
+      "parent": "FEAT-027",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-140-enable-git-mirror-on-a-collection.md",
+      "title": "Enable Git Mirror on a Collection"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-141",
+      "kind": "story",
+      "parent": "FEAT-027",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-141-entity-changes-appear-as-git-commits.md",
+      "title": "Entity Changes Appear as Git Commits"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-142",
+      "kind": "story",
+      "parent": "FEAT-027",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-142-shard-strategy-organises-the-repository.md",
+      "title": "Shard Strategy Organises the Repository"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "US-143",
+      "kind": "story",
+      "parent": "FEAT-027",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/01-frame/user-stories/US-143-mirror-resumes-after-failure.md",
+      "title": "Mirror Resumes After Failure"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-144",
+      "kind": "story",
+      "parent": "FEAT-025",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-144-provision-and-register-a-byoc-deployment.md",
+      "title": "Provision and Register a BYOC Deployment"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-145",
+      "kind": "story",
+      "parent": "FEAT-025",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-145-observe-a-fleet-without-reading-tenant-data.md",
+      "title": "Observe a Fleet Without Reading Tenant Data"
+    },
+    {
+      "demo_reel": "tenant-control-reel",
+      "id": "US-146",
+      "kind": "story",
+      "parent": "FEAT-025",
+      "sample_project": "tenant-control-plane",
+      "source_path": "docs/helix/01-frame/user-stories/US-146-deprovision-with-retention-guarantees.md",
+      "title": "Deprovision with Retention Guarantees"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "USE-001",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "CRM (Customer Relationship Management)"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "USE-002",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "CDP (Customer Data Platform)"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "USE-003",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "AP/AR (Accounts Payable / Accounts Receivable)"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "USE-004",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "Time Tracking"
+    },
+    {
+      "demo_reel": "supply-chain-reel",
+      "id": "USE-005",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "supply-chain-bom",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "ERP (Enterprise Resource Planning)"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "USE-006",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "Issue Tracking"
+    },
+    {
+      "demo_reel": "schema-release-reel",
+      "id": "USE-007",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "schema-release-sync",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "Document Management"
+    },
+    {
+      "demo_reel": "customer-identity-reel",
+      "id": "USE-008",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "customer-identity-graph",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "MDM (Master Data Management)"
+    },
+    {
+      "demo_reel": "finance-guardrails-reel",
+      "id": "USE-009",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "invoice-approval-guardrails",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "Workflow Automation"
+    },
+    {
+      "demo_reel": "agent-taskboard-reel",
+      "id": "USE-010",
+      "kind": "use_case",
+      "parent": "",
+      "sample_project": "agent-taskboard",
+      "source_path": "docs/helix/00-discover/use-case-research.md",
+      "title": "Agentic Applications"
+    }
+  ],
+  "release_target": "0.7.1"
+}

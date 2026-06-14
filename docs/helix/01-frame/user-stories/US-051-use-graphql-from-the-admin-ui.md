@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 8de90a63b43b3a437d5b20007e69843f7b11dd9faedca40f0d9b16b0ea1e9f53
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # US-051: Use GraphQL from the Admin UI

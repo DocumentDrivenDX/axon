@@ -15,7 +15,7 @@ ddx:
       ADR-009: 7c5d1ebee3b962eae5cfaec389f6c7fb5b107928607f9d8040722afd4e17dc80
       FEAT-002: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
       FEAT-004: 1ba0ba90778c2e6b4a38b11632d8ca73d3b328ac19ad326e151534c26ecd0b46
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # ADR-010: Physical Storage Schema and Secondary Indexes
 

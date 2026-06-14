@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: d9ff23c155d97d4c94e9150e11744d4273635122a878745d6935baa3b99b7af6
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # US-006: Inspect a Schema

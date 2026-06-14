@@ -1,10 +1,15 @@
 ---
-title: Demo Reel
+title: Quickstart Demo
 weight: 4
-prev: /docs/cli
+prev: ../cli/
+next: ../coverage/
 ---
 
 A full end-to-end walkthrough of Axon's core workflow, recorded live in Docker.
+
+For full HELIX coverage, see the generated [demo reel catalog](../demo-reels/)
+and [sample projects](../examples/). The catalog maps every feature, user story,
+SCN scenario, and use-case domain to a scripted reel entry.
 
 The demo covers:
 

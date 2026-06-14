@@ -1,8 +1,8 @@
 ---
 title: Core Concepts
 weight: 2
-prev: /docs/getting-started
-next: /docs/cli
+prev: ../getting-started/
+next: ../cli/
 ---
 
 Axon models the world as **entities** organized into **collections**, connected by **links**, governed by **schemas**, and traced by an **audit log**.

@@ -6,12 +6,12 @@ ddx:
     - helix.feature-registry
     - helix.implementation-plan
   review:
-    self_hash: 8459009047e01155712f5fd30227bb67ce2400d3ca9bce7bcf1a9577f75436b1
+    self_hash: a7903aabb6d6129c5199f038be740078a414e6073b96ecdbea37c986894c11d5
     deps:
       helix.feature-registry: e274f95d36a550a5e82c16900412a48e567aed8937e50c3dbe29c59ebfdb531f
       helix.implementation-plan: c00ab6585798f23953b7f0a7a496bdd4e6d4c8668cdb0557c40dc2ac40b55c03
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # Release Notes - Axon 0.7.1
@@ -41,6 +41,9 @@ ddx:
 - The website expansion is governed by HELIX rather than hand-maintained
   marketing copy: feature, story, and scenario coverage must be generated from
   the canonical docs.
+- The generated microsite coverage catalog maps 31 feature specs, 140
+  user-story files, 17 named SCN scenarios, and 10 use-case domains to sample
+  projects and demo reels with 100% coverage.
 - The release notes explicitly separate the `0.7.1` documentation target from
   the currently observed package/tag state.
 
@@ -60,7 +63,8 @@ ddx:
 |------|--------------|-----------------|
 | HELIX planning | PRD and build plan version metadata aligned to 0.7.1 | Product and implementation stewards |
 | Release communication | This release note records the 0.7.1 target and tag/package caveat | Users, operators, support |
-| Website governance | Microsite expansion now has a release-bound coverage target | Documentation and website contributors |
+| Website governance | Microsite expansion now has a generated release-bound coverage catalog | Documentation and website contributors |
+| Examples and reels | Seven worked sample projects and seven scripted demo reels cover every HELIX entry in the catalog | Developers evaluating Axon use cases |
 
 ### Fixes
 
@@ -68,6 +72,7 @@ ddx:
 |------------------|------------|-------------------------|
 | PRD still identified itself as 0.4.0 | Updated to 0.7.1 release-aligned draft | Avoids stale release framing in downstream docs |
 | Build plan and backlog referenced PRD v0.4.0 | Updated references to PRD v0.7.1 | Keeps planning references internally consistent |
+| Website had one quickstart cast and no sample project suite | Generated coverage, examples, and demo reel pages from HELIX sources | Provides auditable 100% mapping across the documented application surface |
 
 ## Breaking Changes and Required Actions
 
@@ -105,3 +110,4 @@ notes once release artifacts exist.
 - Feature registry: [../01-frame/feature-registry.md](../01-frame/feature-registry.md)
 - Build plan: [../04-build/implementation-plan.md](../04-build/implementation-plan.md)
 - Alignment report: [../06-iterate/alignment-reviews/AR-2026-06-14-release-0.7.1-website.md](../06-iterate/alignment-reviews/AR-2026-06-14-release-0.7.1-website.md)
+- Website coverage source: `scripts/generate_website_coverage.py`

@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 4cd672a9fe2eab97bf2002de5582c4946e4a6dfe085468d61f5ddcc1ad4901be
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # US-050: Subscribe to Entity Changes

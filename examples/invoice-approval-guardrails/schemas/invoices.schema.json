@@ -1,0 +1,30 @@
+{
+  "properties": {
+    "amount": {
+      "type": "number"
+    },
+    "number": {
+      "type": "string"
+    },
+    "requires_approval": {
+      "type": "boolean"
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "submitted",
+        "approved",
+        "paid",
+        "partially_paid"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "number",
+    "amount",
+    "status",
+    "requires_approval"
+  ],
+  "type": "object"
+}

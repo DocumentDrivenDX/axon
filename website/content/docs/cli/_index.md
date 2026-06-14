@@ -1,8 +1,8 @@
 ---
 title: CLI Reference
 weight: 3
-prev: /docs/concepts
-next: /docs/demos
+prev: ../concepts/
+next: ../demos/
 ---
 
 The `axon` binary is the unified CLI for the Axon entity store. It covers server management, collection and entity CRUD, schema evolution, graph traversal, and audit queries.
@@ -62,7 +62,7 @@ axon serve [flags]
 | `--control-plane-path <path>` | `axon-control-plane.db` | Control-plane SQLite path |
 | `--ui-dir <path>` | — | Serve admin UI static files from this directory |
 
-**Authentication** (see [Authentication & Authorization](/docs/concepts/authentication) for details)
+**Authentication** (see [Authentication & Authorization](../concepts/authentication/) for details)
 
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|

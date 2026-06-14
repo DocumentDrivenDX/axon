@@ -7,7 +7,7 @@ ddx:
     self_hash: decac5fea0f1d97b7d7f502aada0c9733e10f1771a07560c413ae358e2be4c4f
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # Feature Specification: FEAT-006 — Bead Storage Adapter
 

@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 75f72265bc0c3c987f0bf4f2d2fa86d915f76e3fdf632551945934a97cb2b306
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # US-049: Discover the API via Introspection

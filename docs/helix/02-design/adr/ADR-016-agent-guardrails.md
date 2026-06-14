@@ -13,7 +13,7 @@ ddx:
       FEAT-003: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
       FEAT-012: d37c0b05aaef5e6da2c11ad0f7433660198cf96113dec4bf07fee4e095521eea
       FEAT-022: 63ecd2aff32e4cc0aa516c6cc8632ffb5ed3a004a6b633edf60dfc0b038f0fc6
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 # ADR-016: Agent Guardrails — Rate Limiting and Scope Constraints
 

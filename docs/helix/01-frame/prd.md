@@ -7,7 +7,7 @@ ddx:
     self_hash: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
     deps:
       helix.product-vision: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 kind: product
 ---
 

@@ -1,0 +1,3 @@
+{"data": {"agent": "agent-alpha", "priority": 1, "status": "done", "title": "Define schema"}, "id": "bead-001"}
+{"data": {"agent": "agent-beta", "priority": 2, "status": "ready", "title": "Wire graph query"}, "id": "bead-002"}
+{"data": {"agent": "agent-alpha", "priority": 3, "status": "ready", "title": "Record audit demo"}, "id": "bead-003"}

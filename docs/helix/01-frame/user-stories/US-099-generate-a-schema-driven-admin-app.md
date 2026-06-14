@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 67c31a3bf25cd2d351b68f3a72fd504c1be8c0c08f096e32460abecd758f0f28
     deps: {}
-    reviewed_at: "2026-06-14T04:25:45Z"
+    reviewed_at: "2026-06-14T04:39:42Z"
 ---
 
 # US-099: Generate a Schema-Driven Admin App
