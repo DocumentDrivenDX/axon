@@ -3,11 +3,11 @@ ddx:
   id: FEAT-018
   depends_on:
     - helix.prd
-    - FEAT-004
-    - FEAT-009
-    - FEAT-013
-    - FEAT-015
-    - FEAT-016
+  review:
+    self_hash: 32736251fbe98379326a28a9517474ad1b69ba9cbfb29b710f2cfaab1d3b8d08
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-018 — Aggregation Queries
 

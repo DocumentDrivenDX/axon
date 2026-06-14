@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-117
+  review:
+    self_hash: f5790350929f7018dbc6ff42cca59d5a2075b55312fdd9ea03bab7610dcf3416
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-117-review-approve-and-reject-pending-intents
@@ -21,7 +25,7 @@ ddx:
 - Inbox listing/filtering, intent detail review, approve/reject flows, separation-of-duties UI behavior.
 
 **Out of Scope**
-- Stale/expired action gating ([[STP-118]]), backend approval semantics ([[STP-106]]).
+- Stale/expired action gating (STP-118), backend approval semantics (STP-106).
 
 ## Acceptance Criteria Test Mapping
 

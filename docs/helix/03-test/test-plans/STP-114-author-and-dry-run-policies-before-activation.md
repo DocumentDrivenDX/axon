@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-114
+  review:
+    self_hash: aa1da87feee7be2479d60f64dc71f5b9bb484e17515fca87e3398dd85453a88d
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-114-author-and-dry-run-policies-before-activation
@@ -21,7 +25,7 @@ ddx:
 - Authoring UI, compile-report rendering, activation gating, fixture dry-run.
 
 **Out of Scope**
-- Backend compile semantics ([[STP-109]]), effective-policy inspection ([[STP-113]]).
+- Backend compile semantics (STP-109), effective-policy inspection (STP-113).
 
 ## Acceptance Criteria Test Mapping
 
@@ -66,7 +70,7 @@ cd ui && bun run test:e2e
 1. Citation pass on AC1–AC4; extend AC2 assertions if nullability/MCP-envelope legs are missing.
 
 **Constraints**
-- The UI submits dry-runs through the same CONTRACT-004 compile pipeline as [[STP-109]] — no UI-local validation.
+- The UI submits dry-runs through the same CONTRACT-004 compile pipeline as STP-109 — no UI-local validation.
 
 **Done When**
 - [x] AC1–AC4 passing with citations

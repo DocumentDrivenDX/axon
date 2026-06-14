@@ -3,10 +3,11 @@ ddx:
   id: FEAT-008
   depends_on:
     - helix.prd
-    - FEAT-003
-    - FEAT-004
-    - FEAT-007
-    - CONTRACT-001
+  review:
+    self_hash: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-008 — ACID Transactions
 

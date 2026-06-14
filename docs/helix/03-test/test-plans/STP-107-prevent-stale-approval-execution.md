@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-107
+  review:
+    self_hash: 183479492fe052736cd27d8ec3fb79510fc009bdb3b409e75505cd155ed52e6d
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-107-prevent-stale-approval-execution
@@ -21,7 +25,7 @@ ddx:
 - Stale/mismatch commit rejection per dimension; atomic invalidation; token replay/expiry; SDK/GraphQL parity.
 
 **Out of Scope**
-- UI stale rendering ([[STP-118]]), approval routing ([[STP-106]]).
+- UI stale rendering (STP-118), approval routing (STP-106).
 
 ## Acceptance Criteria Test Mapping
 
@@ -58,7 +62,7 @@ cargo test -p axon-server --test mcp_intents_contract
 | Need | Required For | Source / Strategy |
 |------|--------------|-------------------|
 | Approved intent + helper to mutate target out-of-band | AC1, AC4 | `preview_budget_patch`, `update_task_amount` helpers |
-| Policy-version bump between approve and commit | AC2 | Schema activation helper from [[STP-109]] |
+| Policy-version bump between approve and commit | AC2 | Schema activation helper from STP-109 |
 | Multi-entity transaction intent | AC4 | Extend `seed_intent_fixture` |
 
 ## Edge Cases and Failure Modes

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-116
+  review:
+    self_hash: 5d44980d8fcab2d6de954fbcd79b987ef76b2311af8cffc121410125abd3b432
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-116-preview-and-commit-mutation-intents-from-the-web-ui
@@ -21,7 +25,7 @@ ddx:
 - Preview modal content, allowed commit, denied preview, post-commit audit linkage.
 
 **Out of Scope**
-- Approval inbox ([[STP-117]]), stale handling ([[STP-118]]), backend preview semantics ([[STP-105]]).
+- Approval inbox (STP-117), stale handling (STP-118), backend preview semantics (STP-105).
 
 ## Acceptance Criteria Test Mapping
 

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-146
+  review:
+    self_hash: c1aebebc4d23efe83bfa8029d0d033058a2e679d0840e86ada76c62b63149682
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-146: Deprovision with Retention Guarantees

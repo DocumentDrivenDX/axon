@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-141
+  review:
+    self_hash: 7b3228388e7450a4b47cb8050a0918950fe039c91a8bb5d1664df7c7dc0b8d65
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-141: Entity Changes Appear as Git Commits

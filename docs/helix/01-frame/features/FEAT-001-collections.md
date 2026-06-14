@@ -3,11 +3,11 @@ ddx:
   id: FEAT-001
   depends_on:
     - helix.prd
-    - FEAT-002
-    - FEAT-003
-    - FEAT-014
-    - ADR-010
-    - ADR-011
+  review:
+    self_hash: 12ccce87edac4ae9a5f5e74c9008be07b644d10cfffc9562df51061e00e03574
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-001 — Collections
 

@@ -2,6 +2,11 @@
 ddx:
   id: helix.concerns
   depends_on: [helix.prd]
+  review:
+    self_hash: d22f8007944e442262ef2de1021079482f0c6ded29af8fed6f460cb6540055f3
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Project Concerns

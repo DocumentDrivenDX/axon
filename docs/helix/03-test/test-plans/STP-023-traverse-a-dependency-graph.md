@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-023
+  review:
+    self_hash: 907ead453db6034b1c2f5d48e148905ff56eb7921e4d56c5087a4c92cdee9f41
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-023-traverse-a-dependency-graph
@@ -21,7 +25,7 @@ ddx:
 - Depth-bounded traversal correctness over the DDx bead dataset.
 
 **Out of Scope**
-- Ready/blocked named queries ([[STP-074]]), GraphQL exposure ([[STP-072]]), perf ([[test-plan]] L5).
+- Ready/blocked named queries (STP-074), GraphQL exposure (STP-072), perf ([[test-plan]] L5).
 
 ## Acceptance Criteria Test Mapping
 

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-104
+  review:
+    self_hash: 760b38a6415c09c60b911a6f7dc5955787f288d01a976bbaf4cde279534b7396
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-104-explain-effective-policy
@@ -21,7 +25,7 @@ ddx:
 - `effectivePolicy` / `explainPolicy` content, cross-surface metadata parity, advisory-only semantics.
 
 **Out of Scope**
-- Policy authoring/dry-run of *candidate* policies ([[STP-109]]), UI explain panels ([[STP-113]]).
+- Policy authoring/dry-run of *candidate* policies (STP-109), UI explain panels (STP-113).
 
 ## Acceptance Criteria Test Mapping
 

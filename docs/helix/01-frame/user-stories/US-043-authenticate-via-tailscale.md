@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-043
+  review:
+    self_hash: 3648197dfe99921f85052d7d9f2f8993c68f13de61a14dbd7733ea22f1a79a1c
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-043: Authenticate via Tailscale

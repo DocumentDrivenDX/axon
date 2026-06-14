@@ -3,14 +3,11 @@ ddx:
   id: FEAT-016
   depends_on:
     - helix.prd
-    - FEAT-004
-    - FEAT-005
-    - FEAT-009
-    - FEAT-013
-    - FEAT-015
-    - FEAT-029
-    - FEAT-030
-    - ADR-013
+  review:
+    self_hash: 9a2522adbeae59163b67207dc28717d0abc0f7ff65bdb155bd6b23d490d1ba5e
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-016 — MCP Server
 

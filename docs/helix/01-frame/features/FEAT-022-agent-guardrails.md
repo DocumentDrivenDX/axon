@@ -3,11 +3,11 @@ ddx:
   id: FEAT-022
   depends_on:
     - helix.prd
-    - FEAT-012
-    - FEAT-014
-    - FEAT-029
-    - FEAT-030
-    - ADR-016
+  review:
+    self_hash: 63ecd2aff32e4cc0aa516c6cc8632ffb5ed3a004a6b633edf60dfc0b038f0fc6
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-022 — Agent Guardrails
 

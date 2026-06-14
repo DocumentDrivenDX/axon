@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-076
+  review:
+    self_hash: 39310b6b094ec060810ad8bb486a8024a0dfc21daa7efdc84ce94719c324680f
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-076: Ad-hoc Cypher Query

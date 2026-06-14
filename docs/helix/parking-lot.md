@@ -2,6 +2,11 @@
 ddx:
   id: helix.parking-lot
   depends_on: [helix.prd]
+  review:
+    self_hash: 055b7a6710086e4b97c452947b79dab22cbc0c81834bfa40d1cc40f24a9870ee
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Parking Lot (Deferred / Future Work)

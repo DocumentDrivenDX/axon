@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-022
+  review:
+    self_hash: 5187663fbd700b5c748c6447fe9f377fec9ece8a14151af8994a271daae44eea
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-022: Snapshot Isolation

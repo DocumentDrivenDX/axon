@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-075
+  review:
+    self_hash: 905a57318336f4ea12c32041f638a825425de05613535e7370f8292b7df356d9
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-075-schema-declared-named-query
@@ -21,7 +25,7 @@ ddx:
 - Declaration validation and activation lifecycle.
 
 **Out of Scope**
-- Execution semantics of activated queries ([[STP-072]], [[STP-074]]), ad-hoc queries ([[STP-076]]).
+- Execution semantics of activated queries (STP-072, STP-074), ad-hoc queries (STP-076).
 
 ## Acceptance Criteria Test Mapping
 
@@ -30,8 +34,8 @@ ddx:
 | US-075-AC1 | Declaration accepted per CONTRACT-007 grammar on schema save | named-query schema tests (US-075 block in `crates/axon-schema/src/schema.rs:187` area) | Valid declaration round-trips through schema save | missing — add `@covers US-075-AC1` | UNCITED_COVERAGE | Unit | `crates/axon-schema/src/schema.rs` |
 | US-075-AC2 | Unknown label/property/relationship → save fails with type-check diagnostic identifying the reference | none verified (cypher schema validation exists in `crates/axon-cypher/src/schema.rs` — verify a save-time diagnostic test and cite, else add) | n/a until verified | planned `@covers US-075-AC2` | UNTESTED | Unit | `crates/axon-cypher/src/schema.rs`, `crates/axon-schema/` |
 | US-075-AC3 | Unindexed scan above threshold → save fails suggesting an index (QRY-06) | none | n/a | planned `@covers US-075-AC3` | UNTESTED | Unit | planned in `crates/axon-cypher/` planner diagnostics |
-| US-075-AC4 | Policy-bypass-requiring query → save fails with documented policy-compatibility error (QRY-07) | none | n/a | planned `@covers US-075-AC4` | UNTESTED | Unit + L6 | planned alongside policy compile pipeline ([[STP-109]]) |
-| US-075-AC5 | Activation exposes typed GraphQL field and MCP tool | `named_query_subscription_fields_appear_in_sdl` (GraphQL leg); MCP named-query tools in `mcp_contract.rs` ([[STP-073]] AC1) | Activated query visible on both surfaces | missing — add `@covers US-075-AC5` | UNCITED_COVERAGE | L6 contract | `crates/axon-graphql/src/dynamic.rs`, `crates/axon-server/tests/mcp_contract.rs` |
+| US-075-AC4 | Policy-bypass-requiring query → save fails with documented policy-compatibility error (QRY-07) | none | n/a | planned `@covers US-075-AC4` | UNTESTED | Unit + L6 | planned alongside policy compile pipeline (STP-109) |
+| US-075-AC5 | Activation exposes typed GraphQL field and MCP tool | `named_query_subscription_fields_appear_in_sdl` (GraphQL leg); MCP named-query tools in `mcp_contract.rs` (STP-073 AC1) | Activated query visible on both surfaces | missing — add `@covers US-075-AC5` | UNCITED_COVERAGE | L6 contract | `crates/axon-graphql/src/dynamic.rs`, `crates/axon-server/tests/mcp_contract.rs` |
 | US-075-AC6 | Schema dry-run returns compile report incl. named-query diagnostics; nothing activated | none (schema dry-run exists — `grpc_put_schema_dry_run` — but named-query diagnostics in the report are unasserted) | n/a | planned `@covers US-075-AC6` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/api_contract.rs` / `graphql_policy_contract.rs` |
 
 ## Executable Proof

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-074b
+  review:
+    self_hash: 34eca988f0fd0c9556a7538d8f394592aaa104935e78c8301e11d62129823268
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-074b: Query by Gate Status

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-119
+  review:
+    self_hash: dcc6e67daebdd1f111c969af7490aaaff7e72190a3de9e51fbfa7bc1119563fb
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-119-inspect-mcp-originated-policy-and-intent-outcomes
@@ -21,7 +25,7 @@ ddx:
 - MCP envelope preview, MCP-originated intent detail, reason-code parity with UI policy explanations.
 
 **Out of Scope**
-- MCP protocol semantics ([[STP-108]]), generic inbox flows ([[STP-117]]).
+- MCP protocol semantics (STP-108), generic inbox flows (STP-117).
 
 ## Acceptance Criteria Test Mapping
 

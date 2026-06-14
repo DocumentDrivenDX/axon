@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-015
+  review:
+    self_hash: 377deb4cb0b5c7964e2d6ebfad51c846e2c09da659be599b013027f44754dad4
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # US-015: Store and Query Beads
 

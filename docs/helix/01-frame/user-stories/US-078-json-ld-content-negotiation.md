@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-078
+  review:
+    self_hash: bda2992bfa47c726763ca2f06eac19207c21d89f678f43d5ec9a206aa9277a1f
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-078: JSON-LD Content Negotiation

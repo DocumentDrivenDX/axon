@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-105
+  review:
+    self_hash: 3663f074eacfeb66a2d7e909ab5ea154c403240fd5e33a619ad8df7c3e549015
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-105-preview-a-graphql-mutation
@@ -21,7 +25,7 @@ ddx:
 - Preview response content, denial previews, no-side-effect guarantee, intent record bindings, surface-stable decision vocabulary.
 
 **Out of Scope**
-- Approval routing ([[STP-106]]), staleness on commit ([[STP-107]]), UI preview modal ([[STP-116]]).
+- Approval routing (STP-106), staleness on commit (STP-107), UI preview modal (STP-116).
 
 ## Acceptance Criteria Test Mapping
 
@@ -50,7 +54,7 @@ cargo test -p axon-server --test mcp_intents_contract
 
 ### Coverage Focus
 
-- P0: AC3 (no side effects) and AC5 (binding completeness — feeds [[STP-107]] staleness).
+- P0: AC3 (no side effects) and AC5 (binding completeness — feeds STP-107 staleness).
 
 ## Data and Setup
 
@@ -62,7 +66,7 @@ cargo test -p axon-server --test mcp_intents_contract
 ## Edge Cases and Failure Modes
 
 - Preview of a multi-op transaction must bind every pre-image (`graphql_preview_mutation_binds_versions_for_all_operation_shapes`).
-- Preview against an entity the subject cannot read must follow [[STP-101]] hidden semantics, not leak via diff.
+- Preview against an entity the subject cannot read must follow STP-101 hidden semantics, not leak via diff.
 
 ## Build Handoff
 

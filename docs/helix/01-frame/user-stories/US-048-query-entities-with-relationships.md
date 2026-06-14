@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-048
+  review:
+    self_hash: cf367641ca8539b58cf9cbd1711963d53f9e0c380b0961d3e65f6b2cf95eb0d3
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-048: Query Entities with Relationships

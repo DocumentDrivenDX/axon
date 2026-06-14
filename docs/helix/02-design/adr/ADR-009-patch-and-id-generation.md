@@ -4,6 +4,12 @@ ddx:
   depends_on:
     - FEAT-004
     - ADR-004
+  review:
+    self_hash: 7c5d1ebee3b962eae5cfaec389f6c7fb5b107928607f9d8040722afd4e17dc80
+    deps:
+      ADR-004: 4c8ee66b80980bed2298d511d223f7faaace03864610faf8333af8659c4ce570
+      FEAT-004: 1ba0ba90778c2e6b4a38b11632d8ca73d3b328ac19ad326e151534c26ecd0b46
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # ADR-009: JSON Merge Patch and Optional ID Generation
 

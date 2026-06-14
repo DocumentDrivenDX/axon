@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-027
+  review:
+    self_hash: 71ee69088385439537f1e566bfed3bb000942eaab03e0416a8ce34f187ac7e96
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # US-027: Bead Lifecycle with Dependency Guards
 

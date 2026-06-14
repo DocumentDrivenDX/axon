@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-025
+  review:
+    self_hash: 9b4894fb3524997a1bc34c67ff97d57f3a64c2af7451dbe21afc1b3b089b965e
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-025: Check Reachability

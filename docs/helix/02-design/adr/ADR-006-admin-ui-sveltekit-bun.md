@@ -5,6 +5,13 @@ ddx:
     - helix.prd
     - FEAT-005
     - ADR-005
+  review:
+    self_hash: 4a36f82ee091e5895f8a131244be5bb2dff01c46c4a37e1e83e2bb8e237d0cad
+    deps:
+      ADR-005: 86046c9a1474abf0f42a1962eedade8582212487f7face55f5256fefa800ff98
+      FEAT-005: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # ADR-006: Admin UI — SvelteKit + Bun + Vite
 

@@ -3,15 +3,11 @@ ddx:
   id: FEAT-030
   depends_on:
     - helix.prd
-    - FEAT-003
-    - FEAT-005
-    - FEAT-012
-    - FEAT-015
-    - FEAT-016
-    - FEAT-017
-    - FEAT-029
-    - ADR-019
-    - ADR-023
+  review:
+    self_hash: 81a89ddb42efe517ddde6ea7481c104b3600481a32072e31bd9d94cd7294922d
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-030 — Mutation Intents and Approval
 

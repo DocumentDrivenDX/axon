@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-074
+  review:
+    self_hash: 8c2611ec8e15ed0e0e17fd9ce7dea2c323be157df6901743011eac74b3c26f50
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-074-pattern-query-for-ready-blocked-queue
@@ -21,7 +25,7 @@ ddx:
 - Ready/blocked queue correctness on memory and SQLite backends.
 
 **Out of Scope**
-- Generic named-query declaration ([[STP-075]]), subscription mechanics ([[STP-077]]).
+- Generic named-query declaration (STP-075), subscription mechanics (STP-077).
 
 ## Acceptance Criteria Test Mapping
 
@@ -31,7 +35,7 @@ ddx:
 | US-074-AC2 | `blocked_beads` returns exactly the open beads excluded from ready | `ddx_blocked_query_returns_open_beads_with_at_least_one_non_closed_dep`; `sqlite_…` twin | Exact complement asserted | missing — add `@covers US-074-AC2` | UNCITED_COVERAGE | L2 scenario | `crates/axon-cypher/tests/ddx_integration.rs`, `sqlite_parity.rs` |
 | US-074-AC3 | 1K beads (~500 open): ready under 100 ms p99 | none | n/a | planned `@covers US-074-AC3` | UNTESTED | L5 benchmark | planned `criterion` bench |
 | US-074-AC4 | 10K beads: ready under 500 ms p99 | none | n/a | planned `@covers US-074-AC4` | UNTESTED | L5 benchmark | planned `criterion` bench |
-| US-074-AC5 | Active subscription on `ready_beads` delivers updates on result-set change (QRY-12) | named-query subscription machinery is tested generically in [[STP-077]] (`dynamic.rs` US-077 block); a `ready_beads`-shaped case is absent | n/a | planned `@covers US-074-AC5` | UNTESTED | L6 contract | planned in `crates/axon-graphql/src/dynamic.rs` tests |
+| US-074-AC5 | Active subscription on `ready_beads` delivers updates on result-set change (QRY-12) | named-query subscription machinery is tested generically in STP-077 (`dynamic.rs` US-077 block); a `ready_beads`-shaped case is absent | n/a | planned `@covers US-074-AC5` | UNTESTED | L6 contract | planned in `crates/axon-graphql/src/dynamic.rs` tests |
 
 ## Executable Proof
 
@@ -67,7 +71,7 @@ cargo test -p axon-api --test business_scenarios
 
 **Implementation Order**
 1. Citation pass on AC1/AC2 (both backends).
-2. Benchmarks AC3/AC4; subscription case AC5 after [[STP-077]] citations land.
+2. Benchmarks AC3/AC4; subscription case AC5 after STP-077 citations land.
 
 **Constraints**
 - CONTRACT-007 named-query semantics; identical results across backends.

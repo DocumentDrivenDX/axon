@@ -4,10 +4,11 @@ ddx:
   parking_lot: true
   depends_on:
     - helix.prd
-    - FEAT-001
-    - FEAT-003
-    - FEAT-004
-    - FEAT-021
+  review:
+    self_hash: 6afe43852f2f84b6136fca386b8b6a9b8e0b895015c9fbbd8c9c2b025d26416d
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-027 — Git Mirror
 

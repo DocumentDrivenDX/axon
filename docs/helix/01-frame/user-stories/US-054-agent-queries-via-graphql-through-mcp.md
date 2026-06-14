@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-054
+  review:
+    self_hash: 24005576169d63f2edd1428b4eb6b2017ced47944f6125c903ab867471423a55
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-054: Agent Queries via GraphQL through MCP

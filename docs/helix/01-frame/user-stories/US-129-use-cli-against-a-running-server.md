@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-129
+  review:
+    self_hash: b39793e91c24e3a1b5799b61332c73e5a6710eece5d22e3a0195e77952403382
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-129: Use CLI against a running server

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-060
+  review:
+    self_hash: 0489ec7b308ac99eb36ef251f09b9115eccc532eb607ce4fd782f4c2b9971673
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-060: Revalidate Entities Against Current Schema

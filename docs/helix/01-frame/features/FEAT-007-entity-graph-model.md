@@ -3,10 +3,11 @@ ddx:
   id: FEAT-007
   depends_on:
     - helix.prd
-    - FEAT-002
-    - FEAT-003
-    - CONTRACT-001
-    - CONTRACT-010
+  review:
+    self_hash: 730a71d71ea4d398f55a2a62b9bf812fc10290809796f4fab4e8ba1b50d53849
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-007 — Entity-Graph Data Model
 

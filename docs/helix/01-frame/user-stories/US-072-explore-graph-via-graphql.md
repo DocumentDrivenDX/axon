@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-072
+  review:
+    self_hash: d7f687482f49bd40c10768cc8c07a6d0d55155b7740890c639c4de8840630b5e
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-072: Explore Graph via GraphQL

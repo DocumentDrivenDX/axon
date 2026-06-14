@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-109
+  review:
+    self_hash: 66f65764c183d764d199cb131a2996b01a98f36067223bc544156f095bc447cd
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-109: Author And Test Policy Before Activation

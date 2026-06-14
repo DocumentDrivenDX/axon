@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-076
+  review:
+    self_hash: aafb96e6f6c1722a76d64752eaf01339faf41593aa2cd9fbce9a5b9741c01fbe
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-076-ad-hoc-cypher-query
@@ -21,7 +25,7 @@ ddx:
 - Ad-hoc execution, validation, budget, and error vocabulary.
 
 **Out of Scope**
-- Named-query lifecycle ([[STP-075]]), MCP exposure ([[STP-073]]).
+- Named-query lifecycle (STP-075), MCP exposure (STP-073).
 
 ## Acceptance Criteria Test Mapping
 
@@ -29,7 +33,7 @@ ddx:
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
 | US-076-AC1 | Valid ad-hoc query returns rows with column type metadata and plan/index/policy metadata | ad-hoc execution tests across `ddx_integration.rs` (e.g. `count_star_counts_all_open_beads`, `order_by_priority_asc_returns_open_beads_in_ascending_order`) | Rows and orderings correct — column/plan metadata legs need verification while citing | missing — add `@covers US-076-AC1` | UNCITED_COVERAGE | L2/unit | `crates/axon-cypher/tests/ddx_integration.rs` |
 | US-076-AC2 | Unknown label/property/relationship rejected at parse with documented stable code | error-path tests in the US-076 block of `crates/axon-cypher/src/error.rs` | Unknown-reference rejection with stable code | missing — add `@covers US-076-AC2` | UNCITED_COVERAGE | Unit | `crates/axon-cypher/src/error.rs` |
-| US-076-AC3 | Ad-hoc vs equivalent named query: identical policy enforcement (rows, redaction, counts) | none (cypher × policy integration absent; see [[STP-025]] AC4) | n/a | planned `@covers US-076-AC3` | UNTESTED | L3 property + L6 | planned property test generating query pairs |
+| US-076-AC3 | Ad-hoc vs equivalent named query: identical policy enforcement (rows, redaction, counts) | none (cypher × policy integration absent; see STP-025 AC4) | n/a | planned `@covers US-076-AC3` | UNTESTED | L3 property + L6 | planned property test generating query pairs |
 | US-076-AC4 | Planned cardinality over ad-hoc budget → rejected before execution with documented code | none | n/a | planned `@covers US-076-AC4` | UNTESTED | Unit (planner) | planned in `crates/axon-cypher/` |
 | US-076-AC5 | Every ad-hoc failure class carries its stable CONTRACT-007 error code | partial — error.rs covers unknown-reference; unsupported clause/plan, policy bypass, budget, timeout classes unasserted | n/a as a complete matrix | planned `@covers US-076-AC5` | UNTESTED | Unit | planned table-driven error-code matrix in `crates/axon-cypher/src/error.rs` |
 

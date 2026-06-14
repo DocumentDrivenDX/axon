@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-002
+  review:
+    self_hash: 93b7c3b7323b4119e75f08333b5dda9808c399f8975cf3d15873305bf48bc129
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-002: List and Inspect Collections

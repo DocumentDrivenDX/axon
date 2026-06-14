@@ -3,18 +3,11 @@ ddx:
   id: FEAT-029
   depends_on:
     - helix.prd
-    - FEAT-002
-    - FEAT-012
-    - FEAT-013
-    - FEAT-014
-    - FEAT-015
-    - FEAT-016
-    - FEAT-019
-    - FEAT-030
-    - ADR-012
-    - ADR-013
-    - ADR-018
-    - ADR-019
+  review:
+    self_hash: f548dd83b06d298a7e8c575870ae1a06e5e9c53e94d6ccb64b2b876daf7b3b0c
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-029 — Data-Layer Access Control Policies
 

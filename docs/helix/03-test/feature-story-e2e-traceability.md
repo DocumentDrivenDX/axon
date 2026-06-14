@@ -5,6 +5,13 @@ ddx:
     - helix.prd
     - helix.technical-requirements
     - TP-001
+  review:
+    self_hash: 4dd909c9651e43727883ea77c837e969af103c3c3484eca07cf9d32aff2faaf9
+    deps:
+      TP-001: b2fd65f5c9fee74cac32a456a2eb53e5f492374e51469bbfdfce158ade121821
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+      helix.technical-requirements: b50c3f03df0814348846c9a6e6eb9bebbc4b7be7dcb3783fdd6d9b4104a56fca
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Story and E2E Traceability Review
 

@@ -3,7 +3,13 @@ ddx:
   id: helix.ar-2026-04-04
   depends_on:
     - helix.prd
-    - helix.test-plan
+    - TP-001
+  review:
+    self_hash: 2e3f37fd5596b17b6624b998979be9ff4b2ea79697baf19e2f74f0d5f459d33b
+    deps:
+      TP-001: b2fd65f5c9fee74cac32a456a2eb53e5f492374e51469bbfdfce158ade121821
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Alignment Review: Full Repo
 

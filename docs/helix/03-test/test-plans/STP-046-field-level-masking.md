@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-046
+  review:
+    self_hash: efa732c2fa07111c614404510b9873292af2cbb2c2b665e3a164dc3947cacc7b
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-046-field-level-masking
@@ -21,7 +25,7 @@ ddx:
 - Subject-conditional read-deny field rules; redaction shape stability; audit-read masking.
 
 **Out of Scope**
-- Generated-type nullability mechanics ([[STP-102]]), write-side field denial ([[STP-047]], [[STP-103]]).
+- Generated-type nullability mechanics (STP-102), write-side field denial (STP-047, STP-103).
 
 ## Acceptance Criteria Test Mapping
 

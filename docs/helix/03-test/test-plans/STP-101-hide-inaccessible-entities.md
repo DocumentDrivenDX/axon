@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-101
+  review:
+    self_hash: e7599d73084cf6e694a3c52162604a292817627481eab37c37f7305ec3758ee5
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-101-hide-inaccessible-entities
@@ -21,7 +25,7 @@ ddx:
 - Read-denial semantics (not-found/null, never forbidden) across GraphQL read shapes.
 
 **Out of Scope**
-- Field redaction ([[STP-102]]), write denial ([[STP-103]]), UI rendering of hidden rows ([[STP-115]]).
+- Field redaction (STP-102), write denial (STP-103), UI rendering of hidden rows (STP-115).
 
 ## Acceptance Criteria Test Mapping
 
@@ -60,7 +64,7 @@ cargo test -p axon-server --test graphql_policy_contract
 ## Edge Cases and Failure Modes
 
 - Empty result set after filtering must not leak hidden-row counts.
-- Live insertion of a hidden row must not surface via subscriptions (UI angle covered in [[STP-115]]).
+- Live insertion of a hidden row must not surface via subscriptions (UI angle covered in STP-115).
 
 ## Build Handoff
 

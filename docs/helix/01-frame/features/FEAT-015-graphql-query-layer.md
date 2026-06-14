@@ -3,14 +3,11 @@ ddx:
   id: FEAT-015
   depends_on:
     - helix.prd
-    - FEAT-002
-    - FEAT-004
-    - FEAT-005
-    - FEAT-009
-    - FEAT-013
-    - FEAT-029
-    - FEAT-030
-    - ADR-012
+  review:
+    self_hash: c75ebd606ba19b7ac509eefcd0bb47c229433b5a14b1110fcae70d6c3898bd6f
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-015 — GraphQL Query Layer
 

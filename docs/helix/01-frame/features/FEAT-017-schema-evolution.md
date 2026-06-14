@@ -3,9 +3,11 @@ ddx:
   id: FEAT-017
   depends_on:
     - helix.prd
-    - FEAT-002
-    - FEAT-013
-    - ADR-007
+  review:
+    self_hash: 7589f2ef1950a23cd5b4572f4ab88b8c30a9cb3421a6a63138dde3e6a0619f97
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-017 — Schema Evolution and Migration
 

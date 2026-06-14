@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-123
+  review:
+    self_hash: 318ae3a28aed1013bc283e882cc944ea2effcf4fcbd0f86c4168bfc0d237db59
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-123: Development Without Auth

@@ -5,6 +5,13 @@ ddx:
     - ADR-019
     - FEAT-003
     - FEAT-030
+  review:
+    self_hash: 5bc98e9d3323a427f9ee1b4b6338c74b227b18cd738f6b12109c4bc4761506ab
+    deps:
+      ADR-019: 3d6482363128cb8e6bc2cb86023a0a66c6a1c3027fab72ad99938d8136bb9732
+      FEAT-003: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
+      FEAT-030: 81a89ddb42efe517ddde6ea7481c104b3600481a32072e31bd9d94cd7294922d
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # ADR-023: Preview-Record Audit Threading
 

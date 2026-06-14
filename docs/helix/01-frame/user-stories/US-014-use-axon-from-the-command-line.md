@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-014
+  review:
+    self_hash: 11d1436fc838d8d638f712b62d50b193433184f6819c80b173220ac63abfe314
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-014: Use Axon from the Command Line

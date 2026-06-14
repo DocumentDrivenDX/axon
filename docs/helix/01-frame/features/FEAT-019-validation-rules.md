@@ -3,12 +3,11 @@ ddx:
   id: FEAT-019
   depends_on:
     - helix.prd
-    - FEAT-002
-    - FEAT-004
-    - FEAT-013
-    - ADR-002
-    - ADR-008
-    - ADR-010
+  review:
+    self_hash: ddf48d3192c435e1b9a40b2dc77ec60f363bfd91230e99fab336ebf4232785c4
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-019 — Validation Rules and Actionable Errors
 

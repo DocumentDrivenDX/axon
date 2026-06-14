@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-034
+  review:
+    self_hash: 2502297d611670b9038757cf73d7a030842792e7ab15d4bdaef1d81502f2c9c2
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # US-034: Background Index Build
 

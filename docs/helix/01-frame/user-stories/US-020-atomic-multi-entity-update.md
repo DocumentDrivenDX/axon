@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-020
+  review:
+    self_hash: 6c6870a9794e66ed3428fcd12a70e12501a591eb5ac99be831beff4af583c11a
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-020: Atomic Multi-Entity Update

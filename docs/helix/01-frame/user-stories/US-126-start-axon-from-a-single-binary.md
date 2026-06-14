@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-126
+  review:
+    self_hash: e66972340b2159a524ca4e21d9b6a80792eaf3b731c145d884f5b3e5eadf24bd
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-126: Start Axon from a single binary

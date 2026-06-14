@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-115
+  review:
+    self_hash: 043cc223901bec44c4122288d411f1b49ce57c9f7b9d8c8e4035b743de3f0db3
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-115-browse-entities-with-policy-safe-ui-semantics
@@ -21,7 +25,7 @@ ddx:
 - List/detail/relationship/audit rendering under row filtering and field redaction; denied-write error display.
 
 **Out of Scope**
-- Backend filtering semantics ([[STP-101]], [[STP-102]]), intent preview flows ([[STP-116]]).
+- Backend filtering semantics (STP-101, STP-102), intent preview flows (STP-116).
 
 ## Acceptance Criteria Test Mapping
 

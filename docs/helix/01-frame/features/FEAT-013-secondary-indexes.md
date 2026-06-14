@@ -3,10 +3,11 @@ ddx:
   id: FEAT-013
   depends_on:
     - helix.prd
-    - FEAT-001
-    - FEAT-002
-    - FEAT-004
-    - ADR-010
+  review:
+    self_hash: e218b7499012d56e569acc094cc40b47360b34fda601b473ac425af2cec09b27
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-013 — Secondary Indexes and Query Acceleration
 

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-118
+  review:
+    self_hash: 37f0634c5205950801ee83d0d99c3a4908befe3693833ce3d128c0d471f02f57
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-118-handle-stale-and-mismatched-intents-safely
@@ -10,7 +14,7 @@ ddx:
 **User Story**: [[US-118-handle-stale-and-mismatched-intents-safely]] (FEAT-031, P0)
 **Technical Design**: [[TD-118-stale-intent-ui]] — not yet authored; FEAT-031 spec + CONTRACT-002 currently serve as the design surface
 **Related Solution Design**: N/A
-**Project Test Plan**: [[test-plan]] §3 (browser workflows → L7 E2E; staleness invariants live in [[STP-107]])
+**Project Test Plan**: [[test-plan]] §3 (browser workflows → L7 E2E; staleness invariants live in STP-107)
 
 ## Scope and Objective
 
@@ -21,7 +25,7 @@ ddx:
 - Stale-state rendering, mismatch error display, expired-intent gating, re-preview lineage.
 
 **Out of Scope**
-- Backend rejection semantics per dimension ([[STP-107]]).
+- Backend rejection semantics per dimension (STP-107).
 
 ## Acceptance Criteria Test Mapping
 
@@ -46,7 +50,7 @@ cd ui && bun run test:e2e
 
 ### Coverage Focus
 
-- P0: AC2 — each mismatch dimension must surface its *specific* code, mirroring [[STP-107]]'s backend matrix.
+- P0: AC2 — each mismatch dimension must surface its *specific* code, mirroring STP-107's backend matrix.
 
 ## Data and Setup
 
@@ -65,7 +69,7 @@ cd ui && bun run test:e2e
 
 **Implementation Order**
 1. Citation-only pass across AC1–AC4.
-2. As [[STP-107]] adds backend dimensions (grant drift, op-hash), mirror UI assertions here.
+2. As STP-107 adds backend dimensions (grant drift, op-hash), mirror UI assertions here.
 
 **Constraints**
 - UI must render the backend's stale dimension verbatim; no client-side staleness inference.

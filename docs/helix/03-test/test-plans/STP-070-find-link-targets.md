@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-070
+  review:
+    self_hash: 36dccf0f3f037f60d339ceedbac42a06f5123310ecb1d887b082a254681ecc48
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-070-find-link-targets
@@ -21,7 +25,7 @@ ddx:
 - Link-candidate query semantics and metadata sourcing.
 
 **Out of Scope**
-- Neighbor listing ([[STP-071]]), GraphQL/MCP exposure ([[STP-072]], [[STP-073]]).
+- Neighbor listing (STP-071), GraphQL/MCP exposure (STP-072, STP-073).
 
 ## Acceptance Criteria Test Mapping
 

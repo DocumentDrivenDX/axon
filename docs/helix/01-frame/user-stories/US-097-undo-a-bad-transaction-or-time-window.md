@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-097
+  review:
+    self_hash: c0243cd5b82bb2449537898632313b12609999fc03137c03f4479bfd7cdc6126
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-097: Undo a Bad Transaction or Time Window

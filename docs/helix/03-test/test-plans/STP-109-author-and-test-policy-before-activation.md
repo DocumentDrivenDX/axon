@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-109
+  review:
+    self_hash: ae76f71bf135900f633da6076ee6729250bd140787bc8c68871676054d85d797
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-109-author-and-test-policy-before-activation
@@ -21,7 +25,7 @@ ddx:
 - Dry-run compile reports, write-time rejection, nullability reporting, fixture evaluation, parity of fixture results, audited activation.
 
 **Out of Scope**
-- UI authoring workflow ([[STP-114]]), runtime enforcement of the activated policy ([[STP-101]]/[[STP-103]]).
+- UI authoring workflow (STP-114), runtime enforcement of the activated policy (STP-101/STP-103).
 
 ## Acceptance Criteria Test Mapping
 

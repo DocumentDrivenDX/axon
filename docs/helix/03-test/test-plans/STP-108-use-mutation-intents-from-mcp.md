@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-108
+  review:
+    self_hash: 9fa6304fb065a3a7bf70cb349bad7f1433910c576495a8b815f1620c0cf3910b
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-108-use-mutation-intents-from-mcp
@@ -21,7 +25,7 @@ ddx:
 - MCP tool envelope summaries, structured `needs_approval`/denied outputs, MCP↔GraphQL intent parity.
 
 **Out of Scope**
-- GraphQL-only intent flows ([[STP-105]]–[[STP-107]]), UI inspection of MCP intents ([[STP-119]]).
+- GraphQL-only intent flows (STP-105–STP-107), UI inspection of MCP intents (STP-119).
 
 ## Acceptance Criteria Test Mapping
 

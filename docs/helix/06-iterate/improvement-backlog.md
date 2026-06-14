@@ -4,6 +4,12 @@ ddx:
   depends_on:
     - helix.prd
     - helix.implementation-plan
+  review:
+    self_hash: 59d5eadc4e9e6a4faa54af94e5b55a73312c64e9a771764bd92675f1c9c68788
+    deps:
+      helix.implementation-plan: dd7ecc71fc54b04e83916f7b1d93e384305c5d00210808c21efc7ebdf8671241
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Improvement Backlog
 

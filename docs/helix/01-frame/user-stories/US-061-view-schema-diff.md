@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-061
+  review:
+    self_hash: 1107d05571bbba2d83361c092e779ad6251f1ec277b7d0716177b005712a95b8
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-061: View Schema Diff

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-103
+  review:
+    self_hash: 95527f8337d3c979881af91a856bf0971866965f7de09cf18f1f7feb667f9823
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-103-reject-denied-writes
@@ -21,7 +25,7 @@ ddx:
 - Row denial, field denial, transactional abort on denial, denied idempotent replay.
 
 **Out of Scope**
-- Approval routing of risky-but-allowed writes ([[STP-106]]), UI error rendering ([[STP-115]]).
+- Approval routing of risky-but-allowed writes (STP-106), UI error rendering (STP-115).
 
 ## Acceptance Criteria Test Mapping
 

@@ -3,7 +3,11 @@ ddx:
   id: FEAT-003
   depends_on:
     - helix.prd
-    - CONTRACT-005
+  review:
+    self_hash: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-003 — Audit Log
 

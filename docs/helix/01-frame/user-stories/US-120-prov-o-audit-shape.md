@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-120
+  review:
+    self_hash: 9f9de2b695714f5b093845b76f3059e1b1ce340757d9d1dd62d8944262b2a443
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-120: PROV-O Audit Shape

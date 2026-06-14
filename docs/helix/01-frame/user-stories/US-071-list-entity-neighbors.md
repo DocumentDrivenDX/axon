@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-071
+  review:
+    self_hash: 17f93303aed3c2b8384b03941eaf7ae1394bb3e30b4cc4843ddd42b0a2f15dc5
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-071: List Entity Neighbors

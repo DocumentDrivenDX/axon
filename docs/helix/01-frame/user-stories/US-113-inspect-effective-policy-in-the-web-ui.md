@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-113
+  review:
+    self_hash: fe962f9f36c50b3a4753c51f233c7325581965087f159f12ed0b0ffe90eb20aa
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-113: Inspect Effective Policy In The Web UI

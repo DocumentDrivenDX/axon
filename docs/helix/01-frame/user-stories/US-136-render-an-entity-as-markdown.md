@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-136
+  review:
+    self_hash: 884e339eee19235a529655d0e529cd53c0de110b80f4a6235ae577bfe27e0e13
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-136: Render an Entity as Markdown

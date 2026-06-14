@@ -7,6 +7,15 @@ ddx:
     - FEAT-007
     - FEAT-008
     - FEAT-003
+  review:
+    self_hash: 34d6ebc4525acb6bb446844abe815d33def8121d058a618c52ace6d3d8fcce01
+    deps:
+      ADR-001: 926aafe1f5bdedd6dd2a49f3343bfaaae3c100fd01333a424c22401596b21041
+      FEAT-003: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
+      FEAT-007: 730a71d71ea4d398f55a2a62b9bf812fc10290809796f4fab4e8ba1b50d53849
+      FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # SPIKE-001: Backing Store Evaluation
 

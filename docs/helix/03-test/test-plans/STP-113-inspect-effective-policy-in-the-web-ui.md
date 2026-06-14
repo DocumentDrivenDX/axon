@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-113
+  review:
+    self_hash: 31fb2eb41996ee7d6c7af244866d1df56d1ffcc072c67b50d2f249cab4c0a4dc
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-113-inspect-effective-policy-in-the-web-ui
@@ -21,7 +25,7 @@ ddx:
 - Policy workspace inspect/explain panels; GraphQL console parity.
 
 **Out of Scope**
-- Authoring/dry-run/activation flow ([[STP-114]]), backend explain semantics ([[STP-104]]).
+- Authoring/dry-run/activation flow (STP-114), backend explain semantics (STP-104).
 
 ## Acceptance Criteria Test Mapping
 

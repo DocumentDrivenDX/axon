@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-131
+  review:
+    self_hash: 9a96af199432bc16b92f7a156eb957a9831890ddb1606896e5d3897466ca07ae
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-131: Install Axon with a single command

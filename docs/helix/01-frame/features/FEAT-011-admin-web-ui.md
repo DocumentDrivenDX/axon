@@ -3,14 +3,11 @@ ddx:
   id: FEAT-011
   depends_on:
     - helix.prd
-    - FEAT-001
-    - FEAT-002
-    - FEAT-004
-    - FEAT-005
-    - FEAT-012
-    - FEAT-015
-    - ADR-006
-    - ADR-018
+  review:
+    self_hash: fbed5035703274fa3f9b134202782fa14426ccb8d77fbdd637b096a2f5bfb1a5
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-011 — Admin Web UI
 

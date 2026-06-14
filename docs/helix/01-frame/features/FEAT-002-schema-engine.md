@@ -3,7 +3,11 @@ ddx:
   id: FEAT-002
   depends_on:
     - helix.prd
-    - ADR-007
+  review:
+    self_hash: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-002 — Schema Engine
 

@@ -6,6 +6,14 @@ ddx:
     - FEAT-005
     - FEAT-023
     - FEAT-030
+  review:
+    self_hash: 90f207ed579bf102e548e3e9ed45afdf46c6f4befc01bed1f96ce9e4b2a114b2
+    deps:
+      ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
+      FEAT-005: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
+      FEAT-023: 24416c13b9a48e864ae43e3967c63d2711763c745905850dbb4f03768ffc7949
+      FEAT-030: 81a89ddb42efe517ddde6ea7481c104b3600481a32072e31bd9d94cd7294922d
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Contract

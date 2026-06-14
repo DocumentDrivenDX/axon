@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-077
+  review:
+    self_hash: 01c6cccf30b0ead6c253bc52a17e7b88e1f51f09622dadbac1c277efae626dc9
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-077: Subscribe to a Named Query

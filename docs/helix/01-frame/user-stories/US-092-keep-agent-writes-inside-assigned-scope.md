@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-092
+  review:
+    self_hash: 397e99044efc729a26566c750c542c9e3dd3a8d8db094e7b17a2d46c6483738b
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-092: Keep Agent Writes Inside Assigned Scope

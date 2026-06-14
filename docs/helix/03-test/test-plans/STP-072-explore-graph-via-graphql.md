@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-072
+  review:
+    self_hash: 9fefe0a8bac78aff398f91f6df15432607cb7d2c5d0d08364c4a17e9da9a7994
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-072-explore-graph-via-graphql
@@ -21,7 +25,7 @@ ddx:
 - GraphQL exposure of named graph queries.
 
 **Out of Scope**
-- Named-query declaration/compilation ([[STP-075]]), subscriptions ([[STP-077]]).
+- Named-query declaration/compilation (STP-075), subscriptions (STP-077).
 
 ## Acceptance Criteria Test Mapping
 
@@ -54,7 +58,7 @@ cargo test -p axon-server --test graphql_contract
 
 | Need | Required For | Source / Strategy |
 |------|--------------|-------------------|
-| Activated multi-hop named query | All ACs | Schema fixture from [[STP-075]] |
+| Activated multi-hop named query | All ACs | Schema fixture from STP-075 |
 | Storage-call counter / plan metadata hook | AC2 | Test-only instrumentation |
 
 ## Edge Cases and Failure Modes

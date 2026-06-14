@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-138
+  review:
+    self_hash: 8151ea9a09172afc20a1b05308e5e55d5d5e96926e3e4407fd39e7e8092d1d6c
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-138: Template Survives Schema Evolution

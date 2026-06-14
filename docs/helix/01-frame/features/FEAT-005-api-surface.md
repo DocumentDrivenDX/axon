@@ -3,14 +3,11 @@ ddx:
   id: FEAT-005
   depends_on:
     - helix.prd
-    - FEAT-001
-    - FEAT-002
-    - FEAT-003
-    - FEAT-004
-    - FEAT-021
-    - FEAT-023
-    - FEAT-029
-    - FEAT-030
+  review:
+    self_hash: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-005 — API Surface
 

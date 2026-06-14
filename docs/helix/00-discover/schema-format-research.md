@@ -3,6 +3,11 @@ ddx:
   id: helix.schema-format-research
   depends_on:
     - helix.product-vision
+  review:
+    self_hash: d406401334b2fe65ee66b390a3f9ecbc03f436aefb2bdf5c8812333293cd434c
+    deps:
+      helix.product-vision: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Research: Schema Format Landscape for Entity-Graph-Relational Data Models
 

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-132
+  review:
+    self_hash: 9340fa95d85cfe5926076d1414cba2f4bceb71b53fd588269e1cd1b55de336e4
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-132: Replay Events from a Point in Time

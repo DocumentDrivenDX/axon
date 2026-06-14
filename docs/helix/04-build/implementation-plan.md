@@ -4,6 +4,12 @@ ddx:
   depends_on:
     - helix.prd
     - TP-001
+  review:
+    self_hash: dd7ecc71fc54b04e83916f7b1d93e384305c5d00210808c21efc7ebdf8671241
+    deps:
+      TP-001: b2fd65f5c9fee74cac32a456a2eb53e5f492374e51469bbfdfce158ade121821
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Build Plan: Axon
 

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-038
+  review:
+    self_hash: 6c2431cedb158da78157568a4e6844ed3be730d79b04d17252ad6f9cc5c1cb70
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # US-038: Scope Access to a Specific Database via Tenant Membership
 

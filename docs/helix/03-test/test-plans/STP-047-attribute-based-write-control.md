@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-047
+  review:
+    self_hash: ddaeefb33ac1b7f00805d8d5bf58c5ce85bfc8603d0d1cbd0448a28629cc7acf
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-047-attribute-based-write-control
@@ -21,7 +25,7 @@ ddx:
 - Collection-scoped write allow/deny per subject; field write-deny naming the path.
 
 **Out of Scope**
-- Transactional abort and idempotent replay ([[STP-103]]), approval envelopes ([[STP-106]]).
+- Transactional abort and idempotent replay (STP-103), approval envelopes (STP-106).
 
 ## Acceptance Criteria Test Mapping
 

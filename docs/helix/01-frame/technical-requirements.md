@@ -4,6 +4,12 @@ ddx:
   depends_on:
     - helix.prd
     - helix.principles
+  review:
+    self_hash: b50c3f03df0814348846c9a6e6eb9bebbc4b7be7dcb3783fdd6d9b4104a56fca
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+      helix.principles: 68d05c2f025124f224f952adb2e7b93671c8f099011975fcbb3619e18fde38dd
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Technical Requirements (Retired)
 

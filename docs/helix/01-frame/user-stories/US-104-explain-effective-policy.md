@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-104
+  review:
+    self_hash: dd5ae5a9e12a71e898814cc2f50fda0333bbdf372b2badd70c2cd36a35f9ea56
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-104: Explain Effective Policy

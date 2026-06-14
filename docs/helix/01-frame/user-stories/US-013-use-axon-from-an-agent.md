@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-013
+  review:
+    self_hash: 7b51e45dcf8c5000b863429086d35d4075b59ebe6d0428e10748754115ff514f
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-013: Use Axon from an Agent

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-001
+  review:
+    self_hash: 52edbcef8447515773bb3f17f0a2253392903eef8ace6d2427b6469b383fd520
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-001: Create a Collection

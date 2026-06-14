@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-108
+  review:
+    self_hash: 13e6e08564aef59816b7386372762247a27e4754b3f1984e7a1bb98b429f4dbb
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-108: Use Mutation Intents From MCP

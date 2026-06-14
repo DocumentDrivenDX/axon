@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-010
+  review:
+    self_hash: 17e61029f272a98a415d2cea3ae3ce656c3c3dadac10f84ade005568e5dec347
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-010: CRUD an Entity

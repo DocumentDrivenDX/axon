@@ -5,6 +5,13 @@ ddx:
     - helix.prd
     - ADR-001
     - FEAT-005
+  review:
+    self_hash: 86046c9a1474abf0f42a1962eedade8582212487f7face55f5256fefa800ff98
+    deps:
+      ADR-001: 926aafe1f5bdedd6dd2a49f3343bfaaae3c100fd01333a424c22401596b21041
+      FEAT-005: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # ADR-005: Authentication via Tailscale LocalAPI
 

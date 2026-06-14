@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-016
+  review:
+    self_hash: d526a4e4e6fdfb4f2b0204a5b4c07938b6bc5d29e5a65df62cc3278fbb28a2e1
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # US-016: Track Bead Dependencies
 

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-106
+  review:
+    self_hash: 5bed0ef5288306d1a49b185ea56b523ec4ca6a213585f24210d7986cf6da99d6
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-106: Route Risky Writes For Approval

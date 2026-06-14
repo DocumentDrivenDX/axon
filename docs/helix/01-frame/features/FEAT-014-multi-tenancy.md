@@ -3,12 +3,11 @@ ddx:
   id: FEAT-014
   depends_on:
     - helix.prd
-    - FEAT-001
-    - FEAT-012
-    - FEAT-025
-    - ADR-010
-    - ADR-011
-    - ADR-018
+  review:
+    self_hash: 89f20cc345d46dc650c9c0f1042da643fbc4e57b3e9278c287b2fb625cc6fd4f
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-014 — Tenancy, Namespace Hierarchy, and Path-Based Addressing
 

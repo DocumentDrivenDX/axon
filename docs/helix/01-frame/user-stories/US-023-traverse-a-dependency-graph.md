@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-023
+  review:
+    self_hash: 8f95484229d01eede9128e4c7b787e6aff5a2c3014b479c38366f37c45636fdd
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-023: Traverse a Dependency Graph

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-105
+  review:
+    self_hash: 42a149a9dd97579d04548cba7dd65f8ba7c829bcbb7fa25313453e454fce3037
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-105: Preview A GraphQL Mutation

@@ -5,6 +5,13 @@ ddx:
     - helix.prd
     - FEAT-002
     - FEAT-007
+  review:
+    self_hash: 914b8c8b1a9829504c826ae36b8d8b48a6118b0268c6c8c562fc446ee01b9a77
+    deps:
+      FEAT-002: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
+      FEAT-007: 730a71d71ea4d398f55a2a62b9bf812fc10290809796f4fab4e8ba1b50d53849
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # ADR-002: Schema Format — JSON Schema + Link-Type Definitions
 

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-071
+  review:
+    self_hash: 9f475bb611092c1f4c4e69fd7039faba28cbdc69536568d24a900865a294bfaf
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-071-list-entity-neighbors
@@ -21,7 +25,7 @@ ddx:
 - Undirected/directed single-hop matching with type filters.
 
 **Out of Scope**
-- Multi-hop traversal ([[STP-023]]), candidates ([[STP-070]]).
+- Multi-hop traversal (STP-023), candidates (STP-070).
 
 ## Acceptance Criteria Test Mapping
 

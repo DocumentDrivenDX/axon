@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-096
+  review:
+    self_hash: 3b30b9e14970750cf4974bc5a4f33a7d1129e082c3d8236483f0e56ad32cf692
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-096: Revert One Entity Safely

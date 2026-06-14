@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-077
+  review:
+    self_hash: 8f69bfe9f4fc935fd136a27e9eb8ea8f5ed0bef817a6e28e8b681ea5b6e28006
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-077-subscribe-to-a-named-query
@@ -21,7 +25,7 @@ ddx:
 - Subscription lifecycle and delivery semantics for named queries.
 
 **Out of Scope**
-- Generic entity subscriptions (FEAT-015), `ready_beads`-specific case ([[STP-074]] AC5).
+- Generic entity subscriptions (FEAT-015), `ready_beads`-specific case (STP-074 AC5).
 
 ## Acceptance Criteria Test Mapping
 
@@ -51,7 +55,7 @@ cargo test -p axon-graphql
 
 ### Coverage Focus
 
-- P0: AC4 policy filtering (a subscription is a standing read; it must obey [[STP-101]]) and AC5 resource cleanup.
+- P0: AC4 policy filtering (a subscription is a standing read; it must obey STP-101) and AC5 resource cleanup.
 
 ## Data and Setup
 
@@ -69,7 +73,7 @@ cargo test -p axon-graphql
 
 **Implementation Order**
 1. Citation-only pass: convert the existing AC1–AC5 labels to canonical `@covers` syntax.
-2. Mirror a `ready_beads` case into [[STP-074]] AC5.
+2. Mirror a `ready_beads` case into STP-074 AC5.
 
 **Constraints**
 - QRY-12 delivery semantics; CONTRACT-002 subscription transport.

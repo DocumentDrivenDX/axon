@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-058
+  review:
+    self_hash: b1a287fb78ba88650d75b9fce846ebdc3365739e65a6e1e897ccc0f16062f70e
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-058: Detect Breaking Schema Changes

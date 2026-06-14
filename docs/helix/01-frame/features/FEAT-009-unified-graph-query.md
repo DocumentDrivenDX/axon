@@ -3,18 +3,11 @@ ddx:
   id: FEAT-009
   depends_on:
     - helix.prd
-    - FEAT-002
-    - FEAT-007
-    - FEAT-013
-    - FEAT-015
-    - FEAT-016
-    - FEAT-029
-    - ADR-010
-    - ADR-019
-    - ADR-020
-    - ADR-021
-    - CONTRACT-002
-    - CONTRACT-007
+  review:
+    self_hash: 08784dee672189395e039843c292e6513155f125f9c9ec50bb29f2cc593c7bca
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-009 — Unified Graph Query (Cypher)
 

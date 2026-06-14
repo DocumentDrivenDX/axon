@@ -3,6 +3,11 @@ ddx:
   id: helix.feature-registry
   depends_on:
     - helix.prd
+  review:
+    self_hash: 3b6e84c6fb059072a1fc5b1c9a8f12e9c83039967b1d6239b1efb547a7126474
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Feature Registry

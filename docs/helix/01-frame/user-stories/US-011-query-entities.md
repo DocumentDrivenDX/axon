@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-011
+  review:
+    self_hash: 28a107d4af8681008efe4abd2c51ba24126bbc3db3a57c814075740c421ee285
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-011: Query Entities

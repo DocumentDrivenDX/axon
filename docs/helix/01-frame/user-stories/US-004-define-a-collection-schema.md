@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-004
+  review:
+    self_hash: fb1c7a6fa0c42accb2d0c76d86bae9a10d06c5b0063178d42ce984e210407069
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-004: Define a Collection Schema

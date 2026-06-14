@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-087
+  review:
+    self_hash: 511661a33c55f9e75d2387035374af219e06c4bb69234b1e2cfeae34aaa16d73
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # US-087: Create a Tenant with Multiple Databases
 

@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-025
+  review:
+    self_hash: 87f09bfc0d7d7aaab25b0fb0da7ad6fed897696724cd896a70b14e6e772ce43f
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-025-check-reachability
@@ -21,7 +25,7 @@ ddx:
 - Boolean reachability semantics over typed links.
 
 **Out of Scope**
-- Full traversal result shapes ([[STP-023]]), ad-hoc query budgets ([[STP-076]]).
+- Full traversal result shapes (STP-023), ad-hoc query budgets (STP-076).
 
 ## Acceptance Criteria Test Mapping
 
@@ -48,7 +52,7 @@ cargo test -p axon-cypher
 
 ### Coverage Focus
 
-- P0: AC4 — reachability is an existence oracle; it must obey [[STP-101]] hidden-row semantics.
+- P0: AC4 — reachability is an existence oracle; it must obey STP-101 hidden-row semantics.
 
 ## Data and Setup
 

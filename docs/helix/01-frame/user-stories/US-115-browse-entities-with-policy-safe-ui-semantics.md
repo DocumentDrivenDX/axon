@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-115
+  review:
+    self_hash: 44b573bc03b40a0d52e71a636a8a51ce2727934dc3bf46e1c7fe7b94b7baf499
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-115: Browse Entities With Policy-Safe UI Semantics

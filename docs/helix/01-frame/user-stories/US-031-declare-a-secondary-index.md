@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-031
+  review:
+    self_hash: bed482dda62dbde031f4449344e3eb439e109eb2ec66dd7061bdbe4468bb66ba
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # US-031: Declare a Secondary Index
 

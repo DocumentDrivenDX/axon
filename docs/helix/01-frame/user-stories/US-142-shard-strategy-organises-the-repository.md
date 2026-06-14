@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-142
+  review:
+    self_hash: 471d86775365b5dcf7677d2dff97aae02e5221fddc9f648ec9c4a871feea6fd5
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-142: Shard Strategy Organises the Repository

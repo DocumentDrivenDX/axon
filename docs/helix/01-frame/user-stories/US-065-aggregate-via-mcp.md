@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-065
+  review:
+    self_hash: 19e5a9296cb22aa060ef03e602589e4dc03bad2eaeb5f38a8da0e1c92f7182f6
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-065: Aggregate via MCP

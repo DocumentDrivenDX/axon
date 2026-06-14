@@ -3,8 +3,11 @@ ddx:
   id: FEAT-028
   depends_on:
     - helix.prd
-    - FEAT-005
-    - FEAT-014
+  review:
+    self_hash: eaf50210678ba364441138764677456c6bf02edcc09282dfaa7d1b312f3fea20
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-028 — Unified Binary & Service Management
 

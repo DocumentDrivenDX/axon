@@ -3,10 +3,11 @@ ddx:
   id: FEAT-010
   depends_on:
     - helix.prd
-    - FEAT-007
-    - FEAT-008
-    - FEAT-009
-    - FEAT-019
+  review:
+    self_hash: f5e9cc42a1a1e5b377b069b10a011414e361565a26c13d7bead25314b5d3bf34
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-010 — Entity State Machines and Transition Guards
 

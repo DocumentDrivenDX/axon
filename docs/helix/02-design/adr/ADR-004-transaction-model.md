@@ -5,6 +5,13 @@ ddx:
     - helix.prd
     - ADR-003
     - FEAT-008
+  review:
+    self_hash: 4c8ee66b80980bed2298d511d223f7faaace03864610faf8333af8659c4ce570
+    deps:
+      ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
+      FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # ADR-004: Transaction Model — Optimistic Concurrency Control
 

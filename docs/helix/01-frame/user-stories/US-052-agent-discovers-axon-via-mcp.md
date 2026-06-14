@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-052
+  review:
+    self_hash: 1648dc74f0fec2ff5c0340cdf83e18bd5824db4f1b7b1af4f948686c70014813
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-052: Agent Discovers Axon via MCP

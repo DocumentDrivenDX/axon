@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-024
+  review:
+    self_hash: afd15353ec32b1430078e90e3b62ccfc91eca3fec985c5880a2fc8c105a0f641
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-024-explode-a-bill-of-materials
@@ -21,7 +25,7 @@ ddx:
 - Multi-level `contains` traversal with quantity metadata.
 
 **Out of Scope**
-- Generic dependency traversal ([[STP-023]]), GraphQL connections ([[STP-072]]).
+- Generic dependency traversal (STP-023), GraphQL connections (STP-072).
 
 ## Acceptance Criteria Test Mapping
 

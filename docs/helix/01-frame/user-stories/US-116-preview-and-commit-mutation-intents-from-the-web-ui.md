@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-116
+  review:
+    self_hash: 16cf95fa023fe0c076904028c354428f0041d48fc25da4e056d12b87cf0965b5
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-116: Preview And Commit Mutation Intents From The Web UI

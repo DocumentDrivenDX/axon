@@ -1,6 +1,10 @@
 ---
 ddx:
   id: STP-073
+  review:
+    self_hash: 427f05a898510e9e3cec69633eb48c4584bd9ffb21767644cbecf627086e8933
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # Story Test Plan: STP-073-discover-links-via-mcp
@@ -21,7 +25,7 @@ ddx:
 - MCP tool generation from named queries; MCP↔GraphQL query parity.
 
 **Out of Scope**
-- GraphQL exposure ([[STP-072]]), ad-hoc grammar/budget semantics ([[STP-076]]).
+- GraphQL exposure (STP-072), ad-hoc grammar/budget semantics (STP-076).
 
 ## Acceptance Criteria Test Mapping
 
@@ -52,13 +56,13 @@ cargo test -p axon-server --test mcp_contract
 
 | Need | Required For | Source / Strategy |
 |------|--------------|-------------------|
-| Activated named query with description + parameters | AC1, AC2 | Schema fixture from [[STP-075]] |
+| Activated named query with description + parameters | AC1, AC2 | Schema fixture from STP-075 |
 | Shared policy fixture subjects | AC4 | `seed_query_policy_fixture` |
 
 ## Edge Cases and Failure Modes
 
 - Tool list must refresh after schema change (asserted for policy metadata; extend to named-query tools).
-- Ad-hoc tool failure codes must match CONTRACT-007 stable codes ([[STP-076]]).
+- Ad-hoc tool failure codes must match CONTRACT-007 stable codes (STP-076).
 
 ## Build Handoff
 

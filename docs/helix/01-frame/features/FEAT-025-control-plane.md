@@ -3,10 +3,11 @@ ddx:
   id: FEAT-025
   depends_on:
     - helix.prd
-    - FEAT-012
-    - FEAT-014
-    - ADR-017
-    - ADR-018
+  review:
+    self_hash: 5ff1ca8b03318957e25d5a3752ebf8999a45378a7b83aa6c2978739263ac3603
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-025 — BYOC Deployment Control Plane
 

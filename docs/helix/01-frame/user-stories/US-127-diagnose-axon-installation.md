@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-127
+  review:
+    self_hash: 3ecc1c9a3f06ab5b5775e36260eb493d0b6942203c9e9b90b7cb34cb5e604698
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-127: Diagnose Axon installation

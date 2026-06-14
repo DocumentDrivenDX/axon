@@ -8,6 +8,16 @@ ddx:
     - FEAT-003
     - FEAT-015
     - FEAT-021
+  review:
+    self_hash: d0be4bb4fa8f98ca5e4518b4b1c0bc4a46882a42098d38931c6d5b649cbb9655
+    deps:
+      ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
+      ADR-010: 80dcbb947056ff9555019c8cbc3c3a6e9dbe67cdaa668402b15d7bbc5d905930
+      ADR-012: cea81e56e4101b53f6b9a2e98c796278756bc657b895398ae226b6bc4f1f0188
+      FEAT-003: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
+      FEAT-015: c75ebd606ba19b7ac509eefcd0bb47c229433b5a14b1110fcae70d6c3898bd6f
+      FEAT-021: 6165a271de0b5e5c978f97ab9393596e651a680c51db80153fb85167ed93d993
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # ADR-014: Change Feeds — Debezium-Compatible CDC with Kafka and Schema Registry
 

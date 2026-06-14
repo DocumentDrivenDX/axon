@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-135
+  review:
+    self_hash: f56f2e07361a97afa4f3d6079a29b3910ec1f80cd071622148cc272780ecaba2
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-135: Discover Entity Schemas via Registry

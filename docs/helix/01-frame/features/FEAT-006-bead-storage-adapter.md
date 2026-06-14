@@ -3,10 +3,11 @@ ddx:
   id: FEAT-006
   depends_on:
     - helix.prd
-    - FEAT-001
-    - FEAT-004
-    - FEAT-005
-    - FEAT-010
+  review:
+    self_hash: decac5fea0f1d97b7d7f502aada0c9733e10f1771a07560c413ae358e2be4c4f
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-006 — Bead Storage Adapter
 

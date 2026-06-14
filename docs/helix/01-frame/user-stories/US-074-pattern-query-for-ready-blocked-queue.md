@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-074
+  review:
+    self_hash: 7013f18126c82a2b9b761ce33669b700404a56eaad35f3e474508323dbeaba92
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 
 # US-074: Pattern Query for Ready/Blocked Queue

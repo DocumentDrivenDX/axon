@@ -3,12 +3,11 @@ ddx:
   id: FEAT-023
   depends_on:
     - helix.prd
-    - FEAT-003
-    - FEAT-005
-    - FEAT-008
-    - FEAT-015
-    - FEAT-029
-    - FEAT-030
+  review:
+    self_hash: 24416c13b9a48e864ae43e3967c63d2711763c745905850dbb4f03768ffc7949
+    deps:
+      helix.prd: d87a9cbc61d7abb53d32d8c675cc74c63fd9502e953c0ebee44285efde51df1f
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # Feature Specification: FEAT-023 — Rollback and Recovery
 

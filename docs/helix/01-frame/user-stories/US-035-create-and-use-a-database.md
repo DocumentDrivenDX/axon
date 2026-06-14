@@ -1,6 +1,10 @@
 ---
 ddx:
   id: US-035
+  review:
+    self_hash: 3b737b32293c0f75eba2a4f387a098a04f801b80100c9097866f7964cb5ed867
+    deps: {}
+    reviewed_at: "2026-06-14T03:52:45Z"
 ---
 # US-035: Create and Use a Database (within a tenant)
 
