@@ -7,7 +7,7 @@ ddx:
     self_hash: dff135ef228be7df5b116f86f9546fddcd1fb59bf758ce857b1ad26ce4f5f8c6
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 # Feature Specification: FEAT-024 — Application Substrate
 

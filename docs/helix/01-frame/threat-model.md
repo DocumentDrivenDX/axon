@@ -9,7 +9,7 @@ ddx:
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
       helix.security-requirements: 11163041a22f3ac008d62a7c957593da690306bc15bec244ebb9afdb9c69d0f5
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Threat Model

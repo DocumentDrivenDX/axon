@@ -23,7 +23,7 @@ ddx:
       FEAT-016: 9a2522adbeae59163b67207dc28717d0abc0f7ff65bdb155bd6b23d490d1ba5e
       FEAT-017: 7589f2ef1950a23cd5b4572f4ab88b8c30a9cb3421a6a63138dde3e6a0619f97
       FEAT-019: ddf48d3192c435e1b9a40b2dc77ec60f363bfd91230e99fab336ebf4232785c4
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 # ADR-019: Policy Authoring and Mutation Intents
 

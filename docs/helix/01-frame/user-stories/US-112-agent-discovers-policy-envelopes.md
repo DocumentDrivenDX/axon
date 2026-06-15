@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: e3551f2aa4a0077253b72a91f9c2e36999fd81a41defc899f0facaa656c77bb8
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-112: Agent Discovers Policy Envelopes

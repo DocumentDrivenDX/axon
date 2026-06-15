@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: e7599d73084cf6e694a3c52162604a292817627481eab37c37f7305ec3758ee5
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Story Test Plan: STP-101-hide-inaccessible-entities

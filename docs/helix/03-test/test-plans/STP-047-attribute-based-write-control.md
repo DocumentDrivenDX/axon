@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: ddaeefb33ac1b7f00805d8d5bf58c5ce85bfc8603d0d1cbd0448a28629cc7acf
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Story Test Plan: STP-047-attribute-based-write-control

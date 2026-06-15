@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 41a0bdb40e3db24f7a9e6d0303c27c5e613e61fa8cf74db4e9372d8f5fdf7228
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-079: Multi-Collection Audit Tail

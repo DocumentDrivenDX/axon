@@ -13,7 +13,7 @@ ddx:
       ADR-007: 5a96b23ec82c256af094753065c60c6862a9a7c2fd8e7db3bb681d896627f727
       FEAT-002: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
       FEAT-006: decac5fea0f1d97b7d7f502aada0c9733e10f1771a07560c413ae358e2be4c4f
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 # ADR-008: Lifecycle State Machines as Schema Declarations
 

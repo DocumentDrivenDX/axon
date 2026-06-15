@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 043cc223901bec44c4122288d411f1b49ce57c9f7b9d8c8e4035b743de3f0db3
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Story Test Plan: STP-115-browse-entities-with-policy-safe-ui-semantics

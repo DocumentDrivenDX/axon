@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: ddc81da77d8675401acc194c5db7c1e94ddd03aa18029b9f1dee23f901b01339
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-137: Stream Changes Without Kafka

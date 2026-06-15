@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: ab55532f63794c97bcc2800c46eb52c042efcdf7a85b6b5e390ff72439498d08
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 # US-026: Enforce Invoice Approval Workflow
 

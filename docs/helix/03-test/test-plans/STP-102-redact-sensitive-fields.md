@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 0931cc4b9e7d11f5bb30b7c96b55710bb7eaa10d075a575ba8c14089b92125f0
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Story Test Plan: STP-102-redact-sensitive-fields

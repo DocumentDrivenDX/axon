@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 8f69bfe9f4fc935fd136a27e9eb8ea8f5ed0bef817a6e28e8b681ea5b6e28006
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Story Test Plan: STP-077-subscribe-to-a-named-query

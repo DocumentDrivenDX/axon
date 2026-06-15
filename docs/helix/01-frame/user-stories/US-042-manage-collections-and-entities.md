@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: d67386d1586a037888dd7cbda34c2bdb79aa40fa94fd1c81c6d521331f3744b8
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-042: Manage Collections and Entities

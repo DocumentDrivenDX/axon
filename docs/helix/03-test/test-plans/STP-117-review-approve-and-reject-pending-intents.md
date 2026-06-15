@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: f5790350929f7018dbc6ff42cca59d5a2075b55312fdd9ea03bab7610dcf3416
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Story Test Plan: STP-117-review-approve-and-reject-pending-intents

@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: ff05aa4c6fe051720ca82459a11b4a3bcacfa8a9ac8a7574d6a7e84dd9219417
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-056: Local Agent Connects via Stdio

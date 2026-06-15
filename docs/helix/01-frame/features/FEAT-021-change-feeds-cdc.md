@@ -7,7 +7,7 @@ ddx:
     self_hash: 6165a271de0b5e5c978f97ab9393596e651a680c51db80153fb85167ed93d993
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 # Feature Specification: FEAT-021 — Change Feeds (CDC)
 

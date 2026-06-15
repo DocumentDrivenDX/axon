@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: d13c4cc5090c5277d6b541e611e00f8afc0c4336cc87cd692edbda82d1e5ec34
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-130: Emit CDC Events to Kafka

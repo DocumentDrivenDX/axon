@@ -7,7 +7,7 @@ ddx:
     self_hash: e96aee30c746450c9be90302f14441d47e1bcd42da235dd78f97b01a73f6bfb1
     deps:
       helix.product-vision: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 # Research: FoundationDB's Approach to Correctness and Deterministic Simulation Testing
 

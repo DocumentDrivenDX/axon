@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: af2b0ddb1cb0806d024964a9bf0b6f7a51544ebc016bda701262537fb3f40cdd
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-081: Idempotent Transaction Submission

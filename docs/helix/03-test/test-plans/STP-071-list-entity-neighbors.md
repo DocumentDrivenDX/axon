@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 9f475bb611092c1f4c4e69fd7039faba28cbdc69536568d24a900865a294bfaf
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Story Test Plan: STP-071-list-entity-neighbors

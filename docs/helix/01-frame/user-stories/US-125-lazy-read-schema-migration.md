@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: ba0b8b1ab4d7cdf92d316d57b93559049e3cbcf2dcdf5d239a280c4b3c086c12
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-125: Lazy-Read Schema Migration

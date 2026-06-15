@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 1301fd6157a1f7e50558ab30cf05f340388389dafe6406fc75712b9f113ac73a
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-090: JWT Credential for Integration Access

@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 8d1598d1d40e5980b2bb7aac0ff2e86f778b98b9ea45b5ce0dfc62dd9f3d8a2f
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-117: Review, Approve, And Reject Pending Intents

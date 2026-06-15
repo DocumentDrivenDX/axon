@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: c0c04bff3fb6a81d4360ecb3a5570d4fc0cd8f6dbd862d4d89e151d24ebf42a2
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 # US-028: Query Valid Transitions
 

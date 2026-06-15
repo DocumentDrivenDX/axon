@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 44b573bc03b40a0d52e71a636a8a51ce2727934dc3bf46e1c7fe7b94b7baf499
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-115: Browse Entities With Policy-Safe UI Semantics

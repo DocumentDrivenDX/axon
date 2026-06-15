@@ -21,7 +21,7 @@ ddx:
       FEAT-004: 1ba0ba90778c2e6b4a38b11632d8ca73d3b328ac19ad326e151534c26ecd0b46
       FEAT-009: 08784dee672189395e039843c292e6513155f125f9c9ec50bb29f2cc593c7bca
       FEAT-013: e218b7499012d56e569acc094cc40b47360b34fda601b473ac425af2cec09b27
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 # ADR-012: GraphQL Query Layer (Auto-Generated from ESF)
 

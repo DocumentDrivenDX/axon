@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 5f33bacda8e1f7cc5a050853df4e59aa8192391505eedd04a193fd823274fcf9
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-062: Count Entities by Field

@@ -3,89 +3,111 @@ title: Axon
 layout: hextra-home
 ---
 
-{{< hextra/hero-badge link="https://github.com/DocumentDrivenDX/axon" >}}
-  <span>Open Source · MIT · HELIX 0.7.1 coverage target</span>
-  {{< icon name="arrow-circle-right" attributes="height=14" >}}
-{{< /hextra/hero-badge >}}
+<section class="axon-hero" aria-labelledby="axon-hero-title">
+  <div class="axon-hero__copy">
+    <a class="axon-release-pill" href="docs/coverage/" aria-label="Open HELIX 0.7.1 coverage">
+      <span>HELIX 0.7.1 coverage</span>
+      <strong>198 mapped proofs</strong>
+    </a>
+    <h1 id="axon-hero-title">Governed state for agents that write business records.</h1>
+    <p>
+      Axon is a transactional entity store that puts schema validation, policy
+      decisions, mutation previews, approval routing, and repair-grade audit
+      history on the same request path.
+    </p>
+    <div class="axon-actions" aria-label="Primary pages">
+      <a class="axon-button axon-button--primary" href="docs/getting-started/">Start with the CLI</a>
+      <a class="axon-button axon-button--secondary" href="docs/examples/">Sample projects</a>
+      <a class="axon-button axon-button--secondary" href="docs/demo-reels/">Demo reels</a>
+    </div>
+  </div>
 
-<div class="hx-mt-6 hx-mb-6">
-{{< hextra/hero-headline >}}
-  Agent-native state management.&nbsp;<br class="sm:hx-block hx-hidden" />Schema-first. Auditable by default.
-{{< /hextra/hero-headline >}}
-</div>
+  <div class="axon-hero__surface" aria-label="Axon governed write request path">
+    <div class="axon-console">
+      <div class="axon-console__bar">
+        <span></span><span></span><span></span>
+        <strong>agent-write.axon</strong>
+      </div>
+      <div class="axon-console__body">
+        <p><span class="axon-prompt">$</span> axon intents preview invoice-1042 --actor ap-agent</p>
+        <p><span class="axon-ok">schema</span> Invoice.v7 accepted 6 fields and 2 links</p>
+        <p><span class="axon-warn">policy</span> amount_change requires finance approval</p>
+        <p><span class="axon-ok">version</span> entity:91 policy:18 grant:44 operation:stable</p>
+      </div>
+    </div>
+    <ol class="axon-request-path" aria-label="Governed write stages">
+      <li><span>01</span><strong>Schema</strong><em>typed entity and links</em></li>
+      <li><span>02</span><strong>Policy</strong><em>field visibility and action decision</em></li>
+      <li><span>03</span><strong>Intent</strong><em>diff, pre-image, version token</em></li>
+      <li><span>04</span><strong>Approval</strong><em>human review or direct commit</em></li>
+      <li><span>05</span><strong>Audit</strong><em>repairable before and after record</em></li>
+    </ol>
+  </div>
+</section>
 
-<div class="hx-mb-12">
-{{< hextra/hero-subtitle >}}
-  Axon is a transactional entity store for agentic applications — structured storage with schema validation, immutable audit logs, graph relationships, and APIs designed for how agents actually consume data. The microsite now maps every HELIX feature, story, scenario, and use case to a sample project and demo reel.
-{{< /hextra/hero-subtitle >}}
-</div>
+<section class="axon-proof-strip" aria-label="HELIX coverage proof points">
+  <a href="docs/coverage/"><strong>31</strong><span>feature specs</span></a>
+  <a href="docs/coverage/"><strong>140</strong><span>user stories</span></a>
+  <a href="docs/coverage/"><strong>17</strong><span>scenarios</span></a>
+  <a href="docs/examples/"><strong>100%</strong><span>mapped examples</span></a>
+</section>
 
-<div class="hx-mb-12">
-{{< hextra/hero-button text="Get Started" link="docs/getting-started" >}}
-{{< hextra/hero-button text="Explore Coverage" link="docs/coverage" style="alt" >}}
-{{< hextra/hero-button text="Demo Reels" link="docs/demo-reels" style="alt" >}}
-</div>
+<section class="axon-section axon-section--split" aria-labelledby="write-path-title">
+  <div>
+    <p class="axon-eyebrow">shared human and agent workflow</p>
+    <h2 id="write-path-title">One governed write path across MCP, GraphQL, CLI, and apps.</h2>
+    <p>
+      Agents can discover tools and propose changes without bypassing the
+      same controls used by operators and application code. Axon rechecks
+      schema, policy, grants, operation shape, and entity versions before
+      committing a mutation.
+    </p>
+  </div>
+  <div class="axon-check-grid">
+    <div><strong>Preview first</strong><span>Every risky write can become an inspectable intent.</span></div>
+    <div><strong>Review with context</strong><span>Approvals bind to the reviewed pre-image and policy version.</span></div>
+    <div><strong>Commit safely</strong><span>Stale entity, schema, grant, and operation versions are rejected.</span></div>
+    <div><strong>Repair later</strong><span>Audit records keep actor, tool, policy, and before/after evidence.</span></div>
+  </div>
+</section>
 
-<div class="hx-mt-8"></div>
+<section class="axon-section" aria-labelledby="coverage-title">
+  <div class="axon-section__header">
+    <p class="axon-eyebrow">documentation as evidence</p>
+    <h2 id="coverage-title">The microsite covers the core application, not just the happy path.</h2>
+    <p>
+      Generated HELIX pages connect requirements to concrete CLI flows, sample
+      projects, and demo reels for schema design, policy guardrails, audit,
+      tenant control, local-first operation, and agent taskboards.
+    </p>
+  </div>
+  <div class="axon-card-grid">
+    <a class="axon-card" href="docs/coverage/">
+      <span>Coverage</span>
+      <strong>Feature, story, scenario, and use-case matrix</strong>
+    </a>
+    <a class="axon-card" href="docs/examples/">
+      <span>Examples</span>
+      <strong>Worked projects with setup commands and expected evidence</strong>
+    </a>
+    <a class="axon-card" href="docs/demo-reels/">
+      <span>Demo reels</span>
+      <strong>Scenario walkthroughs for each major governed workflow</strong>
+    </a>
+  </div>
+</section>
 
-{{< hextra/feature-grid >}}
-  {{< hextra/feature-card
-    title="Schema-first collections"
-    subtitle="Every collection has a JSON Schema. All writes are validated before they reach storage. Schema evolution is tracked, diffed, and controlled."
-    style="background: radial-gradient(ellipse at 50% 80%,rgba(72,120,198,0.15),hsla(0,0%,100%,0));"
-  >}}
-  {{< hextra/feature-card
-    title="Immutable audit log"
-    subtitle="Every mutation — create, update, delete, schema change — produces an immutable record with actor, timestamp, and before/after data."
-    style="background: radial-gradient(ellipse at 50% 80%,rgba(120,72,198,0.15),hsla(0,0%,100%,0));"
-  >}}
-  {{< hextra/feature-card
-    title="Graph relationships"
-    subtitle="Link entities across collections with typed edges. Traverse graphs to arbitrary depth. Model dependencies, hierarchies, and ownership natively."
-    style="background: radial-gradient(ellipse at 50% 80%,rgba(72,198,120,0.15),hsla(0,0%,100%,0));"
-  >}}
-  {{< hextra/feature-card
-    title="Agent-native APIs"
-    subtitle="REST, gRPC, GraphQL, and MCP — all served from the same unified binary. Agents get transactional writes, optimistic concurrency, and structured queries."
-  >}}
-  {{< hextra/feature-card
-    title="Unified CLI"
-    subtitle="One binary covers the full lifecycle: serve, manage collections, CRUD entities, evolve schemas, inspect audit logs, traverse graphs."
-  >}}
-  {{< hextra/feature-card
-    title="Embedded or server"
-    subtitle="Run Axon in-process with SQLite or as a standalone server with PostgreSQL. Same API, same CLI, same audit guarantees."
-  >}}
-  {{< hextra/feature-card
-    title="HELIX coverage catalog"
-    subtitle="The site is generated from 31 feature specs, 140 user stories, 17 SCN scenarios, and 10 use-case domains with 100% mapped examples and reels."
-  >}}
-{{< /hextra/feature-grid >}}
-
-<div class="hx-mt-16"></div>
-
-## Why Axon?
-
-Agent state management is an unsolved infrastructure problem. Agents modify state without provenance, schemas drift silently, and concurrent operations produce corrupt state. Current solutions — Firebase, Supabase, PocketBase, DoltDB — were built for human-driven UIs, not for agents that need audit trails, strict schemas, and graph-aware queries.
-
-Axon is purpose-built for this gap:
-
-- **Audit-first** — provenance is not a feature, it is the architecture. Every change is immutable and queryable.
-- **Schema-first** — define structure once, get validation, diffing, and documentation everywhere.
-- **Agent-friendly** — MCP server, GraphQL introspection, structured filters, and optimistic concurrency give agents the guarantees they need to act safely.
-- **Local-first** — run embedded with SQLite in a laptop, serve with PostgreSQL in production. Same binary, zero reconfiguration.
+<section class="axon-section axon-section--install" aria-labelledby="install-title">
+  <div>
+    <p class="axon-eyebrow">try the request path</p>
+    <h2 id="install-title">Start locally, keep the same governance model.</h2>
+  </div>
 
 ```bash
-# Install
 curl -sf https://DocumentDrivenDX.github.io/axon/install.sh | sh
-
-# Start a server (in-memory, no auth — for development)
 axon serve --no-auth --storage memory
-
-# Create a collection and define its schema
 axon collections create tasks
 axon schema set tasks --schema '{"type":"object","properties":{"title":{"type":"string"},"status":{"type":"string"}},"required":["title","status"]}'
-
-# Create an entity
 axon entities create tasks --id task-001 --data '{"title":"Ship it","status":"open"}'
 ```
+</section>

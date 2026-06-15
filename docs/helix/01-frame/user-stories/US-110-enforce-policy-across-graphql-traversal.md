@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: f2a2ee8a8785b46b3f3ac946bf6b63ce4056fb536d691c3fcd0306b9355ff681
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-110: Enforce Policy Across GraphQL Traversal

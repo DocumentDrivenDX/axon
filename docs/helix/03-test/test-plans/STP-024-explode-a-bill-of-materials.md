@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: afd15353ec32b1430078e90e3b62ccfc91eca3fec985c5880a2fc8c105a0f641
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Story Test Plan: STP-024-explode-a-bill-of-materials

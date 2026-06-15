@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 905a57318336f4ea12c32041f638a825425de05613535e7370f8292b7df356d9
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # Story Test Plan: STP-075-schema-declared-named-query

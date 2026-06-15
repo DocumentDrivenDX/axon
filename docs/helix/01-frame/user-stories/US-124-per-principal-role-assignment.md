@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: a76b33f314e1bc800ed6f1042e158ceb0ae3d1516f74007265ce2b59830688ee
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-124: Per-Principal Role Assignment

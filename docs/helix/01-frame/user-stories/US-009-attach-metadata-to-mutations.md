@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 4af4b4b7f90ec4c0582e4a817bacce585aecb06af370e58eadee1cbf2b404d68
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-009: Attach Metadata to Mutations

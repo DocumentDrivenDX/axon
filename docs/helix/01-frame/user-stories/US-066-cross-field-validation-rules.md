@@ -4,7 +4,7 @@ ddx:
   review:
     self_hash: 8af46031cdc4d8b0d0cfcac55058f8cfd63bd06d6ba668c894f2799014ded184
     deps: {}
-    reviewed_at: "2026-06-14T04:39:42Z"
+    reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
 # US-066: Cross-Field Validation Rules
