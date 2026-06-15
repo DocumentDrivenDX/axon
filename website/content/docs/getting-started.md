@@ -4,14 +4,15 @@ weight: 1
 next: concepts/
 ---
 
-Get Axon running and create your first entity in under 5 minutes.
+Get Axon running locally, define a schema, create governed entities, and
+inspect the audit trail those writes produce.
 
 ## Prerequisites
 
 - **Docker** (recommended) — no other dependencies
 - Or a Linux/macOS machine with `curl` to install the binary
 
-## Option A: Docker (quickest)
+## Option A: Docker
 
 ```bash
 docker run --rm -p 4170:4170 \
@@ -116,7 +117,8 @@ axon links list tasks task-001
 axon audit list --collection tasks --limit 5
 ```
 
-Every create, update, delete, and schema change is recorded with actor, timestamp, and before/after data.
+Every create, update, delete, and schema change records actor, timestamp,
+operation, and before/after data.
 
 ## Diagnose connectivity
 
@@ -129,7 +131,7 @@ axon doctor
 ## Next steps
 
 {{< cards >}}
-  {{< card link="../concepts/" title="Core Concepts" subtitle="Understand collections, schema evolution, links, and the audit model." >}}
-  {{< card link="../cli/" title="CLI Reference" subtitle="Complete reference for every axon subcommand." >}}
-  {{< card link="../demo-reels/" title="Demo Reels" subtitle="Browse the HELIX-mapped reel catalog and quickstart cast." >}}
+  {{< card link="../concepts/" title="Core Concepts" subtitle="Understand collections, schemas, links, authentication, and audit evidence." >}}
+  {{< card link="../cli/" title="CLI Reference" subtitle="Use the command surface for server, collection, entity, link, schema, and audit work." >}}
+  {{< card link="../demo-reels/" title="Demo Reels" subtitle="Browse scenario walkthroughs mapped back to HELIX coverage." >}}
 {{< /cards >}}

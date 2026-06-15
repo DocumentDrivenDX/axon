@@ -38,7 +38,7 @@ menu:
       weight: 6
 
 params:
-  description: Schema-first, auditable entity store for agentic applications
+  description: Governed transactional entity store for agentic business applications
   navbar:
     displayTitle: true
     displayLogo: false

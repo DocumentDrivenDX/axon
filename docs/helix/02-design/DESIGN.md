@@ -7,13 +7,13 @@ ddx:
     - helix.architecture
     - helix.concerns
   review:
-    self_hash: f82eedd3cf2a58f70085a87cc528a24f5eb0b7c7ee363d3f54073415fcf2ddf9
+    self_hash: c4f8d7506a25f115dd0acf1e289fccc108ea3c8f33843e9abe08d062baeee15e
     deps:
       helix.architecture: 8a39d93af466d83f02851986a0a935ddb0b8b12d1552ee3bc7e7af3c91fb145a
       helix.concerns: d22f8007944e442262ef2de1021079482f0c6ded29af8fed6f460cb6540055f3
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
       helix.product-vision: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-06-15T00:50:24Z"
 kind: design
 ---
 
@@ -66,6 +66,96 @@ The website should treat HELIX feature/story/scenario coverage as proof of
 product completeness. Coverage counts, mapped examples, and demo reels should
 be easy to find and visibly tied to the same design language as the rest of
 the site.
+
+## Brand Voice
+
+Axon's brand voice is **precise, operational, trusted, developer-native, and
+governance-first**. It should sound like infrastructure built for production
+risk: direct, specific, and calm under pressure.
+
+### Voice Attributes
+
+| Attribute | Meaning | Copy Test |
+| --- | --- | --- |
+| Precise | Name the actual control or surface instead of using broad claims | Does the sentence name schema, policy, intent, approval, audit, version, repair, GraphQL, MCP, CLI, or storage? |
+| Operational | Talk about what a developer or operator can inspect, run, reject, approve, or repair | Can the reader connect the sentence to a concrete workflow? |
+| Trusted | Use evidence and boundaries instead of hype | Does the claim point to tests, examples, demo reels, specs, audit records, or explicit non-goals? |
+| Developer-native | Prefer command, API, schema, and integration language over abstract platform language | Would a backend engineer know where to start? |
+| Governance-first | Agents are capable participants, but policy and review remain on the request path | Does the copy avoid implying that agents bypass human or data-layer controls? |
+
+### Message Pillars
+
+Axon copy should return to these product promises:
+
+- **One governed request path**: humans, agents, apps, CLI, GraphQL, and MCP
+  use the same schema, policy, version, approval, and audit controls.
+- **Business records are durable and inspectable**: entity data, links,
+  schemas, policies, mutation previews, and audit history are first-class.
+- **Agent writes need repair-grade evidence**: every mutation should preserve
+  enough context to understand, reject, approve, replay, or repair it.
+- **Coverage is proof**: examples, demo reels, HELIX mappings, and tests are
+  part of how Axon earns trust.
+
+### Vocabulary
+
+Prefer:
+
+- governed state
+- transactional entity store
+- business records
+- schema validation
+- policy decision
+- mutation intent
+- approval routing
+- version check
+- audit evidence
+- repair-grade history
+- GraphQL, MCP, CLI, SDK
+- sample project, demo reel, HELIX coverage
+
+Avoid:
+
+- vague automation claims
+- generic AI productivity claims
+- copy that frames agents as unchecked actors
+- "trust us" language without evidence
+- metaphors that obscure the data path
+- feature lists that do not name the control surface
+
+### Copy Rules
+
+- Lead with the category: "governed state" or "transactional entity store,"
+  not a generic data platform label.
+- Pair every agent capability with the control that contains it.
+- Prefer verbs that match the product surface: define, validate, preview,
+  approve, reject, commit, audit, replay, repair.
+- Keep sentences short when describing risk, policy, or audit behavior.
+- Use numbers only when they are generated or otherwise traceable.
+- Treat docs, examples, and demo reels as evidence, not promotional extras.
+
+### Copy Patterns
+
+Good homepage line:
+
+> Governed state for agents that write business records.
+
+Good supporting copy:
+
+> Axon gives developers one request path for schema validation, policy
+> decisions, mutation previews, approval routing, and audit evidence.
+
+Good example/reel copy:
+
+> This sample exercises the invoice approval path: an agent previews a risky
+> write, finance reviews the intent, and Axon records the committed audit
+> trail.
+
+Poor-fit copy:
+
+> Let agents automate your data layer with next-generation intelligence.
+
+Why it fails: it does not name the control surface, evidence, policy boundary,
+or concrete workflow.
 
 ## Information Architecture
 

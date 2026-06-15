@@ -11,14 +11,14 @@ layout: hextra-home
     </a>
     <h1 id="axon-hero-title">Governed state for agents that write business records.</h1>
     <p>
-      Axon is a transactional entity store that puts schema validation, policy
-      decisions, mutation previews, approval routing, and repair-grade audit
-      history on the same request path.
+      Axon gives developers one request path for schema validation, policy
+      decisions, mutation previews, approval routing, version checks, and
+      repair-grade audit evidence.
     </p>
     <div class="axon-actions" aria-label="Primary pages">
-      <a class="axon-button axon-button--primary" href="docs/getting-started/">Start with the CLI</a>
-      <a class="axon-button axon-button--secondary" href="docs/examples/">Sample projects</a>
-      <a class="axon-button axon-button--secondary" href="docs/demo-reels/">Demo reels</a>
+      <a class="axon-button axon-button--primary" href="docs/getting-started/">Run the quickstart</a>
+      <a class="axon-button axon-button--secondary" href="docs/examples/">Review sample projects</a>
+      <a class="axon-button axon-button--secondary" href="docs/demo-reels/">Watch demo reels</a>
     </div>
   </div>
 
@@ -57,10 +57,10 @@ layout: hextra-home
     <p class="axon-eyebrow">shared human and agent workflow</p>
     <h2 id="write-path-title">One governed write path across MCP, GraphQL, CLI, and apps.</h2>
     <p>
-      Agents can discover tools and propose changes without bypassing the
-      same controls used by operators and application code. Axon rechecks
-      schema, policy, grants, operation shape, and entity versions before
-      committing a mutation.
+      Agents can discover tools and propose writes without bypassing the
+      controls used by operators and application code. Axon rechecks schema,
+      policy, grants, operation shape, and entity versions before a mutation
+      commits.
     </p>
   </div>
   <div class="axon-check-grid">
@@ -74,33 +74,33 @@ layout: hextra-home
 <section class="axon-section" aria-labelledby="coverage-title">
   <div class="axon-section__header">
     <p class="axon-eyebrow">documentation as evidence</p>
-    <h2 id="coverage-title">The microsite covers the core application, not just the happy path.</h2>
+    <h2 id="coverage-title">The microsite maps product claims to inspectable evidence.</h2>
     <p>
-      Generated HELIX pages connect requirements to concrete CLI flows, sample
-      projects, and demo reels for schema design, policy guardrails, audit,
-      tenant control, local-first operation, and agent taskboards.
+      Generated HELIX pages connect requirements to CLI flows, sample projects,
+      and demo reels for schema design, policy guardrails, audit evidence,
+      tenant control, local operation, and agent taskboards.
     </p>
   </div>
   <div class="axon-card-grid">
     <a class="axon-card" href="docs/coverage/">
       <span>Coverage</span>
-      <strong>Feature, story, scenario, and use-case matrix</strong>
+      <strong>Feature, story, scenario, and use-case traceability</strong>
     </a>
     <a class="axon-card" href="docs/examples/">
       <span>Examples</span>
-      <strong>Worked projects with setup commands and expected evidence</strong>
+      <strong>Worked projects with setup commands and expected audit output</strong>
     </a>
     <a class="axon-card" href="docs/demo-reels/">
       <span>Demo reels</span>
-      <strong>Scenario walkthroughs for each major governed workflow</strong>
+      <strong>Scenario walkthroughs for governed write and review paths</strong>
     </a>
   </div>
 </section>
 
 <section class="axon-section axon-section--install" aria-labelledby="install-title">
   <div>
-    <p class="axon-eyebrow">try the request path</p>
-    <h2 id="install-title">Start locally, keep the same governance model.</h2>
+    <p class="axon-eyebrow">local governed state</p>
+    <h2 id="install-title">Start with a local entity store, then keep the same controls.</h2>
   </div>
 
 ```bash
