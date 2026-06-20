@@ -2543,6 +2543,9 @@ export async function fetchEntityAudit(
 }
 
 export async function fetchIntentAudit(intentId: string, scope: Scope): Promise<AuditQueryResult> {
+	if (!scope) {
+		throw new Error('fetchIntentAudit requires a tenant/database scope');
+	}
 	const data = await graphqlRequest<{ auditLog: GraphQLAuditConnection }>(
 		scope,
 		`query AxonUiIntentAuditLog($intentId: ID!) {
