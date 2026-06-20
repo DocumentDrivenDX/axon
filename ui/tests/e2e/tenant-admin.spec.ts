@@ -79,7 +79,11 @@ test.describe('Credentials — issue and display JWT', () => {
 
 		expect(controlRequests).toContain('/control/graphql');
 		expect(
-			controlRequests.filter((path) => path !== '/control/graphql'),
+			// `/control/tenants` is the tenant-routing layout read (REST): db_name is
+		// needed for URL routing but is not exposed on the GraphQL ControlTenant
+		// type (CONTRACT-002/009, ADR-018). The admin operation itself still uses
+		// GraphQL — a REST control mutation would surface here and fail.
+		controlRequests.filter((path) => path !== '/control/graphql' && path !== '/control/tenants'),
 			'Credential UI should use control GraphQL rather than REST control routes',
 		).toEqual([]);
 	});
@@ -130,7 +134,11 @@ test.describe('Tenant members — add, change role, remove', () => {
 
 		expect(controlRequests).toContain('/control/graphql');
 		expect(
-			controlRequests.filter((path) => path !== '/control/graphql'),
+			// `/control/tenants` is the tenant-routing layout read (REST): db_name is
+		// needed for URL routing but is not exposed on the GraphQL ControlTenant
+		// type (CONTRACT-002/009, ADR-018). The admin operation itself still uses
+		// GraphQL — a REST control mutation would surface here and fail.
+		controlRequests.filter((path) => path !== '/control/graphql' && path !== '/control/tenants'),
 			'Member UI should use control GraphQL rather than REST control routes',
 		).toEqual([]);
 	});
@@ -195,7 +203,11 @@ test.describe('Global users ACL — add, change, remove', () => {
 
 		expect(controlRequests).toContain('/control/graphql');
 		expect(
-			controlRequests.filter((path) => path !== '/control/graphql'),
+			// `/control/tenants` is the tenant-routing layout read (REST): db_name is
+		// needed for URL routing but is not exposed on the GraphQL ControlTenant
+		// type (CONTRACT-002/009, ADR-018). The admin operation itself still uses
+		// GraphQL — a REST control mutation would surface here and fail.
+		controlRequests.filter((path) => path !== '/control/graphql' && path !== '/control/tenants'),
 			'Users UI should use control GraphQL rather than REST control routes',
 		).toEqual([]);
 	});
@@ -232,7 +244,11 @@ test.describe('Database create + delete', () => {
 
 		expect(controlRequests).toContain('/control/graphql');
 		expect(
-			controlRequests.filter((path) => path !== '/control/graphql'),
+			// `/control/tenants` is the tenant-routing layout read (REST): db_name is
+		// needed for URL routing but is not exposed on the GraphQL ControlTenant
+		// type (CONTRACT-002/009, ADR-018). The admin operation itself still uses
+		// GraphQL — a REST control mutation would surface here and fail.
+		controlRequests.filter((path) => path !== '/control/graphql' && path !== '/control/tenants'),
 			'Database UI should use control GraphQL rather than REST control routes',
 		).toEqual([]);
 	});

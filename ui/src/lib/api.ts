@@ -731,13 +731,6 @@ type AuditFilters = {
 	untilNs?: string;
 };
 
-type ControlGraphQLTenant = {
-	id: string;
-	name: string;
-	dbName: string;
-	createdAt: string;
-};
-
 type ControlGraphQLTenantDatabase = {
 	tenantId: string;
 	name: string;
@@ -1377,15 +1370,6 @@ function collectionTemplateFromGraphql(template: GraphQLCollectionTemplate): Col
 		version: template.version,
 		updated_at_ns: template.updatedAtNs ? Number(template.updatedAtNs) : null,
 		updated_by: template.updatedBy ?? null,
-	};
-}
-
-function tenantFromControlGraphql(tenant: ControlGraphQLTenant): Tenant {
-	return {
-		id: tenant.id,
-		name: tenant.name,
-		db_name: tenant.dbName,
-		created_at: tenant.createdAt,
 	};
 }
 
@@ -2048,33 +2032,26 @@ export type Tenant = {
 	created_at: string;
 };
 
+// Tenant reads use the REST control-plane endpoint rather than GraphQL: the
+// admin UI routes by db_name (the URL `[tenant]` segment), but CONTRACT-002/009
+// and ADR-018 prohibit exposing dbName/dbPath on the GraphQL ControlTenant type.
+// REST /control/tenants still returns db_name, which is what routing needs.
 export async function fetchTenants(): Promise<Tenant[]> {
-	const data = await controlGraphqlRequest<{ tenants: ControlGraphQLTenant[] }>(
-		`query AxonUiControlTenants {
-			tenants {
-				id
-				name
-				dbName
-				createdAt
-			}
-		}`,
-	);
-	return data.tenants.map(tenantFromControlGraphql);
+	const data = await request<{ tenants: Tenant[] }>('/control/tenants');
+	return data.tenants;
 }
 
 export async function createTenant(name: string): Promise<Tenant> {
-	const data = await controlGraphqlRequest<{ createTenant: ControlGraphQLTenant }>(
-		`mutation AxonUiCreateTenant($name: String!) {
-			createTenant(name: $name) {
-				id
-				name
-				dbName
-				createdAt
-			}
-		}`,
-		{ name },
-	);
-	return tenantFromControlGraphql(data.createTenant);
+	const tenant = await request<Tenant>('/control/tenants', {
+		method: 'POST',
+		body: JSON.stringify({ name }),
+	});
+	return {
+		id: tenant.id,
+		name: tenant.name,
+		db_name: tenant.db_name,
+		created_at: tenant.created_at,
+	};
 }
 
 export async function deleteTenant(tenantId: string): Promise<void> {
@@ -2089,21 +2066,13 @@ export async function deleteTenant(tenantId: string): Promise<void> {
 }
 
 export async function fetchTenant(tenantId: string): Promise<Tenant> {
-	const data = await controlGraphqlRequest<{ tenant: ControlGraphQLTenant | null }>(
-		`query AxonUiControlTenant($id: String!) {
-			tenant(id: $id) {
-				id
-				name
-				dbName
-				createdAt
-			}
-		}`,
-		{ id: tenantId },
-	);
-	if (!data.tenant) {
-		throw new Error(`Tenant not found: ${tenantId}`);
-	}
-	return tenantFromControlGraphql(data.tenant);
+	const tenant = await request<Tenant>(`/control/tenants/${encodeURIComponent(tenantId)}`);
+	return {
+		id: tenant.id,
+		name: tenant.name,
+		db_name: tenant.db_name,
+		created_at: tenant.created_at,
+	};
 }
 
 export async function fetchTenantDatabases(tenantId: string): Promise<TenantDatabase[]> {

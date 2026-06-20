@@ -220,14 +220,13 @@ test('request() URL-encodes tenant and database in the path', async () => {
 	expect(lastRequest?.url).toBe('/tenants/my%20tenant/databases/my%2Fdb/graphql');
 });
 
-test('control-plane helpers use the unscoped control GraphQL endpoint', async () => {
-	mockFetch({ data: { tenants: [] } });
+test('control-plane tenant reads use the unscoped REST control endpoint', async () => {
+	mockFetch({ tenants: [] });
 
 	await fetchTenants();
 
-	expect(lastRequest?.url).toBe('/control/graphql');
+	expect(lastRequest?.url).toBe('/control/tenants');
 	expect(lastRequest?.url).not.toContain('/tenants/');
-	expect(lastRequest?.init?.method).toBe('POST');
 });
 
 test('request() does not set X-Axon-Database header', async () => {
@@ -1318,45 +1317,29 @@ test('fetchRenderedEntity() uses tenant-scoped GraphQL renderedEntity query', as
 
 // ── Control-plane GraphQL helpers ────────────────────────────────────────────
 
-test('fetchTenants() maps control GraphQL tenant fields', async () => {
+test('fetchTenants() reads tenants from the REST control endpoint (db_name not on GraphQL)', async () => {
 	mockFetch({
-		data: {
-			tenants: [{ id: 't1', name: 'Acme', dbName: 'acme-a1', createdAt: '2026-04-20T00:00:00Z' }],
-		},
+		tenants: [{ id: 't1', name: 'Acme', db_name: 'acme-a1', created_at: '2026-04-20T00:00:00Z' }],
 	});
 
 	const result = await fetchTenants();
 
-	const body = JSON.parse(String(lastRequest?.init?.body));
-	expect(lastRequest?.url).toBe('/control/graphql');
-	expect(body.query).toContain('tenants');
+	expect(lastRequest?.url).toBe('/control/tenants');
 	expect(result).toEqual([
 		{ id: 't1', name: 'Acme', db_name: 'acme-a1', created_at: '2026-04-20T00:00:00Z' },
 	]);
 });
 
-test('createTenant(), fetchTenant(), and deleteTenant() use control GraphQL', async () => {
+test('createTenant() and fetchTenant() use REST; deleteTenant() uses control GraphQL', async () => {
 	mockFetchSequence([
 		{
-			data: {
-				createTenant: {
-					id: 't1',
-					name: 'Acme',
-					dbName: 'acme-a1',
-					createdAt: '2026-04-20T00:00:00Z',
-				},
-			},
+			id: 't1',
+			name: 'Acme',
+			db_name: 'acme-a1',
+			db_path: '/var/lib/axon/tenants/acme-a1.db',
+			created_at: '2026-04-20T00:00:00Z',
 		},
-		{
-			data: {
-				tenant: {
-					id: 't1',
-					name: 'Acme',
-					dbName: 'acme-a1',
-					createdAt: '2026-04-20T00:00:00Z',
-				},
-			},
-		},
+		{ id: 't1', name: 'Acme', db_name: 'acme-a1', created_at: '2026-04-20T00:00:00Z' },
 		{ data: { deleteTenant: { deleted: true } } },
 	]);
 
@@ -1375,12 +1358,11 @@ test('createTenant(), fetchTenant(), and deleteTenant() use control GraphQL', as
 	await deleteTenant('t1');
 
 	expect(requests.map((request) => request.url)).toEqual([
-		'/control/graphql',
-		'/control/graphql',
+		'/control/tenants',
+		'/control/tenants/t1',
 		'/control/graphql',
 	]);
-	expect(JSON.parse(String(requests[0]?.init?.body)).variables).toEqual({ name: 'Acme' });
-	expect(JSON.parse(String(requests[1]?.init?.body)).variables).toEqual({ id: 't1' });
+	expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({ name: 'Acme' });
 	expect(JSON.parse(String(requests[2]?.init?.body)).variables).toEqual({ id: 't1' });
 });
 
