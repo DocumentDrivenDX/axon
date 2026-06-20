@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_audit::entry::AuditEntry;
@@ -39,6 +40,17 @@ pub struct SqliteStorageAdapter {
     /// embedded mode).  When constructed inside a gateway handler or
     /// `#[tokio::test]`, this is `None` and the caller's runtime is reused.
     rt: Option<tokio::runtime::Runtime>,
+    /// A connection held open for the adapter's entire lifetime.
+    ///
+    /// Only set for shared-cache in-memory databases. A `cache=shared`,
+    /// `mode=memory` SQLite database exists only while at least one connection
+    /// to it is open; once every connection closes, SQLite destroys it and the
+    /// next connection sees an empty database ("no such table: databases").
+    /// The pool's `min_connections` setting is best-effort and can momentarily
+    /// drop to zero connections during churn, so we pin one connection here
+    /// explicitly to guarantee the database survives for as long as the adapter
+    /// does. Never used for queries — only held alive.
+    _keepalive: Option<sqlx::sqlite::SqliteConnection>,
     /// `true` while a `BEGIN` has been issued but not yet committed or rolled back.
     in_tx: bool,
 }
@@ -85,6 +97,7 @@ impl SqliteStorageAdapter {
         let adapter = Self {
             pool,
             rt,
+            _keepalive: None,
             in_tx: false,
         };
         adapter.init_schema()?;
@@ -92,33 +105,84 @@ impl SqliteStorageAdapter {
     }
 
     /// Opens an in-memory SQLite database (useful for testing).
+    ///
+    /// Each call creates an *isolated* in-memory database, but one whose schema
+    /// survives connection churn.
+    ///
+    /// A plain `sqlite::memory:` URI gives every new physical connection its own
+    /// empty database. Combined with a pool that can close and re-open
+    /// connections (idle reaping, `min_connections(0)`, or `acquire` opening a
+    /// fresh connection), the schema created by `init_schema()` can silently
+    /// disappear — surfacing as "no such table: databases" under concurrency.
+    ///
+    /// To make the in-memory database durable we use a shared-cache, named
+    /// in-memory URI: every connection addresses the *same* backing database.
+    /// A `cache=shared`, `mode=memory` database exists only while at least one
+    /// connection to it is open, so we open one dedicated keepalive connection
+    /// and hold it in the adapter for its entire lifetime. The pool's
+    /// `min_connections` is best-effort and can momentarily drop to zero
+    /// connections during churn, which would destroy the database — the
+    /// explicit keepalive connection guarantees it never does. The cache name
+    /// is unique per adapter instance, preserving test isolation.
     pub fn open_in_memory() -> Result<Self, AxonError> {
-        let connect = || async {
-            sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(1)
-                .connect("sqlite::memory:")
-                .await
+        use sqlx::Connection;
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let uri = format!("sqlite:file:axon-mem-{id}?mode=memory&cache=shared");
+
+        // Open the keepalive connection first so the shared-cache database
+        // exists and stays alive before (and after) the pool connects.
+        let keepalive_fut = {
+            let uri = uri.clone();
+            async move { sqlx::sqlite::SqliteConnection::connect(&uri).await }
         };
-        let (rt, pool) = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                let pool = tokio::task::block_in_place(|| handle.block_on(connect()))
-                    .map_err(|e| AxonError::Storage(e.to_string()))?;
-                (None, pool)
+        let connect = move || {
+            let uri = uri.clone();
+            async move {
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .min_connections(1)
+                    .idle_timeout(None)
+                    .max_lifetime(None)
+                    .test_before_acquire(false)
+                    .connect(&uri)
+                    .await
             }
+        };
+        let (rt, keepalive, pool) = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    let keepalive = keepalive_fut
+                        .await
+                        .map_err(|e| AxonError::Storage(e.to_string()))?;
+                    let pool = connect()
+                        .await
+                        .map_err(|e| AxonError::Storage(e.to_string()))?;
+                    Ok::<_, AxonError>((None, keepalive, pool))
+                })
+            })?,
             Err(_) => {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .map_err(|e| AxonError::Storage(e.to_string()))?;
-                let pool = rt
-                    .block_on(connect())
-                    .map_err(|e| AxonError::Storage(e.to_string()))?;
-                (Some(rt), pool)
+                let (keepalive, pool) = rt.block_on(async {
+                    let keepalive = keepalive_fut
+                        .await
+                        .map_err(|e| AxonError::Storage(e.to_string()))?;
+                    let pool = connect()
+                        .await
+                        .map_err(|e| AxonError::Storage(e.to_string()))?;
+                    Ok::<_, AxonError>((keepalive, pool))
+                })?;
+                (Some(rt), keepalive, pool)
             }
         };
         let adapter = Self {
             pool,
             rt,
+            _keepalive: Some(keepalive),
             in_tx: false,
         };
         adapter.init_schema()?;
@@ -3943,6 +4007,46 @@ mod tests {
                 .expect("engineering get after billing delete should succeed")
                 .is_some(),
             "engineering entity should survive"
+        );
+    }
+
+    /// Regression: the in-memory database's schema must survive connection
+    /// churn. A plain `sqlite::memory:` pool can hand out a freshly-opened
+    /// (empty) connection, dropping the `databases` table created by
+    /// `init_schema()` and surfacing as "no such table: databases" under
+    /// concurrency. The shared-cache + pinned-connection setup must keep the
+    /// schema durable across many operations and creations.
+    #[test]
+    fn in_memory_schema_survives_repeated_database_operations() {
+        let mut s = SqliteStorageAdapter::open_in_memory().expect("open in-memory");
+        // Each of these touches the `databases` table; a lost schema would
+        // surface as "no such table: databases".
+        for i in 0..50 {
+            let name = format!("db-{i}");
+            assert!(!s.database_exists(&name).expect("database_exists must work"));
+            s.create_database(&name).expect("create_database must work");
+            assert!(s.database_exists(&name).expect("database_exists must work"));
+        }
+        // 50 created here plus the seeded default database from init_schema.
+        assert_eq!(
+            s.list_databases().expect("list_databases must work").len(),
+            51
+        );
+    }
+
+    /// Two independent in-memory adapters must NOT share state — the unique
+    /// per-instance shared-cache name preserves test isolation.
+    #[test]
+    fn in_memory_adapters_are_isolated() {
+        let mut a = SqliteStorageAdapter::open_in_memory().expect("open a");
+        let b = SqliteStorageAdapter::open_in_memory().expect("open b");
+        a.create_database("only-in-a")
+            .expect("create_database must work");
+        assert!(a.database_exists("only-in-a").expect("a sees its own db"));
+        assert!(
+            !b.database_exists("only-in-a")
+                .expect("b query must work"),
+            "adapter b must not see adapter a's database (isolation)"
         );
     }
 }

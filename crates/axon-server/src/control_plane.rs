@@ -36,6 +36,15 @@ pub struct ControlPlaneDb {
     pool: SqlitePool,
     /// Owned runtime — only used when no outer tokio context exists.
     rt: Option<tokio::runtime::Runtime>,
+    /// A connection held open for the database's entire lifetime.
+    ///
+    /// Only set for shared-cache in-memory databases. A `cache=shared`,
+    /// `mode=memory` SQLite database exists only while at least one connection
+    /// to it is open; once every connection closes, SQLite destroys it and the
+    /// next connection sees an empty database ("no such table"). The pool's
+    /// `min_connections` setting is best-effort, so we pin one connection here
+    /// explicitly. Never used for queries — only held alive.
+    _keepalive: Option<sqlx::sqlite::SqliteConnection>,
 }
 
 impl ControlPlaneDb {
@@ -101,33 +110,84 @@ impl ControlPlaneDb {
                 (Some(rt), pool)
             }
         };
-        let db = Self { pool, rt };
+        let db = Self {
+            pool,
+            rt,
+            _keepalive: None,
+        };
         db.migrate()?;
         Ok(db)
     }
 
     /// Open an in-memory database (useful for testing).
+    ///
+    /// Uses a unique shared-cache, named in-memory URI. A `cache=shared`,
+    /// `mode=memory` database exists only while at least one connection to it
+    /// stays open, so we hold one dedicated keepalive connection for the
+    /// database's whole lifetime. Without it, a plain `sqlite::memory:` pool
+    /// (or one that momentarily drops to zero connections) hands out a
+    /// freshly-opened empty database, losing the migrated tables and surfacing
+    /// as "no such table" under concurrency. The cache name is unique per
+    /// instance to preserve test isolation.
     pub fn open_in_memory() -> Result<Self, AxonError> {
-        let (rt, pool) = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                let pool = tokio::task::block_in_place(|| {
-                    handle.block_on(SqlitePool::connect("sqlite::memory:"))
-                })
-                .map_err(|e| AxonError::Storage(e.to_string()))?;
-                (None, pool)
+        use sqlx::Connection;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let uri = format!("sqlite:file:axon-cp-mem-{id}?mode=memory&cache=shared");
+
+        let keepalive_fut = {
+            let uri = uri.clone();
+            async move { sqlx::sqlite::SqliteConnection::connect(&uri).await }
+        };
+        let connect = move || {
+            let uri = uri.clone();
+            async move {
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .min_connections(1)
+                    .idle_timeout(None)
+                    .max_lifetime(None)
+                    .test_before_acquire(false)
+                    .connect(&uri)
+                    .await
             }
+        };
+        let (rt, keepalive, pool) = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    let keepalive = keepalive_fut
+                        .await
+                        .map_err(|e| AxonError::Storage(e.to_string()))?;
+                    let pool = connect()
+                        .await
+                        .map_err(|e| AxonError::Storage(e.to_string()))?;
+                    Ok::<_, AxonError>((None, keepalive, pool))
+                })
+            })?,
             Err(_) => {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .map_err(|e| AxonError::Storage(e.to_string()))?;
-                let pool = rt
-                    .block_on(SqlitePool::connect("sqlite::memory:"))
-                    .map_err(|e| AxonError::Storage(e.to_string()))?;
-                (Some(rt), pool)
+                let (keepalive, pool) = rt.block_on(async {
+                    let keepalive = keepalive_fut
+                        .await
+                        .map_err(|e| AxonError::Storage(e.to_string()))?;
+                    let pool = connect()
+                        .await
+                        .map_err(|e| AxonError::Storage(e.to_string()))?;
+                    Ok::<_, AxonError>((keepalive, pool))
+                })?;
+                (Some(rt), keepalive, pool)
             }
         };
-        let db = Self { pool, rt };
+        let db = Self {
+            pool,
+            rt,
+            _keepalive: Some(keepalive),
+        };
         db.migrate()?;
         Ok(db)
     }
