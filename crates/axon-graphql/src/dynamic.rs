@@ -5090,6 +5090,12 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                         .ok()
                         .and_then(|v| v.string().ok())
                         .map(ToOwned::to_owned);
+                    let intent_id = ctx
+                        .args
+                        .try_get("intentId")
+                        .ok()
+                        .and_then(|v| v.string().ok())
+                        .map(ToOwned::to_owned);
                     let since_ns = parse_optional_u64_arg(&ctx, "sinceNs")?;
                     let until_ns = parse_optional_u64_arg(&ctx, "untilNs")?;
                     let after_id = parse_optional_u64_arg(&ctx, "after")?;
@@ -5110,7 +5116,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                             entity_id,
                             actor,
                             operation,
-                            intent_id: None,
+                            intent_id,
                             approval_id: None,
                             since_ns,
                             until_ns,
@@ -5135,6 +5141,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             TypeRef::named(TypeRef::STRING),
         ))
         .argument(InputValue::new("entityId", TypeRef::named(TypeRef::ID)))
+        .argument(InputValue::new("intentId", TypeRef::named(TypeRef::ID)))
         .argument(InputValue::new("actor", TypeRef::named(TypeRef::STRING)))
         .argument(InputValue::new(
             "operation",
@@ -5251,6 +5258,7 @@ fn add_stub_root_query_fields(mut query: Object) -> Object {
             TypeRef::named(TypeRef::STRING),
         ))
         .argument(InputValue::new("entityId", TypeRef::named(TypeRef::ID)))
+        .argument(InputValue::new("intentId", TypeRef::named(TypeRef::ID)))
         .argument(InputValue::new("actor", TypeRef::named(TypeRef::STRING)))
         .argument(InputValue::new(
             "operation",

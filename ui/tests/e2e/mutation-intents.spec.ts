@@ -9,7 +9,7 @@ import {
 	dbIntentUrl,
 	expectGraphqlPrimaryDataPlane,
 	patchBudgetRecordAs,
-	proposedPolicyDraftDenyHigh,
+	proposedBudgetPolicyDraftDenyHigh,
 	routeGraphqlAs,
 	seedIntentCollection,
 } from './helpers';
@@ -456,7 +456,7 @@ test.describe('Mutation intents', () => {
 			request,
 			db,
 			SCN017_COLLECTIONS.task,
-			proposedPolicyDraftDenyHigh(),
+			proposedBudgetPolicyDraftDenyHigh(),
 		);
 
 		// Reload the detail page so the component re-fetches the intent with

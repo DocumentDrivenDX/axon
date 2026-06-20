@@ -331,37 +331,46 @@ test('fetchEntityAudit() uses tenant-scoped GraphQL auditLog entity filter', asy
 	expect(result).toEqual({ entries: [], next_cursor: null });
 });
 
-test('fetchIntentAudit() uses tenant-scoped REST audit query with intent filter', async () => {
+test('fetchIntentAudit() uses tenant-scoped GraphQL auditLog intent filter', async () => {
 	mockFetch({
-		entries: [
-			{
-				id: 3,
-				timestamp_ns: 1000000000,
-				collection: 'tasks',
-				entity_id: 'task-1',
-				version: 2,
-				mutation: 'intent.approve',
-				data_before: null,
-				data_after: null,
-				actor: 'finance-approver',
-				transaction_id: null,
-				metadata: { reason: 'approved' },
-				intent_lineage: {
-					intent_id: 'mint_1',
-					decision: 'needs_approval',
-					policy_version: 1,
-					schema_version: 1,
-					subject_snapshot: { user_id: 'finance-agent' },
-					reason: 'approved',
-				},
+		data: {
+			auditLog: {
+				edges: [
+					{
+						cursor: '3',
+						node: {
+							id: '3',
+							timestampNs: '1000000000',
+							collection: '__mutation_intents',
+							entityId: 'mint_1',
+							version: 2,
+							mutation: 'intent.approve',
+							dataBefore: null,
+							dataAfter: null,
+							actor: 'finance-approver',
+							transactionId: null,
+							metadata: { reason: 'approved' },
+							intentLineage: {
+								intentId: 'mint_1',
+								decision: 'needs_approval',
+								policyVersion: 1,
+								schemaVersion: 1,
+								reason: 'approved',
+							},
+						},
+					},
+				],
+				pageInfo: { hasNextPage: false, endCursor: null },
 			},
-		],
-		next_cursor: null,
+		},
 	});
 
 	const result = await fetchIntentAudit('mint_1', { tenant: 'acme', database: 'orders' });
 
-	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/audit/query?intent_id=mint_1');
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('auditLog');
+	expect(body.variables).toEqual({ intentId: 'mint_1' });
 	expect(result.entries[0]?.mutation).toBe('intent.approve');
 	expect(result.entries[0]?.intent_lineage?.intent_id).toBe('mint_1');
 });

@@ -43,7 +43,10 @@ export async function createTestTenant(
 	prefix: string,
 ): Promise<TestTenant> {
 	const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-	const name = `${withE2eFixturePrefix(prefix)}-${suffix}`;
+	const base = withE2eFixturePrefix(prefix);
+	const maxBaseLength = Math.max(E2E_FIXTURE_PREFIX.length, 63 - suffix.length - 1);
+	const trimmedBase = base.slice(0, maxBaseLength).replace(/-+$/u, '') || E2E_FIXTURE_PREFIX;
+	const name = `${trimmedBase}-${suffix}`;
 	const response = await request.post('/control/tenants', {
 		data: { name },
 	});
@@ -796,6 +799,7 @@ export async function previewBudgetIntent(
 		grantVersion?: number;
 		tenantRole?: string;
 		expiresInSeconds?: number;
+		expectedVersion?: number;
 	} = {},
 ): Promise<PreviewedIntent> {
 	const {
@@ -809,6 +813,7 @@ export async function previewBudgetIntent(
 			? SCN017_ROLES.financeApprover
 			: SCN017_ROLES.financeAgent,
 		expiresInSeconds = 600,
+		expectedVersion = 1,
 	} = options;
 	const subjectBlock = [`userId: "${actor}"`, ...(agentId ? [`agentId: "${agentId}"`] : [])].join(
 		'\n\t\t\t\t\t',
@@ -831,7 +836,7 @@ export async function previewBudgetIntent(
 					operation: {
 						collection: "${collection}"
 						id: "${entityId}"
-						expected_version: 1
+						expected_version: ${expectedVersion}
 						patch: { budget_cents: ${budgetCents} }
 					}
 				}
@@ -1267,6 +1272,31 @@ export function proposedPolicyDraftDenyHigh(): Record<string, unknown> {
 		},
 	];
 	amountCents.read = { deny: tightenedDeny };
+	return policy;
+}
+
+/**
+ * Build a proposed access_control draft for the SCN-017 task/budget schema.
+ * This is used by task intent tests that only need a policy-version bump.
+ */
+export function proposedBudgetPolicyDraftDenyHigh(): Record<string, unknown> {
+	const policy = approvalPolicy() as Record<string, unknown>;
+	const fields = policy.fields as Record<string, Record<string, unknown> | undefined>;
+	const secret = fields.secret as Record<string, unknown> | undefined;
+	if (!secret) {
+		throw new Error('approvalPolicy.fields.secret missing');
+	}
+	const read = (secret.read ?? { deny: [] }) as { deny: Array<Record<string, unknown>> };
+	secret.read = {
+		deny: [
+			...(read.deny ?? []),
+			{
+				name: 'requester-cannot-read-secret-during-dry-run',
+				when: { subject: 'user_id', eq: SCN017_SUBJECTS.requester },
+				redact_as: null,
+			},
+		],
+	};
 	return policy;
 }
 

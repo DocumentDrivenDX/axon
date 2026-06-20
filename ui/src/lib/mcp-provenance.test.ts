@@ -257,6 +257,21 @@ describe('buildMcpStdioProvenance', () => {
 		expect(provenance?.grantVersion).toBe('13');
 	});
 
+	test('keeps MCP surface when audit rows were written through GraphQL', () => {
+		const audit = [mcpAuditEntry(2_000_000_000)];
+		if (audit[0]?.intent_lineage?.origin) {
+			audit[0].intent_lineage.origin.surface = 'graphql';
+		}
+		const provenance = buildMcpStdioProvenance({
+			intent: mcpIntent(),
+			audit,
+			scope,
+			now: 2_000_000_000,
+		});
+		expect(provenance?.surface).toBe('mcp');
+		expect(provenance?.transport).toBe('stdio');
+	});
+
 	test('marks idle status when last activity is hours old', () => {
 		// Within 60 minutes: idle, label includes the lastSeen timestamp.
 		const idleActivityNs = 0;

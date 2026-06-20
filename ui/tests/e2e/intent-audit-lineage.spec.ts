@@ -16,6 +16,7 @@ import {
 	graphqlPath,
 	patchBudgetRecordAs,
 	previewBudgetIntent,
+	proposedBudgetPolicyDraftDenyHigh,
 	proposedPolicyDraftDenyHigh,
 	routeGraphqlAs,
 	seedApprovalCollections,
@@ -260,8 +261,8 @@ test.describe('Intent audit deep link and lineage panel', () => {
 		const result = await activateProposedPolicy(
 			request,
 			fixture.db,
-			SCN017_COLLECTIONS.invoices,
-			proposedPolicyDraftDenyHigh(),
+			TASK_COLLECTION,
+			proposedBudgetPolicyDraftDenyHigh(),
 		);
 		expect(result.schema.version).toBeGreaterThan(Number(baselineSchemaVersion));
 
@@ -269,6 +270,7 @@ test.describe('Intent audit deep link and lineage panel', () => {
 		// entry that recorded the incremented versions.
 		const intent2 = await previewBudgetIntent(request, fixture.db, 'task-ver-incr', 7_000, {
 			agentId: 'tool.version-incr-test-2',
+			expectedVersion: 2,
 		});
 		await commitIntent(request, fixture.db, intent2);
 
@@ -405,58 +407,55 @@ test.describe('Intent audit deep link and lineage panel', () => {
 					},
 				};
 			}
-			return null;
-		});
-
-		// Mock REST audit endpoint: server returns null for fields it stripped from the lineage.
-		await page.route('**/audit/query*', async (route) => {
-			const url = new URL(route.request().url());
-			if (url.searchParams.get('intent_id') === mockIntentId) {
-				await route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({
-						entries: [
-							{
-								id: 1001,
-								timestamp_ns: Date.now() * 1_000_000,
-								collection: TASK_COLLECTION,
-								entity_id: 'task-contractor-redact',
-								version: 2,
-								mutation: 'intent.commit',
-								data_before: null,
-								data_after: { budget_cents: 15000, status: 'approved' },
-								actor: SCN017_SUBJECTS.financeAgent,
-								transaction_id: null,
-								metadata: null,
-								intent_lineage: {
-									intent_id: mockIntentId,
-									decision: 'allow',
-									approval_id: null,
-									policy_version: 1,
-									schema_version: 1,
-									subject_snapshot: null,
-									approver: {
-										actor: null,
-										user_id: null,
-										tenant_role: null,
-										credential_id: null,
+			if (postData.includes('AxonUiIntentAuditLog')) {
+				return {
+					data: {
+						auditLog: {
+							edges: [
+								{
+									cursor: '1001',
+									node: {
+										id: '1001',
+										timestampNs: String(Date.now() * 1_000_000),
+										collection: TASK_COLLECTION,
+										entityId: 'task-contractor-redact',
+										version: 2,
+										mutation: 'intent.commit',
+										dataBefore: null,
+										dataAfter: { budget_cents: 15000, status: 'approved' },
+										actor: SCN017_SUBJECTS.financeAgent,
+										transactionId: null,
+										metadata: null,
+										intentLineage: {
+											intentId: mockIntentId,
+											decision: 'allow',
+											policyVersion: 1,
+											schemaVersion: 1,
+											grantVersion: null,
+											approver: {
+												actor: null,
+												user_id: null,
+												tenant_role: null,
+												credential_id: null,
+											},
+											reason: null,
+											origin: {
+												surface: 'mcp',
+												tool_name: 'tool.audit-test',
+											},
+										},
 									},
-									reason: null,
-									origin: {
-										surface: 'mcp',
-										tool_name: 'tool.audit-test',
-									},
-									lineage_links: null,
 								},
+							],
+							pageInfo: {
+								hasNextPage: false,
+								endCursor: null,
 							},
-						],
-						next_cursor: null,
-					}),
-				});
-				return;
+						},
+					},
+				};
 			}
-			await route.continue();
+			return null;
 		});
 
 		await page.goto(`${dbAuditUrl(db)}?intent=${encodeURIComponent(mockIntentId)}`);

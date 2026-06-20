@@ -2543,11 +2543,45 @@ export async function fetchEntityAudit(
 }
 
 export async function fetchIntentAudit(intentId: string, scope: Scope): Promise<AuditQueryResult> {
-	return request<AuditQueryResult>(
-		`/audit/query?intent_id=${encodeURIComponent(intentId)}`,
-		undefined,
+	const data = await graphqlRequest<{ auditLog: GraphQLAuditConnection }>(
 		scope,
+		`query AxonUiIntentAuditLog($intentId: ID!) {
+			auditLog(intentId: $intentId) {
+				edges {
+					cursor
+					node {
+						id
+						timestampNs
+						collection
+						entityId
+						version
+						mutation
+						dataBefore
+						dataAfter
+						actor
+						transactionId
+						metadata
+						intentLineage {
+							intentId
+							decision
+							policyVersion
+							schemaVersion
+							grantVersion
+							approver
+							reason
+							origin
+						}
+					}
+				}
+				pageInfo {
+					hasNextPage
+					endCursor
+				}
+			}
+		}`,
+		{ intentId },
 	);
+	return auditResultFromGraphql(data.auditLog);
 }
 
 // ── Links ────────────────────────────────────────────────────────────────────

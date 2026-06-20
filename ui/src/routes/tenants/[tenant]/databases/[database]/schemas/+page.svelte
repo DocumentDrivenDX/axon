@@ -403,9 +403,6 @@ async function runFixtureDryRun() {
 	if (parsed == null) return;
 	const proposed = buildProposedSchema(parsed);
 	if (!proposed) return;
-	// Compute the access_control hash before starting the API call so we can
-	// record it against this exact policy version when the run succeeds.
-	const accessControlHash = await computeAccessControlHash(parsed);
 	let parsedData: unknown | undefined;
 	let parsedPatch: unknown | undefined;
 	try {
@@ -455,7 +452,11 @@ async function runFixtureDryRun() {
 	const generation = fixtureGeneration;
 	fixtureLoading = true;
 	fixtureError = null;
+	fixtureResult = null;
 	try {
+		// Compute the access_control hash before starting the API call so we can
+		// record it against this exact policy version when the run succeeds.
+		const accessControlHash = await computeAccessControlHash(parsed);
 		const subjectActor = fixtureSubject.trim();
 		const result: SchemaPolicyDryRunResult = await previewSchemaWithExplain(
 			selectedCollection,

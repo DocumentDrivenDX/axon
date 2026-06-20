@@ -1738,7 +1738,7 @@ onDestroy(() => {
 							<p class="muted">Loading links…</p>
 						{:else if links.length === 0}
 							<PolicyEmptyState
-								title="No outbound links visible for the current policy."
+								title="No outbound links."
 								subject={currentActor}
 								policyVersion={effectivePolicy?.policyVersion ?? null}
 								schemaVersion={collection?.schema?.version ?? null}

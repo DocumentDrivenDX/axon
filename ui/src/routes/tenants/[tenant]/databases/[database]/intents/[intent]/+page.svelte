@@ -7,6 +7,7 @@ import {
 	type MutationIntent,
 	approveMutationIntent,
 	commitMutationIntent,
+	fetchEffectivePolicy,
 	fetchIntentAudit,
 	fetchMutationIntent,
 	rejectMutationIntent,
@@ -45,6 +46,7 @@ const auditHref = $derived(`${basePath}/audit?intent=${encodeURIComponent(intent
 
 let intent = $state<MutationIntent | null>(null);
 let auditEntries = $state<AuditEntry[]>([]);
+let currentPolicyVersion = $state<number | null>(null);
 let auditLoading = $state(false);
 let auditError = $state<string | null>(null);
 let loading = $state(true);
@@ -229,6 +231,36 @@ function auditOrigin(entry: AuditEntry): string {
 	return [origin.surface, origin.tool_name].filter((value) => value && value.length > 0).join(': ');
 }
 
+function auditEventLabel(entry: AuditEntry): string {
+	if (
+		entry.intent_lineage?.intent_id &&
+		entry.collection !== '__mutation_intents' &&
+		entry.mutation.startsWith('entity.')
+	) {
+		return 'intent.commit';
+	}
+	return entry.mutation;
+}
+
+function intentCollection(currentIntent: MutationIntent): string | null {
+	const operation = asRecord(currentIntent.operation.operation);
+	return stringMember(operation, 'collection') ?? currentIntent.preImages[0]?.collection ?? null;
+}
+
+async function loadCurrentPolicyVersion(currentIntent: MutationIntent) {
+	currentPolicyVersion = null;
+	const collection = intentCollection(currentIntent);
+	if (!collection) return;
+	try {
+		const policy = await fetchEffectivePolicy(collection, scope, {
+			entityId: currentIntent.preImages[0]?.id ?? null,
+		});
+		currentPolicyVersion = policy.policyVersion;
+	} catch {
+		currentPolicyVersion = null;
+	}
+}
+
 function hasReviewDiff(currentIntent: MutationIntent): boolean {
 	return (
 		currentIntent.reviewSummary.diff !== undefined && currentIntent.reviewSummary.diff !== null
@@ -313,6 +345,7 @@ async function loadIntent() {
 	actionMessage = null;
 	reviewReasonError = null;
 	auditEntries = [];
+	currentPolicyVersion = null;
 	auditError = null;
 	try {
 		intent = await fetchMutationIntent(scope, intentId);
@@ -320,7 +353,7 @@ async function loadIntent() {
 			error = `Intent ${intentId} was not found.`;
 			return;
 		}
-		await loadAuditTrail(intent.id);
+		await Promise.all([loadAuditTrail(intent.id), loadCurrentPolicyVersion(intent)]);
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load mutation intent';
 	} finally {
@@ -481,7 +514,7 @@ onMount(() => {
 					<span>Schema version</span>
 					<strong data-testid="intent-detail-schema-version">{intent.schemaVersion}</strong>
 					<span>Policy version</span>
-					<strong data-testid="intent-detail-policy-version">{intent.policyVersion}</strong>
+					<strong data-testid="intent-detail-policy-version">{currentPolicyVersion ?? intent.policyVersion}</strong>
 					<span>Grant version</span>
 					<strong data-testid="intent-detail-grant-version">{grantVersion(intent)}</strong>
 				</div>
@@ -736,7 +769,7 @@ onMount(() => {
 								{#each auditEntries as entry}
 									<tr>
 										<td>{formatNs(entry.timestamp_ns)}</td>
-										<td><code>{entry.mutation}</code></td>
+										<td><code>{auditEventLabel(entry)}</code></td>
 										<td>{auditApprover(entry)}</td>
 										<td>{auditReason(entry)}</td>
 										<td>{entry.intent_lineage?.policy_version ?? '-'}</td>

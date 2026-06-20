@@ -38,20 +38,28 @@ export type TransactionOp = {
 type Props = {
 	/** Current serialised fixture JSON (initialisation only). */
 	value: string;
+	/** Increment when the parent intentionally reseeds the fixture from outside the editor. */
+	resetKey: number;
+	/** Scope defaults used when adding or recovering an operation. */
+	defaultCollection?: string;
+	defaultEntityId?: string;
 	/** Called with updated serialised JSON whenever the ops change. */
 	onchange: (json: string) => void;
 };
 
-const { value, onchange }: Props = $props();
+const props: Props = $props();
 
 let keyCounter = $state(0);
 
-function makeOp(kind: TransactionOpKind = 'readEntity'): TransactionOp {
+function makeOp(
+	kind: TransactionOpKind = 'readEntity',
+	seed: Partial<Pick<TransactionOp, 'collection' | 'id'>> = {},
+): TransactionOp {
 	return {
 		key: keyCounter++,
 		kind,
-		collection: '',
-		id: '',
+		collection: seed.collection ?? props.defaultCollection ?? '',
+		id: kind === 'createEntity' ? '' : seed.id ?? props.defaultEntityId ?? '',
 		expectedVersionText: '',
 		dataText: '{}',
 		patchText: '{}',
@@ -64,8 +72,14 @@ function opFromRaw(raw: Record<string, unknown>): TransactionOp {
 	return {
 		key: keyCounter++,
 		kind,
-		collection: typeof payload.collection === 'string' ? payload.collection : '',
-		id: typeof payload.id === 'string' ? payload.id : '',
+		collection:
+			typeof payload.collection === 'string' ? payload.collection : props.defaultCollection ?? '',
+		id:
+			typeof payload.id === 'string'
+				? payload.id
+				: kind === 'createEntity'
+					? ''
+					: props.defaultEntityId ?? '',
 		expectedVersionText:
 			typeof payload.expectedVersion === 'number' ? String(payload.expectedVersion) : '',
 		dataText: payload.data !== undefined ? JSON.stringify(payload.data, null, 2) : '{}',
@@ -85,16 +99,26 @@ function parseInitialValue(json: string): TransactionOp[] {
 	}
 }
 
-let ops = $state<TransactionOp[]>(parseInitialValue(value));
+let lastResetKey = $state<number | null>(null);
+let ops = $state<TransactionOp[]>([]);
+
+$effect.pre(() => {
+	if (lastResetKey === props.resetKey) return;
+	lastResetKey = props.resetKey;
+	ops = parseInitialValue(props.value);
+});
 
 function serialise(currentOps: TransactionOp[]): string {
+	const reference = currentOps.find((op) => op.collection || op.id);
 	const arr = currentOps.map((op) => {
+		const collection = op.collection || reference?.collection || props.defaultCollection;
 		const payload: Record<string, unknown> = {
-			collection: op.collection || undefined,
+			collection: collection || undefined,
 		};
 
 		if (op.kind !== 'createEntity') {
-			if (op.id) payload.id = op.id;
+			const id = op.id || reference?.id || props.defaultEntityId;
+			if (id) payload.id = id;
 		}
 
 		const expVer = Number(op.expectedVersionText.trim());
@@ -127,11 +151,19 @@ function serialise(currentOps: TransactionOp[]): string {
 }
 
 function notify() {
-	onchange(serialise(ops));
+	props.onchange(serialise(ops));
+}
+
+function newOperationSeed(): Pick<TransactionOp, 'collection' | 'id'> {
+	const reference = ops.find((op) => op.collection || op.id);
+	return {
+		collection: reference?.collection || props.defaultCollection || '',
+		id: reference?.id || props.defaultEntityId || '',
+	};
 }
 
 function addOp() {
-	ops = [...ops, makeOp()];
+	ops = [...ops, makeOp('readEntity', newOperationSeed())];
 	notify();
 }
 

@@ -76,6 +76,12 @@ function latestAuditEntry(audit: AuditEntry[]): AuditEntry | null {
 }
 
 function originSurface(audit: AuditEntry[], fallback: string): string {
+	if (fallback === 'mcp') {
+		for (const entry of audit) {
+			if (entry.intent_lineage?.origin?.surface === 'mcp') return 'mcp';
+		}
+		return 'mcp';
+	}
 	const ranked = ['mcp', 'graphql', 'rest', 'cli'];
 	for (const target of ranked) {
 		for (const entry of audit) {

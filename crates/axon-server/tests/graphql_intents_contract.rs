@@ -502,6 +502,45 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
     assert_eq!(committed_entry["diff"]["budget_cents"]["before"], 5000);
     assert_eq!(committed_entry["diff"]["budget_cents"]["after"], 20_000);
 
+    let graphql_lineage_audit = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"{{
+                auditLog(intentId: "{intent_id}") {{
+                    totalCount
+                    edges {{
+                        node {{
+                            mutation
+                            actor
+                            collection
+                            entityId
+                            intentLineage {{ intentId policyVersion origin }}
+                        }}
+                    }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_errors(&graphql_lineage_audit, "GraphQL auditLog intent lookup");
+    let graphql_lineage_entries = graphql_lineage_audit["data"]["auditLog"]["edges"]
+        .as_array()
+        .unwrap();
+    assert_eq!(graphql_lineage_audit["data"]["auditLog"]["totalCount"], 3);
+    assert!(graphql_lineage_entries.iter().any(|edge| {
+        edge["node"]["mutation"] == "mutation_intent.preview"
+            && edge["node"]["intentLineage"]["intentId"] == intent_id
+    }));
+    assert!(graphql_lineage_entries.iter().any(|edge| {
+        edge["node"]["mutation"] == "intent.approve" && edge["node"]["actor"] == "finance-approver"
+    }));
+    assert!(graphql_lineage_entries.iter().any(|edge| {
+        edge["node"]["mutation"] == "entity.update"
+            && edge["node"]["collection"] == "task"
+            && edge["node"]["entityId"] == "task-a"
+    }));
+
     let entity_audit = audit_entity(&server).await;
     let entity_entries = entity_audit["entries"].as_array().unwrap();
     let entity_update = entity_entries

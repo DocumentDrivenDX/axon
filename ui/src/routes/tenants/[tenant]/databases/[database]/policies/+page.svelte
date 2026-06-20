@@ -103,6 +103,8 @@ let proposedImpactMatrix = $state<ImpactCell[]>([]);
 let proposedImpactMatrixError = $state<string | null>(null);
 let loadingProposedImpactMatrix = $state(false);
 let transactionFixtureText = $state('[]');
+let transactionFixtureResetKey = $state(0);
+let fixtureEditGeneration = 0;
 let evaluationToken = 0;
 let collectionContextToken = 0;
 let impactMatrixToken = 0;
@@ -237,6 +239,7 @@ function seedEditorFixtures(entity: EntityRecord | null) {
 	dataFixtureText = prettyJson(entity?.data ?? {});
 	patchFixtureText = prettyJson(defaultPatchFixture(entity));
 	transactionFixtureText = prettyJson(defaultTransactionFixture(entity));
+	transactionFixtureResetKey += 1;
 }
 
 function actorHeaders() {
@@ -314,6 +317,7 @@ async function loadCollectionContext(resetEditors = true) {
 	if (!selectedCollection) return;
 
 	const token = ++collectionContextToken;
+	const fixtureEditGenerationAtStart = fixtureEditGeneration;
 	loadingCollectionContext = true;
 	collectionContextError = null;
 
@@ -341,7 +345,7 @@ async function loadCollectionContext(resetEditors = true) {
 		collectionEntities[0] ??
 		null;
 	selectedEntityId = nextEntity?.id ?? '';
-	if (resetEditors) {
+	if (resetEditors && fixtureEditGeneration === fixtureEditGenerationAtStart) {
 		seedEditorFixtures(nextEntity);
 	}
 
@@ -838,8 +842,12 @@ onMount(() => {
 						</div>
 						<TransactionFixtureEditor
 							value={transactionFixtureText}
+							resetKey={transactionFixtureResetKey}
+							defaultCollection={selectedCollection}
+							defaultEntityId={selectedEntityId}
 							onchange={(json) => {
 								transactionFixtureText = json;
+								fixtureEditGeneration += 1;
 							}}
 						/>
 					</section>

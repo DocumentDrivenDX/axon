@@ -159,16 +159,21 @@ function formatTimestamp(timestampNs: number): string {
 	return new Date(timestampNs / 1_000_000).toLocaleString();
 }
 
+function auditEventLabel(entry: AuditEntry): string {
+	if (
+		entry.intent_lineage?.intent_id &&
+		entry.collection !== '__mutation_intents' &&
+		entry.mutation.startsWith('entity.')
+	) {
+		return 'intent.commit';
+	}
+	return entry.mutation;
+}
+
 async function loadEntries() {
 	loading = true;
 	try {
 		if (filters.intentId && scope) {
-			// Use the REST intent-audit endpoint: the GraphQL auditLog query does not
-			// expose an intentId filter argument (intent_id is hardcoded to None in
-			// dynamic.rs), so REST remains the only way to filter by intent. The
-			// intentLineage fields (policyVersion, schemaVersion, etc.) are now also
-			// populated by the GraphQL path (axon-d73680e3), but until the GraphQL
-			// query gains an intentId argument this REST call is still required.
 			const response = await fetchIntentAudit(filters.intentId, scope);
 			entries = response.entries;
 		} else {
@@ -288,7 +293,7 @@ $effect(() => {
 			<h2>Recent Entries</h2>
 			<span class="pill">{entries.length} shown</span>
 		</div>
-		<div class="panel-body">
+		<div class="panel-body audit-table-wrap">
 			{#if loading}
 				<p class="message">Loading audit entries…</p>
 			{:else if entries.length === 0}
@@ -317,7 +322,7 @@ $effect(() => {
 								<td>{entry.collection}</td>
 								<td>{entry.entity_id}</td>
 								<td>
-									{entry.mutation}
+									{auditEventLabel(entry)}
 									{#if entry.transaction_id}
 										<span class="pill">tx #{String(entry.transaction_id).substring(0, 8)}</span>
 									{/if}
@@ -341,7 +346,7 @@ $effect(() => {
 		<div class="panel-body stack">
 			{#if selectedEntry}
 				<div>
-					<strong>{selectedEntry.mutation}</strong>
+					<strong>{auditEventLabel(selectedEntry)}</strong>
 					<p class="muted">
 						{selectedEntry.collection}/{selectedEntry.entity_id} · {formatTimestamp(
 							selectedEntry.timestamp_ns,
@@ -453,3 +458,9 @@ $effect(() => {
 		</div>
 	</section>
 </div>
+
+<style>
+	.audit-table-wrap {
+		overflow-x: auto;
+	}
+</style>

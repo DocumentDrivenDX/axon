@@ -11,7 +11,7 @@ import {
 	expectGraphqlPrimaryDataPlane,
 	patchBudgetRecordAs,
 	previewBudgetIntent,
-	proposedPolicyDraftDenyHigh,
+	proposedBudgetPolicyDraftDenyHigh,
 	routeGraphqlAs,
 	seedApprovalCollections,
 	seedIntentStates,
@@ -273,7 +273,7 @@ test.describe('Approval inbox', () => {
 		const baseline = Number(baselineText?.trim());
 
 		// Activate a new policy via API to bump policy_version.
-		await activateProposedPolicy(request, db, TASK_COLLECTION, proposedPolicyDraftDenyHigh());
+		await activateProposedPolicy(request, db, TASK_COLLECTION, proposedBudgetPolicyDraftDenyHigh());
 
 		// Reload to pick up the new intent state from the backend.
 		await page.goto(dbIntentsUrl(db));
