@@ -4044,8 +4044,7 @@ mod tests {
             .expect("create_database must work");
         assert!(a.database_exists("only-in-a").expect("a sees its own db"));
         assert!(
-            !b.database_exists("only-in-a")
-                .expect("b query must work"),
+            !b.database_exists("only-in-a").expect("b query must work"),
             "adapter b must not see adapter a's database (isolation)"
         );
     }
