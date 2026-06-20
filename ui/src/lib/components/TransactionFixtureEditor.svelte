@@ -59,7 +59,7 @@ function makeOp(
 		key: keyCounter++,
 		kind,
 		collection: seed.collection ?? props.defaultCollection ?? '',
-		id: kind === 'createEntity' ? '' : seed.id ?? props.defaultEntityId ?? '',
+		id: kind === 'createEntity' ? '' : (seed.id ?? props.defaultEntityId ?? ''),
 		expectedVersionText: '',
 		dataText: '{}',
 		patchText: '{}',
@@ -73,13 +73,13 @@ function opFromRaw(raw: Record<string, unknown>): TransactionOp {
 		key: keyCounter++,
 		kind,
 		collection:
-			typeof payload.collection === 'string' ? payload.collection : props.defaultCollection ?? '',
+			typeof payload.collection === 'string' ? payload.collection : (props.defaultCollection ?? ''),
 		id:
 			typeof payload.id === 'string'
 				? payload.id
 				: kind === 'createEntity'
 					? ''
-					: props.defaultEntityId ?? '',
+					: (props.defaultEntityId ?? ''),
 		expectedVersionText:
 			typeof payload.expectedVersion === 'number' ? String(payload.expectedVersion) : '',
 		dataText: payload.data !== undefined ? JSON.stringify(payload.data, null, 2) : '{}',

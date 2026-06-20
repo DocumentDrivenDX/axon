@@ -104,6 +104,7 @@ let proposedImpactMatrixError = $state<string | null>(null);
 let loadingProposedImpactMatrix = $state(false);
 let transactionFixtureText = $state('[]');
 let transactionFixtureResetKey = $state(0);
+// biome-ignore lint/style/useConst: reassigned in the TransactionFixtureEditor onchange handler; biome does not track Svelte markup mutations.
 let fixtureEditGeneration = 0;
 let evaluationToken = 0;
 let collectionContextToken = 0;
