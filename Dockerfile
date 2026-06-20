@@ -54,6 +54,7 @@ COPY crates/axon-cypher-ast/Cargo.toml crates/axon-cypher-ast/Cargo.toml
 COPY crates/axon-graphql/Cargo.toml crates/axon-graphql/Cargo.toml
 COPY crates/axon-mcp/Cargo.toml crates/axon-mcp/Cargo.toml
 COPY crates/axon-render/Cargo.toml crates/axon-render/Cargo.toml
+COPY crates/axon-registry/Cargo.toml crates/axon-registry/Cargo.toml
 COPY crates/axon-schema/Cargo.toml crates/axon-schema/Cargo.toml
 COPY crates/axon-server/Cargo.toml crates/axon-server/Cargo.toml
 COPY crates/axon-server/build.rs crates/axon-server/build.rs
@@ -78,6 +79,7 @@ RUN mkdir -p crates/axon-cli/src \
         axon-graphql \
         axon-mcp \
         axon-render \
+        axon-registry \
         axon-schema \
         axon-server \
         axon-sim \

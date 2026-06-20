@@ -2585,11 +2585,8 @@ fn run_rollback(
                             diff,
                         } => {
                             println!("dry-run rollback of {ecoll}/{eid} to v{version}");
-                            if current.is_some() {
-                                println!(
-                                    "  current version: {}",
-                                    current.as_ref().unwrap().version
-                                );
+                            if let Some(current) = current {
+                                println!("  current version: {}", current.version);
                             } else {
                                 println!("  entity would be recreated (currently deleted)");
                             }
