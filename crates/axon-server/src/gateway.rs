@@ -695,9 +695,26 @@ async fn resolve_tenant_handler(
     mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let slug = crate::path_router::extract_tenant_database(request.uri().path())
-        .map(|(tenant, database)| format!("{tenant}:{database}"))
-        .unwrap_or_else(|| "default".to_string());
+    let slug = match crate::path_router::extract_tenant_database(request.uri().path()) {
+        Some((tenant, database)) => format!("{tenant}:{database}"),
+        None if crate::path_router::is_data_plane_path(request.uri().path()) => {
+            // The path is unmistakably a data-plane request
+            // (`/tenants/{t}/databases/{d}/…`) but the tenant/database segment
+            // is not a valid identifier (e.g. > 63 chars or illegal chars).
+            // Do NOT fall back to the default/master handler — that would route
+            // this request's reads and writes to the shared master database, a
+            // cross-tenant isolation hazard. Reject it instead.
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiError::new(
+                    "not_found",
+                    "invalid tenant or database in request path",
+                )),
+            )
+                .into_response();
+        }
+        None => "default".to_string(),
+    };
 
     match router.get_or_create_any(&slug).await {
         Ok(handler) => {

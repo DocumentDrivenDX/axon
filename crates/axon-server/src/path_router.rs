@@ -96,6 +96,39 @@ pub fn extract_tenant_database(path: &str) -> Option<(String, String)> {
     Some((tenant.to_string(), database.to_string()))
 }
 
+/// Returns `true` when `path` has the data-plane *shape*
+/// `/tenants/{t}/databases/{d}(/…)?` — regardless of whether the `{t}`/`{d}`
+/// segments are valid identifiers.
+///
+/// This distinguishes a *malformed* data-plane request (which must be rejected
+/// with 404 rather than silently fall back to the default/master database)
+/// from a genuinely non-data-plane path (health, metrics, ui, control, …).
+pub fn is_data_plane_path(path: &str) -> bool {
+    for prefix in RESERVED_PREFIXES {
+        if path == *prefix || path.starts_with(&format!("{}/", prefix)) {
+            return false;
+        }
+    }
+
+    let Some(rest) = path.strip_prefix("/tenants/") else {
+        return false;
+    };
+    let Some((tenant, after_tenant)) = rest.split_once('/') else {
+        return false;
+    };
+    if tenant.is_empty() {
+        return false;
+    }
+    let Some(after_databases) = after_tenant.strip_prefix("databases/") else {
+        return false;
+    };
+    let database = match after_databases.split_once('/') {
+        Some((db, _rest)) => db,
+        None => after_databases,
+    };
+    !database.is_empty()
+}
+
 /// Axum middleware layer that extracts `(tenant, database)` from the URL path
 /// and installs a [`ResolvedPath`] extension for downstream handlers.
 ///
@@ -109,4 +142,55 @@ pub async fn path_router_layer(mut req: Request<Body>, next: Next) -> Response {
             .insert(ResolvedPath { tenant, database });
     }
     next.run(req).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_data_plane_path_extracts_and_has_shape() {
+        let path = "/tenants/acme/databases/default/collections/users";
+        assert_eq!(
+            extract_tenant_database(path),
+            Some(("acme".to_string(), "default".to_string()))
+        );
+        assert!(is_data_plane_path(path));
+    }
+
+    #[test]
+    fn overlong_tenant_segment_is_shape_but_does_not_extract() {
+        let long = "a".repeat(64);
+        let path = format!("/tenants/{long}/databases/default/collections/users");
+        // > 63 chars: fails the identifier rule, so extraction returns None…
+        assert_eq!(extract_tenant_database(&path), None);
+        // …but it is unmistakably a data-plane request and must be rejected,
+        // not routed to the default/master database.
+        assert!(is_data_plane_path(&path));
+    }
+
+    #[test]
+    fn invalid_char_tenant_segment_is_shape_but_does_not_extract() {
+        let path = "/tenants/bad%20tenant!/databases/default/x";
+        assert_eq!(extract_tenant_database(path), None);
+        assert!(is_data_plane_path(path));
+    }
+
+    #[test]
+    fn non_data_plane_paths_are_not_shape() {
+        for p in [
+            "/health",
+            "/metrics",
+            "/ui/x",
+            "/control/tenants",
+            "/favicon.ico",
+            "/tenants",
+            "/tenants/acme",
+            "/tenants/acme/foo",
+            "/tenants/acme/databases/",
+        ] {
+            assert!(!is_data_plane_path(p), "{p} should not be data-plane shape");
+            assert_eq!(extract_tenant_database(p), None, "{p} should not extract");
+        }
+    }
 }

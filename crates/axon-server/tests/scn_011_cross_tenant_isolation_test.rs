@@ -130,3 +130,37 @@ async fn non_default_database_path_can_create_collection_and_entity() {
     let body: serde_json::Value = read.json();
     assert_eq!(body["entity"]["data"]["title"], "acme order");
 }
+
+/// A data-plane request whose tenant segment is not a valid identifier (here,
+/// longer than 63 chars, or containing illegal characters) must be rejected
+/// with 404 — NOT silently served by the default/master handler. Otherwise its
+/// writes would land in the shared master database, a cross-tenant isolation
+/// hazard. Regression for axon-109f2efb.
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_tenant_segment_is_rejected_not_routed_to_master() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let http = make_multi_tenant_server(tmp.path());
+
+    // 64 chars > the 63-char identifier limit: before the fix this slugged to
+    // "default" and the collection was created in the master database (201).
+    let too_long = "t".repeat(64);
+    http.post(&format!(
+        "/tenants/{too_long}/databases/default/collections/orders"
+    ))
+    .json(&json!({"schema": {"collection": "orders", "version": 1}}))
+    .await
+    .assert_status(axum::http::StatusCode::NOT_FOUND);
+
+    // Illegal characters in the tenant segment are likewise rejected.
+    http.post("/tenants/bad.tenant/databases/default/collections/orders")
+        .json(&json!({"schema": {"collection": "orders", "version": 1}}))
+        .await
+        .assert_status(axum::http::StatusCode::NOT_FOUND);
+
+    // The master/default handler was never written to: a genuinely fresh,
+    // validly-named tenant sees no "orders" collection leaked from the rejected
+    // requests above.
+    http.get("/tenants/freshtenant/databases/default/entities/orders/order-1")
+        .await
+        .assert_status(axum::http::StatusCode::NOT_FOUND);
+}
