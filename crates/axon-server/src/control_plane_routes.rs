@@ -186,6 +186,17 @@ pub(crate) fn name_to_db_slug(name: &str, id: &str) -> String {
     // Take first 8 hex chars from the UUID (strip dashes).
     let uuid_prefix: String = id.chars().filter(|c| c != &'-').take(8).collect();
 
+    // Cap the human-readable slug so the final db_name
+    // (`{slug}-{8-hex uuid prefix}`) stays within 63 bytes — PostgreSQL's
+    // identifier limit and the data-plane router's `is_valid_identifier`
+    // check. A db_name longer than 63 chars fails to parse out of the URL
+    // path, so the request silently falls back to the default/master
+    // database instead of the tenant's own — a cross-tenant isolation bug.
+    const MAX_DB_NAME_LEN: usize = 63;
+    let max_slug_len = MAX_DB_NAME_LEN - uuid_prefix.len() - 1;
+    let slug: String = slug.chars().take(max_slug_len).collect();
+    let slug = slug.trim_end_matches('-');
+
     if slug.is_empty() {
         format!("tenant-{uuid_prefix}")
     } else {
@@ -2113,6 +2124,27 @@ mod tests {
     fn slug_empty_name_uses_tenant_prefix() {
         let slug = name_to_db_slug("   ---   ", "abcdef01-0000-0000-0000-000000000000");
         assert_eq!(slug, "tenant-abcdef01");
+    }
+
+    #[test]
+    fn slug_caps_db_name_at_postgres_identifier_limit() {
+        // A long tenant name must not produce a db_name > 63 chars, otherwise
+        // it fails the data-plane router's is_valid_identifier check and the
+        // request silently falls back to the default/master database.
+        let long_name = "e2e policy enforcement schema version update extra long suffix here";
+        let slug = name_to_db_slug(long_name, "01966b3c-1234-0000-0000-000000000000");
+        assert!(
+            slug.len() <= 63,
+            "db_name too long ({}): {slug}",
+            slug.len()
+        );
+        // The uuid suffix (uniqueness) is preserved at the end.
+        assert!(slug.ends_with("-01966b3c"), "uuid suffix dropped: {slug}");
+        assert!(!slug.contains("--"), "collapsed separators only: {slug}");
+        assert!(
+            !slug.ends_with('-'),
+            "no trailing separator before uuid: {slug}"
+        );
     }
 
     // -- POST /control/tenants ------------------------------------------------
