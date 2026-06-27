@@ -202,6 +202,7 @@ fn sqlite_dataset_has_ten_beads_and_fifteen_links() {
 
 #[test]
 fn sqlite_ddx_ready_query_returns_open_beads_whose_deps_are_all_closed() {
+    // @covers US-074-AC1
     let storage = ddx_sqlite_store();
     let rows = run(
         &storage,
@@ -226,6 +227,7 @@ fn sqlite_ddx_ready_query_returns_open_beads_whose_deps_are_all_closed() {
 
 #[test]
 fn sqlite_ddx_blocked_query_returns_open_beads_with_at_least_one_non_closed_dep() {
+    // @covers US-074-AC2
     let storage = ddx_sqlite_store();
     let rows = run(
         &storage,

@@ -523,6 +523,7 @@ async fn mcp_tools_list_always_includes_axon_query() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_tools_list_includes_crud_after_collection_created() {
+    // @covers US-073-AC1
     let server = test_server();
     seed_collection(&server, "item").await;
 
@@ -1370,6 +1371,7 @@ async fn mcp_crud_policy_denials_return_structured_outcomes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_axon_query_matches_graphql_policy_semantics() {
+    // @covers US-073-AC4
     let server = test_server();
     seed_query_policy_fixture(&server).await;
 
@@ -1478,6 +1480,7 @@ async fn mcp_axon_query_matches_graphql_policy_semantics() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_nexiq_reference_policy_queries_match_graphql() {
+    // @covers US-073-AC4
     let (server, handler) = test_server_with_handler();
     let fixture = seed_nexiq_fixture(&handler).await;
 

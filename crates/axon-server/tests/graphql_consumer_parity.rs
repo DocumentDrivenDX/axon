@@ -289,6 +289,8 @@ async fn graphql_consumer_canary_crud_query_relationship_subscription_delete() {
     );
     assert_eq!(update_and_link["data"]["createLink"], true);
 
+    // @covers US-070-AC1 (linkCandidates leg)
+    // @covers US-071-AC1 (neighbors leg)
     let relationship = gql(
         &server,
         r#"{

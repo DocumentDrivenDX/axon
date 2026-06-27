@@ -21291,6 +21291,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
 
     #[test]
     fn list_neighbors_returns_outbound_and_inbound() {
+        // @covers US-071-AC1
         let h = setup_neighbor_graph();
 
         let resp = h
@@ -21418,6 +21419,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
 
     #[test]
     fn find_link_candidates_returns_target_entities() {
+        // @covers US-070-AC1
         let h = setup_neighbor_graph();
 
         let resp = h

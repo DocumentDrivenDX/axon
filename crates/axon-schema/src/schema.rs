@@ -584,6 +584,7 @@ access_control:
 
     #[test]
     fn esf_parses_named_queries_block() {
+        // @covers US-075-AC1
         let doc = EsfDocument::parse(
             r#"
 esf_version: "1.0"

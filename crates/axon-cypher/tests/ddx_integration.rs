@@ -154,6 +154,7 @@ fn dataset_has_ten_beads_and_fifteen_links() {
 
 #[test]
 fn ddx_ready_query_returns_open_beads_whose_deps_are_all_closed() {
+    // @covers US-074-AC1
     let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})
         WHERE NOT EXISTS {
@@ -172,6 +173,7 @@ fn ddx_ready_query_returns_open_beads_whose_deps_are_all_closed() {
 
 #[test]
 fn ddx_blocked_query_returns_open_beads_with_at_least_one_non_closed_dep() {
+    // @covers US-074-AC2
     let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})
         WHERE EXISTS {
@@ -328,6 +330,7 @@ fn incoming_links_returns_all_dependents_of_a_leaf_node() {
 
 #[test]
 fn count_star_counts_all_open_beads() {
+    // @covers US-076-AC1
     let rows = run("MATCH (b:DdxBead {status: 'open'}) RETURN count(*) AS n");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["n"], json!(5), "there should be 5 open beads");
@@ -335,6 +338,7 @@ fn count_star_counts_all_open_beads() {
 
 #[test]
 fn order_by_priority_asc_returns_open_beads_in_ascending_order() {
+    // @covers US-076-AC1
     let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})
         RETURN b.id AS id

@@ -12772,6 +12772,9 @@ mod tests {
     /// AC1: each named query exposes a Subscription field of the correct type.
     #[tokio::test(flavor = "multi_thread")]
     async fn named_query_subscription_fields_appear_in_sdl() {
+        // @covers US-072-AC1
+        // @covers US-075-AC5
+        // @covers US-077-AC1
         let schema_def = ddx_beads_named_query_schema();
         let broker = crate::subscriptions::BroadcastBroker::default();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
@@ -12800,6 +12803,7 @@ mod tests {
     /// AC2: initial snapshot delivered on subscribe before any mutations.
     #[tokio::test(flavor = "multi_thread")]
     async fn named_query_subscription_delivers_initial_snapshot() {
+        // @covers US-077-AC1
         let schema_def = ddx_beads_named_query_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
         {
@@ -12845,6 +12849,7 @@ mod tests {
     /// AC5 (entity-add update): adding an entity re-evaluates the named query.
     #[tokio::test(flavor = "multi_thread")]
     async fn named_query_subscription_updates_on_entity_add() {
+        // @covers US-077-AC2
         let schema_def = ddx_beads_named_query_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
         let broker = crate::subscriptions::BroadcastBroker::default();
@@ -12916,6 +12921,7 @@ mod tests {
     /// Uses tasks_with_open_query_schema (no access control) so handler writes succeed.
     #[tokio::test(flavor = "multi_thread")]
     async fn named_query_subscription_updates_on_status_change() {
+        // @covers US-077-AC2
         let schema_def = tasks_with_open_query_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
         {
@@ -12996,6 +13002,7 @@ mod tests {
     /// triggers re-evaluation when the query traverses relationships.
     #[tokio::test(flavor = "multi_thread")]
     async fn named_query_subscription_updates_on_link_add() {
+        // @covers US-077-AC2
         let schema_def = ddx_beads_named_query_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
         {
@@ -13083,6 +13090,7 @@ mod tests {
     /// control policy — subscriber only sees entities they own.
     #[tokio::test(flavor = "multi_thread")]
     async fn named_query_subscription_filters_by_policy() {
+        // @covers US-077-AC4
         let schema_def = ddx_beads_named_query_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
         {
@@ -13129,6 +13137,7 @@ mod tests {
     /// AC4 + AC5 (disconnect cleanup): dropping the stream removes the watcher.
     #[tokio::test(flavor = "multi_thread")]
     async fn named_query_subscription_clean_teardown_on_disconnect() {
+        // @covers US-077-AC5
         let schema_def = ddx_beads_named_query_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
         let broker = crate::subscriptions::BroadcastBroker::default();

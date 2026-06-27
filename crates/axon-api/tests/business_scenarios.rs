@@ -699,6 +699,7 @@ fn scn_005_invoice_approval_chain() {
 
 #[test]
 fn scn_006_issue_dependency_dag_and_ready_queue() {
+    // @covers US-074-AC1
     let mut h = handler();
 
     // SETUP: Issue-A depends on B and C. Issue-B depends on D. Issue-C has no deps.

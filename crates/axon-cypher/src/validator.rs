@@ -284,6 +284,7 @@ mod tests {
 
     #[test]
     fn unknown_label_rejected() {
+        // @covers US-076-AC2
         let err = parse_and_validate("MATCH (b:UnknownLabel) RETURN b").unwrap_err();
         assert!(matches!(err, CypherError::UnknownIdentifier { kind, name }
             if kind == "label" && name == "UnknownLabel"));
@@ -291,12 +292,14 @@ mod tests {
 
     #[test]
     fn unknown_property_in_inline_predicate_rejected() {
+        // @covers US-076-AC2
         let err = parse_and_validate("MATCH (b:DdxBead {bogus: 'x'}) RETURN b").unwrap_err();
         assert!(matches!(err, CypherError::UnknownIdentifier { kind, .. } if kind == "property"));
     }
 
     #[test]
     fn unknown_relationship_rejected() {
+        // @covers US-076-AC2
         let err = parse_and_validate("MATCH (a:DdxBead)-[:UNKNOWN_REL]->(b:DdxBead) RETURN a")
             .unwrap_err();
         assert!(matches!(err, CypherError::UnknownIdentifier { kind, .. }
