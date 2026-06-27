@@ -173,9 +173,15 @@ These are the properties that must hold under all circumstances, including concu
 - BUGGIFY: inject transaction aborts, delays, storage errors
 - Failure detection: fewer or more hops = isolation violation
 
-### INV-002b (P1): Write Skew Prevention
+### INV-002b: Write Skew Prevention (key-addressed)
 
-**Statement**: Write skew is prevented under serializable isolation.
+**Statement**: Under opt-in Serializable isolation, write skew over a
+**key-addressed** read set (entities recorded via `record_read`) is prevented;
+under the default Snapshot isolation it is allowed. Verified by the axon-sim
+`write_skew` workload and the PROP-004 `serializable_prevents_write_skew_that_snapshot_allows`
+property test (B-104). Predicate/phantom write skew (invariants over query,
+scan, traversal, or aggregation results) remains out of scope (SSI/predicate
+locking, future).
 
 ### INV-003: Audit Completeness
 
@@ -739,9 +745,9 @@ Representative rows:
 
 **Property**: For any sequence of concurrent read-then-write operations on a single entity, the final state is consistent with some serial ordering of the successful writes. No acknowledged write is lost.
 
-### PROP-004: Transaction Serializability
+### PROP-004: Transaction Serializability (key-addressed)
 
-**Property**: For any set of concurrent multi-entity transactions, the final database state is consistent with some serial ordering of the committed transactions.
+**Property**: Two parts. (1) Snapshot default — overlapping multi-entity transactions never lose updates; the first committer wins and the loser aborts retryably (`transactions_are_serializable_under_sequential_simulation`). (2) Opt-in Serializable — write skew over a **key-addressed** read set is allowed under Snapshot but prevented under Serializable (`serializable_prevents_write_skew_that_snapshot_allows`). Full predicate/phantom serializability (consistency with some serial ordering for invariants over query/scan/traversal results) is NOT claimed and requires SSI/predicate locking (future). See FEAT-008 TXN-05 / ADR-004.
 
 ### PROP-005: Link Graph Consistency
 

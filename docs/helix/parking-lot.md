@@ -19,7 +19,7 @@ PRD's Non-Goals or remaining P2 list — so it stays findable without
 distorting V1 scope, which is proving governed agent writes. The BYOC fleet
 control plane was promoted to PRD P1 on 2026-06-10 and is not tracked here.
 Local-first was re-scoped on 2026-06-27: the governed local **read replica**
-is committed at P1 (FR-32, FEAT-032), while the offline-write +
+is committed at P2 (FR-32, FEAT-032), while the offline-write +
 reconciliation half is **deferred here** (FR-33) — see "Offline Local Writes
 and Deterministic Reconciliation" below.
 

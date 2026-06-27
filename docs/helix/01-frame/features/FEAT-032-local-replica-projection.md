@@ -248,7 +248,7 @@ redacted fields must never leave the server in the stream.
 - **Design**: ADR-014 (audit-as-source-of-truth, CDC-as-projection — amended to
   name the client replica as a first-class consumer); ADR-025 (client-projection
   cursor API — opaque restart/schema-stable resume tokens, snapshot+tail).
-- **PRD requirements**: FR-32 (P1, governed local read replica); supporting
+- **PRD requirements**: FR-32 (P2, governed local read replica); supporting
   FR-23, FR-26, FR-31. Explicitly **not** FR-33 (deferred offline writes).
 
 ## Out of Scope

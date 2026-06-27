@@ -65,11 +65,16 @@ bundle, or explicit notes on the bead).
   once. Kafka transport (B-102) and the BYOC control plane (B-106) have since
   shipped as well; all 1074 tracker beads are now closed and the queues are
   empty.
-- **Open work**: serializable isolation (B-104, item routed via
-  `AR-2026-06-27-full-repo.md` §2 H2), local-first sync design (B-105), the
-  05-deploy runbook/deployment-checklist (item 10 remainder), and the
-  remaining P1/P2 decision items (ranks 7–9, 11–14) awaiting product/design
-  routing.
+- **Delivered 2026-06-27**: B-104 opt-in Serializable for **key-addressed read
+  sets** (`AR-2026-06-27-full-repo.md` §2 H2; predicate/phantom serializability
+  remains future) and B-105 the **local-first CQRS reframe** (§2 H1 — FR-32
+  reframed as a read-replica projection / FEAT-032; offline writes FR-33
+  parked).
+- **Open work**: predicate/phantom serializability (SSI / predicate locking,
+  future), the FEAT-032 read-replica build (durable opaque cursor store +
+  client query engine), the 05-deploy runbook/deployment-checklist (item 10
+  remainder), and the remaining P1/P2 decision items (ranks 7–9, 11–14)
+  awaiting product/design routing.
 
 ## Review Checklist
 

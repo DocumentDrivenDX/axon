@@ -46,7 +46,7 @@ constraint (FEAT-008 Constraints), not an acceptance criterion here.
 ## Edge Cases
 
 - **Read of a non-existent entity inside a transaction**: returns not-found without aborting the transaction (conditional logic allowed).
-- **Write skew shape** (T1 reads A writes B; T2 reads B writes A): both may commit in V1 — documented constraint, deferred to P1 serializable isolation; applications must guard such invariants.
+- **Write skew shape** (T1 reads A writes B; T2 reads B writes A): under the default Snapshot isolation both may commit — documented constraint. Opt-in Serializable (FEAT-008 TXN-05, B-104) prevents this when A/B are recorded as **key-addressed** reads via `record_read`; predicate/phantom write skew (invariants over query/scan/traversal results) is still not caught and applications must guard such invariants.
 
 ## Test Scenarios
 
@@ -67,7 +67,7 @@ constraint (FEAT-008 Constraints), not an acceptance criterion here.
 
 ## Out of Scope
 
-- Serializable isolation and write-skew prevention (P1; FEAT-008 Constraints).
+- Predicate/phantom serializability (SSI / predicate locking) — future. Note: opt-in Serializable for **key-addressed** read sets is delivered (B-104, this story covers the Snapshot default); see FEAT-008 TXN-05 / ADR-004.
 - Read-uncommitted in any form — never offered.
 
 ## Review Checklist
