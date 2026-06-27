@@ -40,6 +40,7 @@ pub mod link_integrity;
 pub mod rng;
 pub mod schema_enforcement;
 pub mod transaction_atomicity;
+pub mod write_skew;
 
 pub use audit_completeness::{
     run_audit_completeness_workload, AuditCompletenessConfig, AuditCompletenessResult,
@@ -58,3 +59,4 @@ pub use schema_enforcement::{run_schema_enforcement_workload, SchemaEnforcementR
 pub use transaction_atomicity::{
     run_transaction_atomicity_workload, TransactionAtomicityConfig, TransactionAtomicityResult,
 };
+pub use write_skew::{run_write_skew_workload, WriteSkewConfig, WriteSkewResult};

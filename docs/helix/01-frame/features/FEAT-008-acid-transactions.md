@@ -56,7 +56,7 @@ A developer expresses a multi-record business change — move an invoice to appr
 
 #### Isolation and Conflict Resolution
 
-- **TXN-05**. Transactions must read from a consistent snapshot: no dirty reads, non-repeatable reads, or phantoms within a transaction. Snapshot isolation is the V1 default; read-committed is available as an opt-in; the effective isolation level must be inspectable per transaction.
+- **TXN-05**. Transactions must read from a consistent snapshot: no dirty reads, non-repeatable reads, or phantoms within a transaction. Snapshot isolation is the V1 default. A **Serializable** level is available as an opt-in that, in addition to the write-set checks, validates the transaction's recorded **key-addressed read set** (entities read by id) is unchanged at commit — preventing write skew expressed over specific read entities. Serializable's scope is key-addressed reads only: it does **not** cover predicate/phantom anomalies over query results, index scans, traversals, or aggregations (general predicate serializability requires SSI/predicate locking and is out of scope — see Constraints and ADR-004). The effective isolation level must be inspectable per transaction.
 - **TXN-06**. Conflict resolution must be first-writer-wins: the first transaction to commit wins, and later transactions whose write set overlaps are aborted with a conflict.
 - **TXN-07**. An abort response must identify which entity or link caused the conflict, include its current committed state, and indicate whether the failure is retryable (version conflicts are; schema violations are not). The wire semantics — HTTP/gRPC status mapping, error codes, conflict detail, and the retryable flag — are defined in [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md).
 - **TXN-08**. Single-entity reads and writes must behave per FEAT-004's optimistic-concurrency requirements (ENT-10..ENT-12); this feature must not introduce divergent single-entity semantics.
@@ -104,7 +104,7 @@ A developer expresses a multi-record business change — move an invoice to appr
 
 ### Constraints
 
-- **Isolation honesty — V1 is Snapshot Isolation, not Serializable.** Write-set OCC does not detect write skew: two concurrent transactions that each read disjoint records and write into each other's read set can both commit. Read-set tracking for Serializable isolation is committed as P1. Until then, workloads whose invariants span records that are read-but-not-written must enforce those invariants at the application level.
+- **Isolation honesty — default is Snapshot Isolation; Serializable is opt-in and key-addressed only.** The default level is Snapshot Isolation: write-set OCC does not detect write skew, so two transactions that each read disjoint records and write into each other's read set can both commit. An opt-in **Serializable** level adds key-addressed read-set validation (read-set tracking, delivered by B-104): it prevents write skew whose invariant is expressed over **specific entities read by id**. It does **not** prevent predicate/phantom write skew — invariants over query results, index scans, link traversals, or aggregations, where a concurrently-inserted/removed row changes a predicate result without changing any previously-read entity version. General predicate serializability (SSI / predicate locking) remains out of scope. No artifact or API may claim unqualified "serializable"; the honest claim is "Serializable for key-addressed read sets." Workloads whose invariants depend on predicate/query results must still enforce those invariants at the application level.
 - Single-instance transactions only in V1 (no distributed transactions).
 - OCC-based: no pessimistic locks, no SELECT FOR UPDATE.
 - Transaction size limit of 100 operations; configurable timeout, default 30 seconds.
@@ -124,7 +124,7 @@ A developer expresses a multi-record business change — move an invoice to appr
 
 ## Out of Scope
 
-- Serializable isolation / write-skew prevention (P1 — see Constraints).
+- General **predicate/phantom serializability** (SSI / predicate locking) — invariants over query results, index scans, traversals, or aggregations. Key-addressed write-skew prevention is delivered (opt-in Serializable, B-104); predicate serializability remains future work (see Constraints and ADR-004).
 - Distributed / cross-instance transactions.
 - Pessimistic locking / SELECT FOR UPDATE.
 - Savepoints within transactions; two-phase commit.

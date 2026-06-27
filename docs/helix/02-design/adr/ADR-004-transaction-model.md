@@ -29,7 +29,7 @@ while matching the workload characteristics of agentic applications.
 |--------|-------------|
 | Problem | Choose a concurrency control mechanism for multi-entity atomic transactions |
 | Workload | Agentic applications — typically low contention, short-lived operations on bounded entity sets |
-| Requirements | Snapshot Isolation in V1 (Serializable is P1), deadlock-free, sub-20ms p99 for 2–5 entity transactions, embedded and server mode |
+| Requirements | Snapshot Isolation default + opt-in Serializable for key-addressed read sets (B-104; predicate serializability future), deadlock-free, sub-20ms p99 for 2–5 entity transactions, embedded and server mode |
 | Prior context | ADR-003 selected SQLite + PostgreSQL with application-layer audit. The transaction model must work across both backends behind the StorageAdapter trait |
 | Decision Drivers | Must be uniform across memory/SQLite/PostgreSQL adapters; agentic workloads are low-contention and short-lived; deadlock-freedom valued over conflict prevention |
 
@@ -85,7 +85,8 @@ field-path violations.
 
 ### Isolation Guarantees
 
-OCC as implemented provides **Snapshot Isolation** for write transactions:
+OCC as implemented provides **Snapshot Isolation** for write transactions by
+default:
 
 - Writes are buffered locally; no storage reads occur at stage time
 - Version checks at commit detect any interleaving write to the same entities,
@@ -96,10 +97,25 @@ OCC as implemented provides **Snapshot Isolation** for write transactions:
   IMMEDIATE`, PostgreSQL `SERIALIZABLE`), preventing concurrent commits from
   racing at the storage layer
 
-**V1 known gap — write skew is not prevented**: OCC tracks only the write set.
-Two transactions that each read disjoint entities and write to each other's
-read set can both commit, violating serializability. Preventing write skew
-requires read-set tracking, which is deferred to P1.
+**Opt-in Serializable for key-addressed read sets (B-104).** A transaction may
+be constructed at `IsolationLevel::Serializable`. Callers record the entity
+versions they observed via `Transaction::record_read` (a no-op under Snapshot,
+so the default path is unchanged and allocation-free). At commit, after the
+write-set checks, every recorded read is validated to still be at its observed
+version (`observed_version = 0` records observed-absence, catching a concurrent
+create). A stale read aborts the transaction first-committer-wins, surfaced as
+`ConflictingVersion` (409, retryable) — the same retry contract as a write
+conflict. The effective level is inspectable via `Transaction::isolation_level`.
+
+**Remaining gap — predicate/phantom serializability is not provided.** The
+read-set is key-addressed: it covers entities read **by id** and recorded via
+`record_read`. It does **not** cover anomalies expressed over query results,
+secondary-index scans, link traversals, or aggregations, where a
+concurrently-inserted/removed row changes a predicate result without changing
+any previously-read entity version. General predicate serializability requires
+SSI (Cahill-style rw-antidependency / SIREAD locks) or predicate locking and
+remains future work. No surface may claim unqualified "serializable"; the
+honest claim is "Serializable for key-addressed read sets."
 
 ### Audit Integration
 
@@ -226,13 +242,14 @@ and maps cleanly onto all three StorageAdapter backends.
 |------|--------|
 | Positive | Deadlock-free. Simple implementation — version check is a comparison, not a lock acquisition. Works uniformly across SQLite, PostgreSQL, and memory. Conflict response carries current state, enabling intelligent client-side merging |
 | Negative | Callers must implement retry logic on conflict. High-contention workloads (unlikely for agentic use cases) will retry frequently |
-| Neutral | Snapshot Isolation is the V1 default (write-set OCC prevents lost updates and dirty reads but not write skew); Serializable isolation requires read-set tracking and is P1 per FEAT-008 |
+| Neutral | Snapshot Isolation is the default (write-set OCC prevents lost updates and dirty reads but not write skew). Opt-in Serializable adds key-addressed read-set validation (B-104), preventing write skew over entities read by id; predicate/phantom serializability (SSI/predicate locking) remains future work per FEAT-008 |
 
 ## Risks
 
 | Risk | Prob | Impact | Mitigation |
 |------|------|--------|------------|
-| Write skew violates application invariants before P1 serializable lands | Medium | Medium | Documented V1 gap; read-set tracking planned per FEAT-008; invariant-critical flows can serialize on a single guard entity |
+| Key-addressed write skew violates application invariants | Low | Medium | Delivered (B-104): opt-in Serializable validates the key-addressed read set. Invariant-critical flows read their guard entities through `record_read` under Serializable |
+| Predicate/phantom write skew (query/scan/traversal invariants) not caught by Serializable | Medium | Medium | Documented scope limit; such invariants must be enforced at the application level or serialized on a single guard entity until SSI/predicate locking lands |
 | High-contention hot entities degrade to spin-retry | Low | Medium | Conflict response includes current state for intelligent merge; agentic workloads are low-contention by design |
 | Crash between `commit_tx()` and audit flush leaves committed mutation unaudited | Low | High | INV-003 recovery invariant required for durable backends (same-transaction audit or intent log replay) |
 
@@ -251,7 +268,7 @@ and maps cleanly onto all three StorageAdapter backends.
 
 | Success Metric | Review Trigger |
 |----------------|----------------|
-| PROP-004: snapshot isolation verified — no lost updates, no dirty reads (write skew detection deferred to P1 serializable work) | Any lost-update report |
+| PROP-004: snapshot isolation verified (no lost updates / dirty reads) AND key-addressed write skew is allowed under Snapshot but prevented under opt-in Serializable (`serializable_prevents_write_skew_that_snapshot_allows`; axon-sim `write_skew` workload) | Any lost-update report; write skew under Serializable; predicate/phantom skew (out of scope, app-enforced) |
 | No deadlocks observed in load tests | Deadlock report (should be impossible by construction) |
 | Transaction commit p99 < 20ms for 2–5 entity transactions (BM-005/BM-006) | Benchmark regression |
 | INV-003 (audit completeness) confirms all committed transactions have full audit trails | Any audit gap detected |

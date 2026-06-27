@@ -20,7 +20,7 @@ use crate::request::{
     CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest,
     UpdateEntityRequest,
 };
-use crate::transaction::Transaction;
+use crate::transaction::{IsolationLevel, Transaction};
 
 proptest! {
     /// PROP-002: For any sequence of CRUD operations the audit log faithfully
@@ -236,6 +236,73 @@ proptest! {
             "audit must hold exactly T1's {} entries; T2 was aborted",
             n_entities
         );
+    }
+
+    /// PROP-004 (write skew): Serializable isolation prevents the write-skew
+    /// anomaly that Snapshot isolation allows (FEAT-008 TXN-05, ADR-004, B-104).
+    ///
+    /// Invariant "X + Y >= 1". Two transactions read the *other* entity and
+    /// write their own to zero — disjoint write sets, crossing **key-addressed**
+    /// read sets. Under Snapshot isolation both commit and the invariant is
+    /// violated; under Serializable the second committer's read of an entity
+    /// that T1 bumped is stale, so it aborts and the invariant holds. This is a
+    /// sequential proxy (the `MemoryStorageAdapter` is `&mut self`, so true
+    /// concurrency cannot run) but the SI-vs-Serializable outcome is identical
+    /// to a concurrent backend: exactly one ordering wins.
+    #[test]
+    fn serializable_prevents_write_skew_that_snapshot_allows(
+        x0 in 1_u64..=9,
+        y0 in 1_u64..=9,
+    ) {
+        let col = CollectionId::new("accts");
+        let x = EntityId::new("X");
+        let y = EntityId::new("Y");
+
+        // ── Snapshot isolation: write skew is ALLOWED (both commit) ──────────
+        {
+            let mut storage = MemoryStorageAdapter::default();
+            let mut audit = MemoryAuditLog::default();
+            storage.put(Entity::new(col.clone(), x.clone(), json!({"v": x0}))).unwrap();
+            storage.put(Entity::new(col.clone(), y.clone(), json!({"v": y0}))).unwrap();
+
+            let mut t1 = Transaction::new();
+            t1.record_read(col.clone(), y.clone(), 1).unwrap(); // no-op under SI
+            t1.update(Entity::new(col.clone(), x.clone(), json!({"v": 0})), 1, None).unwrap();
+            t1.commit(&mut storage, &mut audit, Some("t1".into()), None).unwrap();
+
+            let mut t2 = Transaction::new();
+            t2.record_read(col.clone(), x.clone(), 1).unwrap(); // stale, ignored under SI
+            t2.update(Entity::new(col.clone(), y.clone(), json!({"v": 0})), 1, None).unwrap();
+            prop_assert!(
+                t2.commit(&mut storage, &mut audit, Some("t2".into()), None).is_ok(),
+                "snapshot isolation allows write skew"
+            );
+        }
+
+        // ── Serializable: write skew is PREVENTED (second aborts) ────────────
+        {
+            let mut storage = MemoryStorageAdapter::default();
+            let mut audit = MemoryAuditLog::default();
+            storage.put(Entity::new(col.clone(), x.clone(), json!({"v": x0}))).unwrap();
+            storage.put(Entity::new(col.clone(), y.clone(), json!({"v": y0}))).unwrap();
+
+            let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
+            t1.record_read(col.clone(), y.clone(), 1).unwrap();
+            t1.update(Entity::new(col.clone(), x.clone(), json!({"v": 0})), 1, None).unwrap();
+            t1.commit(&mut storage, &mut audit, Some("t1".into()), None).unwrap();
+
+            let mut t2 = Transaction::with_isolation(IsolationLevel::Serializable);
+            t2.record_read(col.clone(), x.clone(), 1).unwrap(); // observed before T1 committed
+            t2.update(Entity::new(col.clone(), y.clone(), json!({"v": 0})), 1, None).unwrap();
+            prop_assert!(
+                t2.commit(&mut storage, &mut audit, Some("t2".into()), None).is_err(),
+                "serializable must prevent write skew"
+            );
+
+            // Invariant preserved: Y untouched because T2 aborted.
+            let y_state = storage.get(&col, &y).unwrap().unwrap();
+            prop_assert_eq!(&y_state.data["v"], &json!(y0), "Y must be unchanged after T2 aborts");
+        }
     }
 
     /// PROP-005: after any sequence of entity/link create operations the link

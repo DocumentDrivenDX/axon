@@ -13,8 +13,66 @@ use serde_json::Value;
 /// Maximum number of operations allowed per transaction (FEAT-008).
 const MAX_OPS: usize = 100;
 
+/// Maximum number of tracked reads allowed per transaction (FEAT-008 TXN-05).
+///
+/// Bounds the per-commit read-set validation cost so a Serializable transaction
+/// cannot force an unbounded number of extra storage reads at commit time.
+const MAX_READS: usize = 100;
+
 /// Default transaction timeout (FEAT-008).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Effective isolation level for a transaction (FEAT-008 TXN-05).
+///
+/// The level is fixed at construction and is inspectable per transaction via
+/// [`Transaction::isolation_level`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IsolationLevel {
+    /// Snapshot isolation — the V1 default.
+    ///
+    /// Write-set optimistic concurrency control: every staged write must match
+    /// the version currently in storage. Prevents dirty reads, non-repeatable
+    /// reads, and lost updates. **Does not detect write skew** — two
+    /// transactions that read disjoint records and write into each other's read
+    /// set can both commit.
+    #[default]
+    Snapshot,
+    /// Serializable for key-addressed read sets.
+    ///
+    /// In addition to the snapshot-isolation write-set checks, every entity
+    /// recorded via [`Transaction::record_read`] is validated to still be at its
+    /// observed version at commit (first-committer-wins on reads). This prevents
+    /// write skew whose invariant is expressed over **specific entities read by
+    /// id**.
+    ///
+    /// Scope limit (honesty): it does **not** prevent predicate/phantom write
+    /// skew — invariants expressed over query results, index scans, link
+    /// traversals, or aggregations, where a concurrently-inserted row changes a
+    /// predicate result without changing any previously-read entity version.
+    /// General (predicate) serializability requires SSI / predicate locking and
+    /// is out of scope for V1 (see FEAT-008 TXN-05 and ADR-004).
+    Serializable,
+}
+
+impl IsolationLevel {
+    /// Stable machine-readable name for inspection and audit/log surfaces.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            IsolationLevel::Snapshot => "snapshot",
+            IsolationLevel::Serializable => "serializable",
+        }
+    }
+}
+
+/// An entity version observed during a transaction, tracked for Serializable
+/// read-set validation (FEAT-008 TXN-05). `observed_version == 0` records that
+/// the entity was observed **absent**, so a concurrent create is detected.
+#[derive(Debug, Clone)]
+pub(crate) struct ReadRef {
+    pub(crate) collection: CollectionId,
+    pub(crate) id: EntityId,
+    pub(crate) observed_version: u64,
+}
 
 /// Global counter for generating unique transaction IDs.
 static TX_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -50,20 +108,37 @@ pub(crate) enum StagedOp {
 ///
 /// Audit entries produced by a committed transaction all share the same
 /// `transaction_id`.
+///
+/// ## Isolation (FEAT-008 TXN-05)
+///
+/// The default level is [`IsolationLevel::Snapshot`] (write-set OCC). Construct
+/// with [`Transaction::with_isolation`] at [`IsolationLevel::Serializable`] and
+/// record observed entity versions via [`Transaction::record_read`] to also get
+/// first-committer-wins validation over the **key-addressed read set**, which
+/// prevents write skew expressed over specific entities read by id. The
+/// effective level is inspectable via [`Transaction::isolation_level`].
 pub struct Transaction {
     /// Unique identifier for this transaction.
     pub id: String,
     ops: Vec<StagedOp>,
+    /// Entity versions observed during the transaction (FEAT-008 TXN-05).
+    /// Only populated and validated under [`IsolationLevel::Serializable`].
+    reads: Vec<ReadRef>,
+    /// Effective isolation level for this transaction (FEAT-008 TXN-05).
+    isolation: IsolationLevel,
     created_at: Instant,
     timeout: Duration,
 }
 
 impl Transaction {
-    /// Create a new transaction with an auto-generated ID.
+    /// Create a new transaction with an auto-generated ID at the default
+    /// isolation level ([`IsolationLevel::Snapshot`]).
     pub fn new() -> Self {
         Self {
             id: next_tx_id(),
             ops: Vec::new(),
+            reads: Vec::new(),
+            isolation: IsolationLevel::default(),
             created_at: Instant::now(),
             timeout: DEFAULT_TIMEOUT,
         }
@@ -75,6 +150,60 @@ impl Transaction {
             timeout,
             ..Self::new()
         }
+    }
+
+    /// Create a transaction at the given isolation level (FEAT-008 TXN-05).
+    pub fn with_isolation(isolation: IsolationLevel) -> Self {
+        Self {
+            isolation,
+            ..Self::new()
+        }
+    }
+
+    /// The effective isolation level of this transaction (FEAT-008 TXN-05).
+    ///
+    /// The level is inspectable per transaction so callers can confirm whether
+    /// the stronger Serializable read-set validation is in effect for the
+    /// invariant they care about.
+    pub fn isolation_level(&self) -> IsolationLevel {
+        self.isolation
+    }
+
+    /// Record an entity version that was observed (read) during the transaction.
+    ///
+    /// Pass `observed_version = 0` to record that the entity was observed
+    /// **absent**. Under [`IsolationLevel::Serializable`] every recorded read is
+    /// validated to still hold at commit; under [`IsolationLevel::Snapshot`]
+    /// this is a no-op (the read-set is not consulted), so snapshot transactions
+    /// pay no capture cost.
+    ///
+    /// Reads recorded here are the **key-addressed** read set: serializable
+    /// validation covers exactly these entities. Reads performed via queries,
+    /// index scans, traversals, or aggregations are not captured and are not
+    /// covered (see [`IsolationLevel::Serializable`]).
+    ///
+    /// Returns `Err(InvalidArgument)` if the read-set already has [`MAX_READS`]
+    /// entries.
+    pub fn record_read(
+        &mut self,
+        collection: CollectionId,
+        id: EntityId,
+        observed_version: u64,
+    ) -> Result<(), AxonError> {
+        if self.isolation != IsolationLevel::Serializable {
+            return Ok(());
+        }
+        if self.reads.len() >= MAX_READS {
+            return Err(AxonError::InvalidArgument(format!(
+                "transaction exceeds maximum of {MAX_READS} tracked reads"
+            )));
+        }
+        self.reads.push(ReadRef {
+            collection,
+            id,
+            observed_version,
+        });
+        Ok(())
     }
 
     fn check_op_limit(&self) -> Result<(), AxonError> {
@@ -420,6 +549,28 @@ impl Transaction {
                             link.target_id
                         )));
                     }
+                }
+            }
+        }
+
+        // ── Phase 1b: Serializable read-set validation (FEAT-008 TXN-05) ──────
+        // Under Serializable isolation, every entity observed via `record_read`
+        // must still be at its observed version. A changed (or newly created /
+        // deleted) read entity means a concurrent transaction wrote into this
+        // transaction's read set — a serialization anomaly (write skew) — so we
+        // abort first-committer-wins. Surfaced as `ConflictingVersion` (409,
+        // retryable) like any other OCC conflict. This covers the key-addressed
+        // read set only; predicate/phantom anomalies are out of scope (ADR-004).
+        if matches!(self.isolation, IsolationLevel::Serializable) {
+            for r in &self.reads {
+                let current = storage.get(&r.collection, &r.id)?;
+                let current_version = current.as_ref().map(|e| e.version).unwrap_or(0);
+                if current_version != r.observed_version {
+                    return Err(AxonError::ConflictingVersion {
+                        expected: r.observed_version,
+                        actual: current_version,
+                        current_entity: current.map(Box::new),
+                    });
                 }
             }
         }
@@ -977,6 +1128,124 @@ mod tests {
         assert!(
             matches!(err, AxonError::InvalidArgument(_)),
             "expected InvalidArgument for delete op limit, got: {err}"
+        );
+    }
+
+    #[test]
+    fn isolation_level_defaults_to_snapshot_and_is_inspectable() {
+        let tx = Transaction::new();
+        assert_eq!(tx.isolation_level(), IsolationLevel::Snapshot);
+        let tx = Transaction::with_isolation(IsolationLevel::Serializable);
+        assert_eq!(tx.isolation_level(), IsolationLevel::Serializable);
+        assert_eq!(IsolationLevel::Serializable.as_str(), "serializable");
+    }
+
+    // Classic write-skew: invariant "X.flag + Y.flag >= 1". Two transactions
+    // each read the *other* entity (disjoint write sets, crossing read sets).
+    // Under Snapshot isolation both commit and the invariant is violated;
+    // under Serializable the second committer is aborted.
+
+    #[test]
+    fn write_skew_is_allowed_under_snapshot_isolation() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        storage.put(account("X", 1)).unwrap(); // flag = balance, both start at 1
+        storage.put(account("Y", 1)).unwrap();
+
+        // T1 reads Y (sees 1), clears X. Snapshot: record_read is a no-op.
+        let mut t1 = Transaction::new();
+        t1.record_read(accounts(), EntityId::new("Y"), 1).unwrap();
+        t1.update(account("X", 0), 1, None).unwrap();
+        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
+            .expect("T1 commits");
+
+        // T2 read X *before* T1 committed (observed version 1), clears Y.
+        let mut t2 = Transaction::new();
+        t2.record_read(accounts(), EntityId::new("X"), 1).unwrap();
+        t2.update(account("Y", 0), 1, None).unwrap();
+        t2.commit(&mut storage, &mut audit, Some("t2".into()), None)
+            .expect("under snapshot isolation T2 also commits (write skew allowed)");
+
+        let x = storage
+            .get(&accounts(), &EntityId::new("X"))
+            .unwrap()
+            .unwrap();
+        let y = storage
+            .get(&accounts(), &EntityId::new("Y"))
+            .unwrap()
+            .unwrap();
+        // Invariant X+Y >= 1 is VIOLATED — both are 0. This documents the SI gap.
+        assert_eq!(x.data["balance"], 0);
+        assert_eq!(y.data["balance"], 0);
+    }
+
+    #[test]
+    fn write_skew_is_prevented_under_serializable_isolation() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        storage.put(account("X", 1)).unwrap();
+        storage.put(account("Y", 1)).unwrap();
+
+        // T1: read Y@1, clear X. Commits, bumping X to version 2.
+        let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
+        t1.record_read(accounts(), EntityId::new("Y"), 1).unwrap();
+        t1.update(account("X", 0), 1, None).unwrap();
+        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
+            .expect("T1 commits on fresh state");
+
+        // T2 observed X@1 before T1 committed; clears Y. Its read of X is now
+        // stale (X is at version 2), so serializable validation must abort it.
+        let mut t2 = Transaction::with_isolation(IsolationLevel::Serializable);
+        t2.record_read(accounts(), EntityId::new("X"), 1).unwrap();
+        t2.update(account("Y", 0), 1, None).unwrap();
+        let err = t2
+            .commit(&mut storage, &mut audit, Some("t2".into()), None)
+            .expect_err("serializable must reject T2: its read set changed");
+        assert!(
+            matches!(
+                err,
+                AxonError::ConflictingVersion {
+                    expected: 1,
+                    actual: 2,
+                    ..
+                }
+            ),
+            "expected read-set serialization conflict, got: {err}"
+        );
+
+        // Invariant holds: Y was never cleared (T2 aborted), so X+Y == 1.
+        let x = storage
+            .get(&accounts(), &EntityId::new("X"))
+            .unwrap()
+            .unwrap();
+        let y = storage
+            .get(&accounts(), &EntityId::new("Y"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(x.data["balance"], 0);
+        assert_eq!(y.data["balance"], 1, "Y must be untouched after T2 aborts");
+    }
+
+    #[test]
+    fn serializable_detects_concurrent_create_of_observed_absent_entity() {
+        // A transaction whose invariant depends on an entity being ABSENT must
+        // abort if that entity is concurrently created (key-addressed phantom).
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        storage.put(account("anchor", 1)).unwrap();
+
+        // Concurrently, "Z" gets created (version 1).
+        storage.put(account("Z", 5)).unwrap();
+
+        let mut tx = Transaction::with_isolation(IsolationLevel::Serializable);
+        tx.record_read(accounts(), EntityId::new("Z"), 0).unwrap(); // observed absent
+        tx.update(account("anchor", 2), 1, None).unwrap();
+        let err = tx
+            .commit(&mut storage, &mut audit, None, None)
+            .expect_err("must abort: observed-absent Z now exists");
+        assert!(
+            matches!(err, AxonError::ConflictingVersion { expected: 0, .. }),
+            "expected conflict on observed-absent read, got: {err}"
         );
     }
 }
