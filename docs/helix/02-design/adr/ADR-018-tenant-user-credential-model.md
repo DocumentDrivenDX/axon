@@ -125,6 +125,12 @@ All data-plane routes nest under `/tenants/{tenant}/databases/{database}/...`.
 There is no `X-Axon-Database` header, no `X-Axon-Tenant` header, no
 un-prefixed fallback route.
 
+Tenant/database identifiers are bounded at **63 bytes** (the database-slug
+cap). A data-plane-shaped path whose `{tenant}`/`{database}` segment is an
+invalid identifier (illegal characters, or a slug exceeding 63 bytes) returns
+**404** and MUST NOT fall back to the default/master database — preserving
+cross-tenant isolation (see CONTRACT-001).
+
 ```
 # Data plane — REST
 GET    /tenants/{tenant}/databases                             list databases in tenant

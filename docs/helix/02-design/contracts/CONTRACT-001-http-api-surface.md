@@ -11,6 +11,7 @@ ddx:
     - FEAT-014
     - FEAT-023
     - FEAT-026
+    - FEAT-029
   review:
     self_hash: 56f09de1d818257f569cfef9c6845797d6a5c9c1a78a09fbec23789bbcca1bd2
     deps:
@@ -23,6 +24,7 @@ ddx:
       FEAT-014: 89f20cc345d46dc650c9c0f1042da643fbc4e57b3e9278c287b2fb625cc6fd4f
       FEAT-023: 24416c13b9a48e864ae43e3967c63d2711763c745905850dbb4f03768ffc7949
       FEAT-026: 8751e34ac2140fb80077b881290769d82b1d39e7cb1fbaa60404bc82eae1b07b
+      # TODO: refresh review stamp — FEAT-029 dep hash needs recomputation via the review tooling
     reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
@@ -77,6 +79,14 @@ MUST nest under `/control`:
   simultaneously the entity's identifier, routing key, and HTTP cache key.
 - A URL addresses exactly one tenant and one database. Cross-tenant
   operations go through `/control/...`.
+- A data-plane-shaped path whose `{tenant}` or `{database}` segment is an
+  **invalid identifier** — it contains illegal identifier characters, or its
+  resolved database slug exceeds the **63-byte** limit — MUST return HTTP
+  404. The server MUST NOT fall back to the default/master database for such
+  a path. This preserves cross-tenant isolation: a malformed or oversized
+  tenant/database segment must never silently resolve to another tenant's
+  data (in particular the control-plane master database). The 63-byte bound
+  matches the identifier limit recorded in ADR-018.
 - gRPC methods, when exposed, use the same prefix:
   `/tenants/{t}/databases/{d}/axon.EntityService/CreateEntity`.
 
@@ -196,7 +206,7 @@ Clients MUST switch on `code`, never on the human-readable message.
 | 400 | `invalid_argument`, missing-template render error | Malformed request, field-level details in `detail` |
 | 401 | `unauthenticated`, `credential_malformed`, `credential_invalid`, `credential_expired`, `credential_not_yet_valid`, `credential_revoked`, `credential_foreign_issuer`, `user_suspended` | Credential broken — obtain a new one (ADR-018 table is normative) |
 | 403 | `credential_wrong_tenant`, `not_a_tenant_member`, `database_not_granted`, `op_not_granted`, `forbidden`, `grants_exceed_issuer_role` | Credential/identity valid but not permitted here |
-| 404 | `not_found` | Missing resource; also returned for policy-hidden rows (no existence leak) and all un-prefixed routes |
+| 404 | `not_found` | Missing resource; also returned for policy-hidden rows (no existence leak), all un-prefixed routes, and data-plane-shaped paths with an invalid `{tenant}`/`{database}` segment (illegal characters or >63-byte slug — no default-DB fallback) |
 | 409 | `version_conflict`, `schema_mismatch`, in-flight idempotency conflict | OCC conflict / stale schema hash / concurrent idempotent request |
 | 422 | `schema_validation` | Entity data fails JSON Schema validation |
 | 429 | `rate_limit_exceeded` | Write rate limit; `Retry-After` header present |
