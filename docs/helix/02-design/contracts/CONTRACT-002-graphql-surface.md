@@ -8,6 +8,7 @@ ddx:
     - FEAT-009
     - FEAT-015
     - FEAT-018
+    - FEAT-029
     - FEAT-030
   review:
     self_hash: 126f1e9b7594d1e7dd228c09479d775af112b74b67290aa41f3ad8091b7b8b90
@@ -18,6 +19,8 @@ ddx:
       FEAT-009: 08784dee672189395e039843c292e6513155f125f9c9ec50bb29f2cc593c7bca
       FEAT-015: c75ebd606ba19b7ac509eefcd0bb47c229433b5a14b1110fcae70d6c3898bd6f
       FEAT-018: 32736251fbe98379326a28a9517474ad1b69ba9cbfb29b710f2cfaab1d3b8d08
+      # TODO: refresh review stamp — FEAT-029 dep hash needs ddx recompute
+      FEAT-029: ""
       FEAT-030: 81a89ddb42efe517ddde6ea7481c104b3600481a32072e31bd9d94cd7294922d
     reviewed_at: "2026-06-15T00:35:16Z"
 ---
@@ -132,8 +135,13 @@ collections: [CollectionInfo!]!
 auditLog(collection: String, entityId: ID, actor: String, operation: String,
          sinceNs: String, untilNs: String, after: String, limit: Int): AuditConnection!
 axonQuery(cypher: String!, parameters: JSON): AxonQueryResult!
-currentUser: CurrentUser!   # { actor, role, userId, tenantId }
 ```
+
+- **`currentUser` is NOT a data-plane field.** Identity for the data
+  plane is carried in the request envelope (CONTRACT-001) and surfaced in
+  audit/policy decisions, not as a root query. The `currentUser`/
+  `CurrentUser` query is exposed **only** on the control-plane GraphQL
+  surface (see "Control-plane GraphQL" below).
 
 - Typed per-collection queries: `<typed>(id: ID!)` and
   `<typedList>(filter, sort, limit, after)`.
