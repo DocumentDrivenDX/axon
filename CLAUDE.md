@@ -22,6 +22,7 @@ crates/
   axon-server/         # HTTP/gRPC server (axum + tonic)
   axon-graphql/        # GraphQL schema auto-generated from collection schemas
   axon-mcp/            # MCP (Model Context Protocol) server
+  axon-registry/       # Confluent-compatible schema registry HTTP facade (FEAT-021)
   axon-cypher-ast/     # openCypher subset AST, parser, validator
   axon-cypher/         # openCypher subset planner and executor
   axon-render/         # Markdown template rendering and validation

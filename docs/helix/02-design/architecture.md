@@ -165,7 +165,7 @@ graph TB
 
 ## Level 3: Component Diagram — Crate Decomposition
 
-The workspace is 15 Rust crates. The decomposition mirrors the request path:
+The workspace is 16 Rust crates. The decomposition mirrors the request path:
 surfaces depend on `axon-api`, which depends on schema/storage/audit, which
 depend only on `axon-core`.
 
@@ -180,6 +180,7 @@ depend only on `axon-core`.
 | `axon-cypher` | Cypher parser, rules-based planner, streaming executor | ADR-021, CONTRACT-007 |
 | `axon-graphql` | GraphQL schema generation from ESF, resolvers, subscriptions | ADR-012, CONTRACT-002 |
 | `axon-mcp` | MCP server; tools/resources generated from ESF | ADR-013, CONTRACT-003 |
+| `axon-registry` | Confluent-compatible schema-registry REST facade | FEAT-021, CONTRACT-006; depends on core/schema/storage |
 | `axon-server` | HTTP/gRPC entrypoint, middleware (auth, guardrails), routing | axum + tonic |
 | `axon-render` | Mustache markdown template validation and rendering | FEAT-026; **deliberately no `axon-schema` dependency** — receives schemas as `serde_json::Value` to avoid a dependency cycle |
 | `axon-config` | XDG path resolution, TOML config loading | CONTRACT-008; no internal deps |
@@ -201,7 +202,8 @@ graph BT
     cypher[axon-cypher] --> storage & cypherast
     graphql[axon-graphql] --> api & cypher
     mcp[axon-mcp] --> api & graphql
-    server[axon-server] --> graphql & mcp
+    registry[axon-registry] --> core & schema & storage
+    server[axon-server] --> graphql & mcp & registry
     sim[axon-sim] --> api
     config[axon-config]
     cli[axon-cli] --> api & config & server
