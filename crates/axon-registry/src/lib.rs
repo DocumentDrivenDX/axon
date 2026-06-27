@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-//! Confluent-compatible schema registry HTTP facade for Axon (CONTRACT-006).
+//! Confluent-compatible schema registry HTTP facade for Axon (FEAT-021, CDC /
+//! schema-registry). The wire format follows CONTRACT-006.
 //!
 //! Endpoints served (default port 8081):
 //! - `GET  /subjects`                                          — list subjects

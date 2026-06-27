@@ -1,6 +1,6 @@
 [package]
 name = "axon-registry"
-description = "Confluent-compatible schema registry HTTP facade for Axon (CONTRACT-006)"
+description = "Confluent-compatible schema registry HTTP facade for Axon (FEAT-021; wire format per CONTRACT-006)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -40,7 +40,7 @@ implements against this document.
 - Out of scope: audit entry record itself (CONTRACT-005), GraphQL
   subscription wire shape (FEAT-015), sink implementations and producer
   internals, Kafka broker configuration.
-- Owning system: `axon-cdc` / `axon-registry`.
+- Owning system: `axon-audit` (cdc module, the CDC publisher) / `axon-registry` (the registry facade).
 
 ## Normative Surface
 
