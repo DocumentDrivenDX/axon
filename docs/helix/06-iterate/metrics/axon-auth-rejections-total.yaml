@@ -1,0 +1,45 @@
+---
+ddx:
+  id: metric-definition.axon-auth-rejections-total
+---
+
+# Metric Definition: axon-auth-rejections-total
+
+> Store at `docs/helix/06-iterate/metrics/axon-auth-rejections-total.yaml`
+
+```yaml
+name: axon-auth-rejections-total
+description: Cumulative count of authentication and authorization rejections emitted by the data-plane auth pipeline, partitioned by rejection reason via the error_code label.
+unit: count
+direction: lower
+command: "ASSUMED — not yet runnable: no metrics recorder/exporter is installed, so the counter has no scrape surface. Once a Prometheus exporter is wired to the reserved /metrics path, the value is the sum of the axon_auth_rejections_total series."
+output_pattern: "axon_auth_rejections_total(?:\\{[^}]*\\})?\\s+([0-9]+\\.?[0-9]*)"
+baseline: "ASSUMED — unmeasured. No recorder is installed, so no baseline has been recorded (FEAT-016 phantom-claim guard)."
+target: "ASSUMED — to be set once an exporter exists; the operationally meaningful signal is rate-of-change and the error_code breakdown, not absolute total."
+tolerance: "ASSUMED — to be defined against a recorded baseline once the metric is observable."
+last_verified: "UNVERIFIED — command has never been run; no recorder exists to emit a value."
+interpretation: A sustained rise in the credential_invalid, credential_expired, or unauthenticated breakdown indicates client misconfiguration or token-issuance drift. A rise in not_a_tenant_member, database_not_granted, op_not_granted, grants_exceed_role, or credential_wrong_tenant indicates authorization-boundary pressure or a probing/abuse pattern and is the higher-severity signal.
+labels:
+  error_code: "one of: unauthenticated | credential_malformed | credential_invalid | credential_expired | credential_not_yet_valid | credential_revoked | credential_foreign_issuer | credential_wrong_tenant | user_suspended | not_a_tenant_member | database_not_granted | op_not_granted | grants_exceed_issuer_role | grants_exceed_role | grants_malformed"
+  product: axon
+  area: auth
+  signal: security
+```
+
+## Source
+
+- Emitted at `crates/axon-server/src/auth_pipeline.rs:412` via `metrics::counter!("axon_auth_rejections_total", "error_code" => err.error_code()).increment(1)`.
+- Label values are the `AuthError::error_code()` mapping at `crates/axon-core/src/auth.rs:1129-1147` (15 variants; `AUTH_ERROR_VARIANT_COUNT = 15` at `crates/axon-core/src/auth.rs:1186`).
+
+## Assumptions / Gaps
+
+The `metrics` facade (crate `metrics 0.24`, `crates/axon-server/Cargo.toml:47`) records this
+counter, but **no recorder or exporter is installed** anywhere in the workspace —
+no `metrics-exporter-prometheus` dependency, no `PrometheusBuilder`, no
+`install_recorder`, and no handler bound to the reserved `/metrics` path
+(`crates/axon-server/src/path_router.rs:26`). The counter is therefore emitted into a
+no-op recorder at runtime. Until an exporter is wired up, `command`, `baseline`,
+`target`, `tolerance`, and `last_verified` cannot be honestly populated and are
+marked ASSUMED/UNVERIFIED per the FEAT-016 phantom-claim guard. This definition
+exists to document the one metric the code genuinely emits and to make the
+missing-exporter gap explicit.
