@@ -36,6 +36,7 @@ contracts, and technical spikes.
 - [ADR-022: Create Semantics — Storage Upsert, Strict Create at Typed Surfaces](adr/ADR-022-create-semantics.md)
 - [ADR-023: Preview-Record Audit Threading](adr/ADR-023-preview-audit-threading.md)
 - [ADR-024: Rate Limiting Semantics — Per-Actor Sliding Window](adr/ADR-024-rate-limiting-semantics.md)
+- [ADR-025: Client-Projection Cursor API — Opaque, Restart/Schema-Stable Resume Tokens](adr/ADR-025-client-projection-cursor-api.md) (refines ADR-014's projection model for the client local replica, FEAT-032)
 
 ### Contracts
 

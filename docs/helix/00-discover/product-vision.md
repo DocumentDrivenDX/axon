@@ -2,6 +2,7 @@
 ddx:
   id: helix.product-vision
   review:
+    # TODO: refresh review stamp (local-first read-replica re-scope, 2026-06-27)
     self_hash: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
     deps: {}
     reviewed_at: "2026-06-15T00:35:16Z"
@@ -75,7 +76,7 @@ tool originated it, and what state would be needed to repair or roll it back.
 | Reusable access and visibility control | RBAC, ABAC, relationship-aware, field-level, and transition policies are declared once and enforced below GraphQL, MCP, CLI, SDK, and compatibility surfaces |
 | Audit, change capture, and repair history | Every mutation carries enough actor, tool, policy, approval, version, and before/after context to investigate failures and repair affected state |
 | Agent-native and app-friendly APIs | MCP gives agents a natural tool surface while GraphQL gives applications, operators, and SDKs the same semantics |
-| Governed local-first and embedded operation | Teams run Axon embedded in an app or offline on a device as a first-class deployment, keeping the same schema, policy, approval, and audit guarantees when state syncs back |
+| Governed local-first read replica and embedded operation | Teams run Axon embedded in an app as a first-class deployment, and clients keep a governed local read replica of the change stream for responsive search, sort, and filter — under the same schema, policy, approval, and audit guarantees. Offline writes with sync-back reconciliation are deferred (agentic-world reprioritization, 2026-06-27): in an agentic world clients talk to the server, so the committed promise is a local read projection, not offline-write convergence. |
 
 ## Success Definition
 

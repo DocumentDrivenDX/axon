@@ -12,6 +12,8 @@ ddx:
     reviewed_at: "2026-06-15T00:35:16Z"
 ---
 
+<!-- TODO: refresh review stamp (local read-replica FR-32/FEAT-032 note added, 2026-06-27) -->
+
 # Threat Model
 
 **Project**: Axon
@@ -59,8 +61,14 @@ policy layer (FEAT-029/ADR-019/CONTRACT-004), subject/credential model
 (MCP/GraphQL/CLI per CONTRACT-002/003/008).
 **Out of Scope**: backing-store internals (PostgreSQL/SQLite hardening),
 the LLM/agent runtime itself, downstream CDC consumers' security,
-local-first sync (FR-32, not yet designed), BYOC control-plane fleet
-operations beyond the data-sovereignty boundary (ADR-017/FR-27).
+offline-write reconciliation (FR-33, deferred/parked, not yet designed),
+BYOC control-plane fleet operations beyond the data-sovereignty boundary
+(ADR-017/FR-27).
+**Needs a threat-modeling pass when built**: the governed local read replica
+(FR-32 / FEAT-032) ships tenant data to client devices, expanding the data
+boundary. It requires policy redaction at projection time (so the replica
+never holds data the subject may not see) and transport protection for the
+change stream; threat-model it before FEAT-032's design phase closes.
 **Trust Boundaries**: network → auth middleware (ADR-018 verification
 order); authenticated subject → policy engine (CONTRACT-004 evaluation
 order); agent → human approver (FEAT-030 intent flow); tenant → tenant
@@ -283,8 +291,12 @@ rises to High — part of the SR-16 PO decision.
 - The shared-handler chokepoint (FR-22/FR-28) exists and is the single
   enforcement point; if any surface gains a side path, this entire model is
   invalidated (Principle "Guardrails Are the Product").
-- Local-first sync (FR-32) and BYOC fleet operations are unmodeled here and
-  must be threat-modeled before their design phases close.
+- The governed local read replica (FR-32 / FEAT-032), offline-write
+  reconciliation (FR-33, deferred), and BYOC fleet operations are unmodeled
+  here and must be threat-modeled before their design phases close. The local
+  read replica is the nearest of these: it ships tenant data to client devices,
+  so policy redaction at projection time (data-exfiltration control) and
+  transport protection are the first concerns for that pass.
 - Companion artifact: [security-requirements.md](security-requirements.md)
   defines the SR-n controls referenced by every `needs-requirement`
   disposition (catalog relationship: security-requirements informs

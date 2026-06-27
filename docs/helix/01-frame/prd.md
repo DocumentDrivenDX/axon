@@ -4,6 +4,7 @@ ddx:
   depends_on:
     - helix.product-vision
   review:
+    # TODO: refresh review stamp (FR-32 re-scope + FR-33 added, 2026-06-27)
     self_hash: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
     deps:
       helix.product-vision: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
@@ -168,6 +169,11 @@ modes:
   stay in schema-validated GraphQL/MCP/handler mutation flows.
 - **Multi-region distributed database in V1**: V1 is a single deployment
   fronting one backing store. Distributed placement and migration are deferred.
+- **Offline-write reconciliation**: clients that accept writes with no
+  connectivity and converge them deterministically on sync are out of scope for
+  this release (FR-33, deferred 2026-06-27). The committed local-first
+  capability is a read-only replica (FR-32); offline-write convergence is
+  parked pending objective demand.
 
 Deferred items are tracked in `docs/helix/parking-lot.md`.
 
@@ -361,10 +367,22 @@ feature specs without embedding implementation design.
 - **FR-31 (P1)**: Axon SHOULD expose ordered audit and change streams with
   stable cursors, replay, and resume semantics scoped by database, collection,
   entity/link, and transaction.
-- **FR-32 (P1)**: Axon SHOULD support local-first operation: embedded mode
-  accepts reads and writes with no network connectivity, and a sync protocol
-  reconciles concurrent edits deterministically while preserving schema
-  validation, policy enforcement, and repair-grade audit lineage across sync.
+- **FR-32 (P2)**: Axon SHOULD support a governed local read replica: a client
+  maintains a local store fed by the existing resumable, scoped change stream
+  (FR-31) and can search, sort, filter, and query it locally for responsive
+  UIs, with policy redaction applied at projection time so the replica never
+  holds data the subject may not see. Re-scoped 2026-06-27 from offline
+  read+write to a read-only projection (agentic-world reprioritization; see
+  Open Questions and `docs/helix/02-design/adr/ADR-025-client-projection-cursor-api.md`).
+- **FR-33 (Deferred / parked)**: Axon SHOULD support offline local writes
+  with deterministic reconciliation: embedded/client mode accepts writes with
+  no network connectivity and a sync protocol reconciles concurrent edits
+  deterministically while preserving schema validation, policy enforcement, and
+  repair-grade audit lineage across sync. **Deferred** (agentic-world
+  reprioritization, 2026-06-27): in an agentic world clients talk to the
+  server, so offline-write convergence is parked rather than committed for this
+  release. Tracked in `docs/helix/parking-lot.md` ("Offline Local Writes and
+  Deterministic Reconciliation").
 
 ### Subsystem: Identity, Tenancy, and Storage Portability
 
@@ -463,14 +481,22 @@ feature specs without embedding implementation design.
 | Audit records are complete but too expensive | Medium | Medium | Benchmark audit overhead early, keep writes append-only, and design tiered retention/compaction separately from the V1 mutation contract |
 | Entity-graph-relational modeling feels unfamiliar | Medium | Medium | Center docs and examples on invoice/procurement and bead workflows; keep schema declaration, generated APIs, and query examples concrete |
 | Query and redaction behavior leaks hidden data through counts or traversal | Medium | High | Treat relationship traversal, pagination, aggregation, redaction, and count safety as P0 contract tests |
-| Scope creep from workflow engine, app substrate, sync, and BYOC needs | High | High | Sequence local-first sync and BYOC control-plane work (P1) and application substrate (P2) after the V1 governed-agent-write proof slice is green |
+| Scope creep from workflow engine, app substrate, sync, and BYOC needs | High | High | Sequence BYOC control-plane work (P1), local-replica projection (FR-32, P2), and application substrate (P2) after the V1 governed-agent-write proof slice is green; offline-write sync (FR-33) is parked |
 | Backend abstraction leaks PostgreSQL-specific behavior | Medium | High | Run shared storage adapter conformance tests across SQLite/libSQL and PostgreSQL before claiming parity |
 
 ## Open Questions
 
 - [x] **Resolved 2026-06-10 (product owner)**: Local-first sync is P1, not P2.
       Axon provides first-class infrastructure for local-first apps: embedded
-      mode works offline and sync honors policy and audit invariants (FR-32).
+      mode works offline and sync honors policy and audit invariants.
+      **Re-scoped 2026-06-27 (product owner)**: In an agentic world clients talk
+      to the server, so local-first's value (responsive UIs via local
+      search/sort/filter/query) is delivered as a CQRS read projection of the
+      change stream. The committed capability is now a governed local read
+      replica (FR-32, P2, FEAT-032); offline local writes + deterministic
+      reconciliation are deferred to the parking lot (FR-33). This is the
+      disposition of the AR-2026-06-27-full-repo.md §2 H1 hard stop (FR-32 had
+      no feature/implementation).
 - [x] **Resolved 2026-06-10 (product owner)**: The BYOC fleet control plane is
       committed product scope at P1 (FR-27): customer-hosted deployments must
       be manageable without the control plane reading tenant data.

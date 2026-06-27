@@ -15,6 +15,7 @@ ddx:
     - ADR-020
     - ADR-021
   review:
+    # TODO: refresh review stamp (read-side subsection + local-replica consumer added, 2026-06-27)
     self_hash: 8a39d93af466d83f02851986a0a935ddb0b8b12d1552ee3bc7e7af3c91fb145a
     deps:
       ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
@@ -122,6 +123,32 @@ Principle 1, "Guardrails Are the Product"
 Reads traverse stages 1–3 and 5–6 (policy applies row filtering at match,
 field redaction at projection — ADR-019, ADR-021) and are not audited as
 mutations; query surfaces are governed by CONTRACT-002/003/007.
+
+### The Two Read Sides
+
+Axon has two complementary read sides, both governed by the same policy and
+redaction stages above:
+
+- **Live-state read models** — queries against current committed state through
+  the handler path: the unified graph query (FEAT-009), secondary indexes
+  (FEAT-013), the GraphQL query layer (FEAT-015), and aggregation (FEAT-018).
+  These answer "what is true now" and apply row filtering and field redaction
+  at query time.
+- **Event-derived projection** — the audit log projected to a change stream:
+  CDC (FEAT-021/ADR-014) and GraphQL subscriptions (FEAT-015), sharing one
+  durable cursor vocabulary (CONTRACT-006 §Cursor semantics). These answer
+  "what changed, in order, resumably."
+
+The **client local read replica** (FEAT-032, FR-32) is a *consumer* of the
+event-derived projection: it bootstraps from a snapshot and tails the change
+stream using the same opaque, restart/schema-stable cursor vocabulary
+(ADR-025), maintaining a client-resident read model for responsive
+search/sort/filter without server round-trips. Redaction is applied at
+projection time so the replica never holds data the subject may not see
+(ADR-019). The local replica is **not yet implemented** — the durable cursor
+backend and opaque cursor tokens are FEAT-032 gaps (today only a non-durable
+`MemoryCursorStore` and a raw-`audit_id` resume point exist). Offline writes
+to the replica are out of scope (FR-33, deferred).
 
 ## Level 2: Container Diagram
 

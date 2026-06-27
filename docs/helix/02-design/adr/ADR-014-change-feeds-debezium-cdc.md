@@ -9,6 +9,7 @@ ddx:
     - FEAT-015
     - FEAT-021
   review:
+    # TODO: refresh review stamp (2026-06-27 amendment: client local replica as projection consumer)
     self_hash: d0be4bb4fa8f98ca5e4518b4b1c0bc4a46882a42098d38931c6d5b649cbb9655
     deps:
       ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
@@ -24,6 +25,20 @@ ddx:
 | Date | Status | Deciders | Related | Confidence |
 |------|--------|----------|---------|------------|
 | 2026-04-05 | Accepted | Erik LaBianca | ADR-003, ADR-010, FEAT-003, FEAT-015 | High |
+
+## Amendment (2026-06-27) — Client local replica is a first-class projection consumer
+
+Status remains **Accepted**. This ADR established that the audit log is the
+single source of truth and CDC is a projection of it. The client-side
+**local read replica** (FR-32, FEAT-032) is now recognized as a first-class
+consumer of the same projection and **the same cursor vocabulary** —
+durable cursors and snapshot+tail (CONTRACT-006 §Cursor semantics, §Snapshot,
+§Cursor vocabulary parity) apply to the SDK replica exactly as they do to
+Kafka/SSE sinks. No envelope or topic-naming decision in this ADR changes. The
+genuinely new decision — the SDK client-projection cursor API (opaque,
+restart/schema-stable resume tokens) — is recorded separately in
+[ADR-025](ADR-025-client-projection-cursor-api.md), which references (and does
+not restate) this ADR.
 
 ## Context
 

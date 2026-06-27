@@ -4,6 +4,7 @@ ddx:
   depends_on:
     - helix.prd
   review:
+    # TODO: refresh review stamp (FEAT-032 added, FR-32/FR-33 trace, 2026-06-27)
     self_hash: e274f95d36a550a5e82c16900412a48e567aed8937e50c3dbe29c59ebfdb531f
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
@@ -24,15 +25,17 @@ dependencies, and trace links. Full behavior lives in the feature specs under
 ## Release Alignment
 
 This registry is aligned to PRD release target **0.7.1** as of 2026-06-14. The
-feature set remains FEAT-001 through FEAT-031; no feature IDs were added,
-removed, or renumbered for this release-alignment pass. Repository release
-evidence still shows local and `origin` tags ending at `v0.2.8`, so this
-registry records the HELIX planning target rather than a published binary tag.
+feature set is FEAT-001 through FEAT-032; FEAT-032 (Local Replica Projection)
+was added on 2026-06-27 to own the re-scoped FR-32 (governed local read
+replica), per the AR-2026-06-27-full-repo.md §2 H1 disposition. Repository
+release evidence still shows local and `origin` tags ending at `v0.2.8`, so
+this registry records the HELIX planning target rather than a published binary
+tag.
 
 ## Active Features
 
-31 features total: 13 P0, 14 P1, 3 P2, 1 superseded (no priority).
-Status mix: 23 draft, 1 in_review, 6 approved, 1 superseded.
+32 features total: 13 P0, 14 P1, 4 P2, 1 superseded (no priority).
+Status mix: 24 draft, 1 in_review, 6 approved, 1 superseded.
 
 | ID | Name | Description | Priority | Status | Owner | Source | Updated |
 |----|------|-------------|----------|--------|-------|--------|---------|
@@ -67,6 +70,7 @@ Status mix: 23 draft, 1 in_review, 6 approved, 1 superseded.
 | FEAT-029 | Data-Layer Access Control Policies | Schema-declared entity/field read-write policies enforced at the data layer across all surfaces | P0 | approved | erik | [spec](features/FEAT-029-access-control.md) | 2026-06-10 |
 | FEAT-030 | Mutation Intents and Approval | Previewable, explainable, approval-routable mutations as the governed write path | P0 | in_review | erik | [spec](features/FEAT-030-mutation-intents-approval.md) | 2026-06-10 |
 | FEAT-031 | Policy and Intents Admin UI | Web UI for policy authoring/testing and mutation-intent review and approval | P0 | approved | erik | [spec](features/FEAT-031-policy-intents-admin-ui.md) | 2026-06-10 |
+| FEAT-032 | Local Replica Projection | Governed client-side local read replica of the change stream for responsive search/sort/filter/query, with policy redaction at projection time | P2 | draft | erik | [spec](features/FEAT-032-local-replica-projection.md) | 2026-06-27 |
 
 ## Status Definitions
 
@@ -117,6 +121,7 @@ and `helix.prd` dependencies are recorded in the specs themselves).
 | FEAT-029 | FEAT-002, FEAT-012, FEAT-013, FEAT-014, FEAT-015, FEAT-016, FEAT-019, FEAT-030 | Required | Policies declared in schemas, enforced on all surfaces |
 | FEAT-030 | FEAT-003, FEAT-005, FEAT-012, FEAT-015, FEAT-016, FEAT-017, FEAT-029 | Required | Intents audited, policy-checked, surfaced everywhere |
 | FEAT-031 | FEAT-011, FEAT-015, FEAT-016, FEAT-029, FEAT-030 | Required | UI over the policy and intent capabilities |
+| FEAT-032 | FEAT-021, FEAT-029 | Required | Local read replica consumes the FR-31 change stream (FEAT-021); policy redaction (FEAT-029) applied at projection time |
 
 ## Trace Links
 
@@ -158,6 +163,8 @@ header field. Stories are ledgered in
 | FEAT-029 | [spec](features/FEAT-029-access-control.md) | FR-10, FR-11, FR-12, FR-13, FR-14 |
 | FEAT-030 | [spec](features/FEAT-030-mutation-intents-approval.md) | FR-7, FR-8; FR-28 (governed path by default) |
 | FEAT-031 | [spec](features/FEAT-031-policy-intents-admin-ui.md) | FR-24 (policy/approval UI flows); FR-30 (operator UI portion) |
+| FEAT-032 | [spec](features/FEAT-032-local-replica-projection.md) | FR-32 (governed local read replica); builds on FR-23 (embedded mode), FR-26/FR-31 (change streams) |
+| (none) | Deferred — parked in [parking lot](../parking-lot.md) ("Offline Local Writes and Deterministic Reconciliation") | FR-33 (offline writes + deterministic reconciliation) — no feature allocated |
 
 ## Feature Categories
 
@@ -176,6 +183,7 @@ header field. Stories are ledgered in
 - FEAT-021: Change Feeds (CDC)
 - FEAT-023: Rollback and Recovery
 - FEAT-027: Git Mirror (parked)
+- FEAT-032: Local Replica Projection
 
 ### Query and API Surfaces
 - FEAT-005: API Surface
@@ -207,7 +215,7 @@ header field. Stories are ledgered in
 
 ## ID Rules
 
-1. Sequential numbering: FEAT-XXX (zero-padded 3 digits). Next free ID: **FEAT-032**.
+1. Sequential numbering: FEAT-XXX (zero-padded 3 digits). Next free ID: **FEAT-033**.
 2. Never reuse IDs, even for cancelled or superseded features.
 3. Do not encode category or priority into the ID.
 4. Keep full behavior in feature specifications, not in this registry.

@@ -3,6 +3,7 @@ ddx:
   id: helix.parking-lot
   depends_on: [helix.prd]
   review:
+    # TODO: refresh review stamp (offline-write reconciliation deferred, 2026-06-27)
     self_hash: 055b7a6710086e4b97c452947b79dab22cbc0c81834bfa40d1cc40f24a9870ee
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
@@ -15,9 +16,12 @@ ddx:
 
 Tracks work the Axon PRD deliberately defers — capabilities named in the
 PRD's Non-Goals or remaining P2 list — so it stays findable without
-distorting V1 scope, which is proving governed agent writes. Local-first sync
-and the BYOC fleet control plane were promoted to PRD P1 on 2026-06-10 and
-are not tracked here.
+distorting V1 scope, which is proving governed agent writes. The BYOC fleet
+control plane was promoted to PRD P1 on 2026-06-10 and is not tracked here.
+Local-first was re-scoped on 2026-06-27: the governed local **read replica**
+is committed at P1 (FR-32, FEAT-032), while the offline-write +
+reconciliation half is **deferred here** (FR-33) — see "Offline Local Writes
+and Deterministic Reconciliation" below.
 
 ## Policy
 - Rejected items do not belong here; close or cancel them instead.
@@ -99,6 +103,19 @@ are not tracked here.
 - **Target Activity/Milestone**: Post-V1 frame
 - **Owner**: Erik LaBianca (product owner)
 - **Last Reviewed**: 2026-06-10
+
+### Offline Local Writes and Deterministic Reconciliation
+- **Type**: Deferred
+- **Artifact Type**: PRD Requirement (FR-33)
+- **Source**: PRD FR-33 (deferred/parked); PRD Non-Goals ("Offline-write reconciliation"); re-scope of the former offline read+write FR-32; disposition of `docs/helix/06-iterate/alignment-reviews/AR-2026-06-27-full-repo.md` §2 H1
+- **Rationale**: Agentic-world reprioritization (2026-06-27): in an agentic world clients talk to the server, so local-first's value (responsive UIs via local search/sort/filter/query) is delivered as a read-only CQRS projection (FR-32, FEAT-032). Offline-write convergence adds a deterministic conflict-resolution protocol — the hardest part of local-first — before the read replica it would build on is proven, and before any concrete demand exists
+- **Impact if Omitted**: Clients cannot accept writes while disconnected; all writes require server connectivity. The local read replica (FR-32) still serves disconnected reads, search, sort, and filter
+- **Dependencies**: Local read replica (FR-32, FEAT-032) proven; resumable scoped change stream (FR-31, FEAT-021); intent/policy/audit machinery (FEAT-029, FEAT-030, FEAT-003) extended to sync-time writes
+- **Revisit Trigger**: A serious adopter or customer presents a concrete, blocking need to accept and durably commit writes on a client with no network connectivity (e.g., a field/edge workflow that cannot reach the server at write time)
+- **Target Activity/Milestone**: Post-V1 frame
+- **Owner**: Erik LaBianca (product owner)
+- **Last Reviewed**: 2026-06-27
+- **Note**: FR-33 is a deferred PRD requirement line, not a standalone artifact file, so there is no separate artifact frontmatter to carry `ddx.parking_lot: true`; the disposition is recorded inline in `prd.md` (FR-33) and here.
 
 ## Parked Artifacts (Links)
 

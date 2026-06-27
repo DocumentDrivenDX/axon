@@ -3,6 +3,7 @@ ddx:
   id: helix.principles
   depends_on: [helix.prd]
   review:
+    # TODO: refresh review stamp (Principle 8 local-first read-replica re-scope, 2026-06-27)
     self_hash: 68d05c2f025124f224f952adb2e7b93671c8f099011975fcbb3619e18fde38dd
     deps:
       helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
@@ -64,12 +65,19 @@ tracker, not in this file.
    structure conflict, prefer structured errors, self-describing schemas, and
    machine-checkable outcomes. (Owned by PRD FR-20 through FR-22, FR-29.)
 
-8. **Local-First is a Requirement** — Governed local-first and embedded
-   operation is a first-class deployment, not a bolt-on: prefer designs that
-   keep schema, policy, transaction, audit, and query semantics
-   location-transparent across embedded and server modes, work offline, and
-   treat sync as something that must honor the same invariants. (Owned by PRD
-   FR-23, FR-26, FR-32.)
+8. **Local Read Replica is a Requirement** — A governed local read replica is
+   a first-class capability, not a bolt-on: clients maintain a
+   searchable/sortable/filterable local projection of the same change stream
+   that powers CDC, so UIs stay responsive without weakening governance. Prefer
+   designs that keep schema, policy, audit, and query semantics
+   location-transparent across embedded and server modes, and that apply policy
+   redaction at projection time. Offline-write reconciliation (clients that
+   accept writes with no connectivity and converge them deterministically on
+   sync) is **deferred**, not a requirement — see `docs/helix/parking-lot.md`.
+   Reframed 2026-06-27 (agentic-world reprioritization: in an agentic world
+   clients talk to the server, so local-first's committed value is the read
+   projection). (Owned by PRD FR-23, FR-26, FR-31, FR-32; deferred half is
+   FR-33.)
 
 ## Tension Resolution
 
@@ -81,14 +89,20 @@ tracker, not in this file.
   gets the full correctness suite first; non-invariant conveniences may ship
   with lighter verification.
 
-- **Transactions Mean Transactions (5) vs Local-First is a Requirement (8)** —
-  Strict ACID assumes one committing authority; offline clients accept writes
-  that can conflict on sync. Resolution: ACID governs each node's committed
-  state; cross-node convergence belongs to the sync protocol's deterministic
-  conflict resolution, which surfaces conflicts through the same intent,
-  policy, and audit machinery rather than silently merging. Never weaken
-  single-node isolation to make sync easier, and never let sync apply a
-  mutation that skips policy or audit.
+- **Transactions Mean Transactions (5) vs Local Read Replica is a Requirement
+  (8)** — Strict ACID assumes one committing authority. The committed
+  local-replica capability is read-only: the local projection never accepts
+  writes, so there is no cross-node convergence to resolve and single-node
+  isolation is never at risk. Resolution: the server remains the single
+  committing authority; the local replica is a downstream read projection of
+  the change stream and applies policy redaction at projection time. The harder
+  tension — offline clients that accept writes and must converge them on sync
+  through a deterministic conflict-resolution protocol that honors the same
+  intent, policy, and audit machinery — is **deferred** with FR-33 (parking
+  lot), so it is not resolved here. Reframed 2026-06-27 (agentic-world
+  reprioritization). If offline writes are later promoted, the standing rules
+  hold: never weaken single-node isolation to make sync easier, and never let
+  sync apply a mutation that skips policy or audit.
 
 - **Agents are First-Class Citizens (7) vs Guardrails Are the Product (1)** —
   Agent ergonomics push for fewer round-trips and frictionless writes;
