@@ -6,6 +6,9 @@ activity: "Design"
 source: "02-design/plan-2026-05-26-admin-console-auth-concerns.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Plan: `admin-console` + `auth` concerns — the foundational product surfaces (it.35)
 
 Date: 2026-05-26 · Scope: methodology (new concerns + auth-provider slot + frame auto-select) · Branch: helix-self-improvement-2026-05-24

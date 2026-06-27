@@ -7,6 +7,8 @@ generated: true
 
 # adr
 
+> **Examples from HELIX's own docs.** These generated pages come from `docs/helix/`. Use them to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates.
+
 - [ADR-002: HELIX Tracker Write Safety Model](adr-002-tracker-write-safety-model/)
 - [ADR-003: Autonomy is a Three-Position Spectrum, Not a Fixed Level](adr-003-autonomy-spectrum/)
 - [ADR-004: Artifact Dependencies Are Encoded in `meta.yml.relationships` Only (No Separate `dependencies.yaml`)](adr-004-dependencies-encoding/)

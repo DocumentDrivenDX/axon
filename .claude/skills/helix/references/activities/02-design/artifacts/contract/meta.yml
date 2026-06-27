@@ -5,6 +5,8 @@ artifact:
   activity: design
   level: interface
 
+voice: artifact-signal
+
 description: |
   Normative interface and schema contract that another team can implement
   against directly, including API, CLI, protocol, event, and data contracts.
@@ -69,13 +71,15 @@ workflow:
 
 relationships:
   informed_by:
+    - feature-specification
     - architecture
     - solution-design
-    - technical-design
     - adr
   informs:
     - test-plan
     - technical-design
+    - test-suites
+    - implementation-plan
 
 tags:
   - design

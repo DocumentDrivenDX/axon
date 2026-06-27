@@ -7,6 +7,9 @@ source: "02-design/adr/ADR-011-ux-radix-owns-shadcn-prescription.md"
 generated: true
 collection: adr
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # ADR-011: ux-radix owns Radix and shadcn prescriptions; react-nextjs references
 
 | Date | Status | Deciders | Related | Confidence |

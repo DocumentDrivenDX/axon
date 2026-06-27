@@ -219,10 +219,15 @@ def render_page(rec: dict, source_root: Path, weight: int,
         fields.append(("collection", rec["collection"]))
 
     fm = render_frontmatter(fields)
-    preamble = ""
+    preamble = (
+        "\n> **Example from HELIX's own docs.** This generated page comes from "
+        "`docs/helix/`. Use it to see the method in practice; start with the "
+        "[artifact-type catalog](/artifact-types/) for reusable templates. "
+        "Historical plans and reports may describe retired architecture.\n\n"
+    )
     if src_fm.strip():
-        preamble = (
-            "\n> **Source identity** (from "
+        preamble += (
+            "> **Source identity** (from "
             f"`{rel_source}`):\n\n```yaml\n{src_fm.rstrip()}\n```\n\n"
         )
     return fm + preamble + body.lstrip("\n")
@@ -236,7 +241,15 @@ def render_collection_index(name: str, items: list[dict], weight: int) -> str:
         ("weight", str(weight)),
         ("generated", "true"),
     ])
-    lines = [fm, f"# {title}", ""]
+    lines = [
+        fm,
+        f"# {title}",
+        "",
+        "> **Examples from HELIX's own docs.** These generated pages come from "
+        "`docs/helix/`. Use them to see the method in practice; start with the "
+        "[artifact-type catalog](/artifact-types/) for reusable templates.",
+        "",
+    ]
     for it in sorted(items, key=lambda r: r["slug"]):
         # Hugo lowercases page URLs; the link must match or it 404s on a
         # case-sensitive host (it did in production: caps stems vs lowercase dirs).
@@ -255,9 +268,14 @@ def render_top_index(records: list[dict], project: str, source: Path) -> str:
         fm,
         f"# {project} — Artifacts",
         "",
-        f"The actual governing artifacts of the {project} project, organised by "
-        "the HELIX activity they belong to. Each page is the live content of the "
-        "corresponding source document; edits should be made in the source, not here.",
+        f"Generated examples from the {project} project's own HELIX documents. "
+        "Use this section to see how the method looks in practice. To create "
+        "documents for your project, start with the "
+        "[artifact-type catalog](/artifact-types/). Historical plans and reports "
+        "may describe retired architecture.",
+        "",
+        "Each page is the live content of the corresponding source document; "
+        "edits should be made in the source, not here.",
         "",
         f"_Auto-generated from `{source.name}/` by `scripts/publish-artifacts.py`._",
         "",

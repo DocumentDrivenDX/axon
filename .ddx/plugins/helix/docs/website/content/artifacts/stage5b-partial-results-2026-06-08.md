@@ -6,6 +6,9 @@ activity: "Design"
 source: "02-design/stage5b-partial-results-2026-06-08.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Stage 5b — partial results + API rate limit hit
 
 ## Status: incomplete

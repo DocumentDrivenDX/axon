@@ -6,6 +6,9 @@ activity: "Design"
 source: "02-design/design-2026-06-03-helix-library-split.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Design: helix-library Split
 
 - **Date:** 2026-06-03 (drafted), 2026-06-04 (synthesized), 2026-06-04 (monorepo amendment)

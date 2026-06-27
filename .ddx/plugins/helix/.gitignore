@@ -1,0 +1,65 @@
+# HELIX tracker data (local issue database)
+.helix/
+
+# Legacy Beads database
+.beads/
+
+# HELIX session logs
+.helix-logs/
+
+# Experiment session files (ephemeral, gitignored on experiment branches)
+autoresearch.md
+autoresearch.sh
+autoresearch.jsonl
+experiments/
+
+# DDx runtime state (tracked data like beads.jsonl is NOT ignored)
+.ddx/agent-logs/
+.ddx/exec-runs.d/
+.ddx/exec-runs.jsonl
+.ddx/executions/
+.ddx/harness-sessions/
+.ddx/attachments/
+.ddx/run-state/
+.ddx/run-state.json
+.ddx/plugins/
+.ddx/server/
+.ddx/workers/
+.ddx/worktrees.json
+
+# DDx doctor diagnostic dump (CWD leak from `ddx doctor`)
+doctor/
+
+# DDx install-manifest from worktree-side invocations
+install-manifest.json
+
+# Codex config
+.codex
+
+# Claude Code sub-agent isolation worktrees
+.claude/worktrees/
+
+# Hugo build output
+website/public/
+website/resources/
+
+# Playwright test output
+website/test-results/
+website/playwright-report/
+website/node_modules/
+__pycache__/
+*.pyc
+
+# Scratch/intermediate working files
+tmp/
+
+# Local-only bead snapshots and per-user prompt scratchpads
+.ddx/beads.jsonl.pre-rename
+.ddx/beads.jsonl.*.bak
+.claude/prompts/
+dist/
+tests/install/genie/recordings/*
+!tests/install/genie/recordings/.gitkeep
+!tests/install/genie/recordings/*.json
+!tests/install/genie/recordings/screenshots/
+!tests/install/genie/recordings/screenshots/*.png

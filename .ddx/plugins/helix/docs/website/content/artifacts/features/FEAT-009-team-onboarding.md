@@ -8,6 +8,8 @@ generated: true
 collection: features
 ---
 
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 > **Source identity** (from `01-frame/features/FEAT-009-team-onboarding.md`):
 
 ```yaml

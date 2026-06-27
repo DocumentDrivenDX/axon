@@ -6,6 +6,9 @@ activity: "Iterate"
 source: "06-iterate/security-metrics.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Security Metrics — HELIX 2026-Q2 (post-`v0.3.3`)
 
 > Illustrative example using representative measurements taken from the

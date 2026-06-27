@@ -6,6 +6,9 @@ activity: "Design"
 source: "02-design/plan-2026-05-26-spike-first-activation.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Plan: spike-first ACTIVATION trigger (close the reframe-and-defer escape hatch)
 
 Date: 2026-05-26 · Scope: methodology (concern-resolution + evolve + plan/design route + tech-spike artifact)

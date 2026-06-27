@@ -7,6 +7,9 @@ source: "02-design/contracts/API-001-helix-tracker-mutation.md"
 generated: true
 collection: contracts
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # API Contract: HELIX Tracker Mutation Surface [FEAT-002]
 
 **Contract ID**: API-001

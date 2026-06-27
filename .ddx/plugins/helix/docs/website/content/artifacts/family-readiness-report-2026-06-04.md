@@ -6,6 +6,9 @@ activity: "Design"
 source: "02-design/family-readiness-report-2026-06-04.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # helix-family Readiness Report
 
 - **Date:** 2026-06-04
@@ -20,6 +23,11 @@ This report closes the planning workflow that produced specs, fixtures, a
 plan, and a runner for the helix-family architecture. No HELIX tree
 reorganisation happened in this workflow. The actual monorepo move is the
 next user-approved workflow run.
+
+> **Supersession note (2026-06-14):** This is a historical planning report.
+> The helix-family architecture (helix-library + helix-infra subdirectories
+> in a monorepo) described here was not adopted. The current architecture is
+> a single `helix` plugin. Preserved as a planning record.
 
 ---
 

@@ -6,6 +6,9 @@ activity: "Design"
 source: "02-design/data-design.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Data Design — HELIX Bead Tracker
 
 **Scope**: The `.ddx/beads.jsonl` issue tracker that anchors HELIX execution.

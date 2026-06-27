@@ -6,6 +6,9 @@ activity: "Design"
 source: "02-design/plan-2026-05-26-complex-brief-robustness.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Plan — complex-brief robustness: verification ENFORCEMENT + spike-first for unknowns (2026-05-26)
 
 ## Context

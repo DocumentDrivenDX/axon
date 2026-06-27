@@ -6,6 +6,9 @@ activity: "Design"
 source: "02-design/bench-build-results-2026-06-06-first-run.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # First post-P14 full-bench run — 2026-06-06
 
 Supplement to `bench-build-results-2026-06-05.md`. Records the outcome of

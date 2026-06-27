@@ -1,0 +1,38 @@
+pre-commit:
+  commands:
+    validate-plugin:
+      run: claude plugin validate .
+      glob: "{.claude-plugin/**/*,commands/**/*,skills/**/*,agents/**/*}"
+    check-workflow-paths:
+      run: |
+        fail=0
+        # 1. Reject .ddx/plugins/helix layout-leak paths in shipped content.
+        if grep -rn '\.ddx/plugins/helix' skills/ workflows/ --include='*.md' --include='*.yaml' --include='*.yml' 2>/dev/null; then
+          echo "ERROR: Found a .ddx/plugins/helix layout-leak path in shipped skill/workflow content."
+          echo "The .ddx/plugins/helix/ tree is a DDx install detail and must not leak into portable HELIX content."
+          echo "Use the canonical source-relative path 'workflows/...', or the runtime-neutral '<plugin-root>/workflows/...' form in SKILL.md."
+          echo "DDx-specific install/invocation paths belong only in docs/install/ddx.md."
+          fail=1
+        fi
+        # 2. Reject 'ddx <verb>' command literals in portable content. The
+        #    DDx-scoped explainer workflows/DDX.md is exempt; 'ddx:' frontmatter
+        #    is allowed (it is not a command literal and does not match this pattern).
+        if grep -rnE 'ddx (bead|work|run|try|agent)' skills/ workflows/ --include='*.md' --include='*.yaml' --include='*.yml' 2>/dev/null | grep -v '^workflows/DDX.md:'; then
+          echo "ERROR: Found a 'ddx <verb>' command literal in portable HELIX skill/workflow content."
+          echo "Portable methodology content must describe runtime-neutral actions, not concrete ddx commands."
+          echo "Move DDx-specific commands (ddx bead/work/run/try/agent ...) to docs/install/ddx.md and leave a neutral pointer."
+          echo "Only workflows/DDX.md (the DDx-scoped explainer) may name ddx commands; 'ddx:' frontmatter is allowed."
+          fail=1
+        fi
+        exit $fail
+      glob: "{skills/**/*.md,workflows/**/*.md,workflows/**/*.yaml,workflows/**/*.yml}"
+    # check-library-types disabled after canonical-promotion: the
+    # family-test/library/ research fork was removed in favor of the
+    # canonical type catalog at workflows/activities/*/artifacts/<type>/.
+    # If/when a top-level library/types/ tree gets stood up, re-enable with
+    # a path pointing there + a helix_check.py colocated under library/scripts/.
+    check-cc-revalidation:
+      # Advisory warning, never blocks. Surfaces CC version pin deadline on
+      # every commit so the 90-day re-validation cadence can't slip silently.
+      # See family-test/bench/docs/cc-version-revalidation.md.
+      run: bash family-test/bench/runner/check-cc-revalidation.sh || true

@@ -6,6 +6,9 @@ activity: "Design"
 source: "02-design/validation-plan-2026-06-05-vertical-slice-completion.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Validation Plan — Vertical Slice Completion
 
 - **Date:** 2026-06-05

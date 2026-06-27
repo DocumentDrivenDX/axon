@@ -6,7 +6,9 @@ generated: true
 
 # HELIX — Artifacts
 
-The actual governing artifacts of the HELIX project, organised by the HELIX activity they belong to. Each page is the live content of the corresponding source document; edits should be made in the source, not here.
+Generated examples from the HELIX project's own HELIX documents. Use this section to see how the method looks in practice. To create documents for your project, start with the [artifact-type catalog](/artifact-types/). Historical plans and reports may describe retired architecture.
+
+Each page is the live content of the corresponding source document; edits should be made in the source, not here.
 
 _Auto-generated from `helix/` by `scripts/publish-artifacts.py`._
 

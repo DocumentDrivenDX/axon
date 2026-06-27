@@ -4,6 +4,8 @@ artifact:
   type: document
   activity: deploy
 
+voice: artifact-signal
+
 description: |
   Service-specific observability and alerting setup required before or during
   rollout.
@@ -64,8 +66,6 @@ relationships:
   informed_by:
     - deployment-checklist
     - architecture
-  informs:
-    - deployment-verification
     - metrics-dashboard
 
 tags:

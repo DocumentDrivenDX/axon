@@ -7,6 +7,8 @@ generated: true
 
 # features
 
+> **Examples from HELIX's own docs.** These generated pages come from `docs/helix/`. Use them to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates.
+
 - [Feature Specification: FEAT-003 - First-Class Principles](feat-003-principles/)
 - [Feature Specification: FEAT-004 - Plugin Packaging](feat-004-plugin-packaging/)
 - [Feature Specification: FEAT-006 — Concerns, Practices, and Context-Digest Beads](feat-006-concerns-practices-context-digest/)

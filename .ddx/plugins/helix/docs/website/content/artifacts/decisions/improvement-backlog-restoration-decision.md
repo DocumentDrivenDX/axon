@@ -7,6 +7,9 @@ source: "06-iterate/decisions/improvement-backlog-restoration-decision.md"
 generated: true
 collection: decisions
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Improvement Backlog — Restoration Decision
 
 > Historical decision; superseded by the worked example at `docs/helix/06-iterate/improvement-backlog.md`.

@@ -6,6 +6,8 @@ artifact:
   type: collection
   activity: frame
 
+voice: artifact-signal
+
 description: |
   Stable design artifacts defining vertical user journeys through feature
   behavior. Each story traces one persona from trigger to outcome, references
@@ -44,6 +46,10 @@ validation:
 
     - check: walkthrough_complete
       description: Walkthrough traces a complete path from trigger to outcome
+      severity: blocking
+
+    - check: no_surface_leak
+      description: User stories may reference Contract IDs but must not define exact API, CLI, event, schema, config, telemetry, or adapter surfaces in acceptance criteria or dependencies
       severity: blocking
 
     - check: edge_cases_present
@@ -106,8 +112,7 @@ relationships:
     - feature-specification
   informs:
     - solution-design
-    - test-cases
-    - tracker-issues
+    - story-test-plan
 
 tracking:
   id_format: US-NNN

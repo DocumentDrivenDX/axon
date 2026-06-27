@@ -6,6 +6,8 @@ artifact:
   type: document
   activity: discover
 
+voice: artifact-signal
+
 description: |
   Investment case for go/no-go decisions: market sizing, cost, return,
   alternatives, risk, and strategic fit.
@@ -70,7 +72,7 @@ relationships:
   informs:
     - opportunity-canvas
     - prd
-    - resource-planning
+    - resource-summary
 
 tags:
   - finance

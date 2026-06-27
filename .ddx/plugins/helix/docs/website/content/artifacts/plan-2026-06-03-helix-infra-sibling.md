@@ -6,11 +6,19 @@ activity: "Design"
 source: "02-design/plan-2026-06-03-helix-infra-sibling.md"
 generated: true
 ---
+
+> **Example from HELIX's own docs.** This generated page comes from `docs/helix/`. Use it to see the method in practice; start with the [artifact-type catalog](/artifact-types/) for reusable templates. Historical plans and reports may describe retired architecture.
+
 # Plan: helix-infra sibling repo
 
 Status: revised post-codex-review, ready to implement
 Author: claude (Opus 4.7)
 Reviewer: codex (gpt-5, 2026-06-03)
+
+> **Supersession note (2026-06-14):** This is a historical plan document.
+> The `helix-infra` sibling repo was not adopted. The current architecture
+> is a single `helix` plugin. Preserved as a record of the IaC methodology
+> design work.
 
 ## Codex-driven revisions applied (summary)
 

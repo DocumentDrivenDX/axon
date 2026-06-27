@@ -6,6 +6,8 @@ artifact:
   type: collection
   activity: frame
 
+voice: artifact-signal
+
 description: |
   Feature-level authority document that translates PRD requirements into
   precise behavior, boundaries, functional areas, non-functional expectations,
@@ -58,6 +60,10 @@ validation:
     - check: no_implementation_details
       description: Should not specify HOW, only WHAT
       severity: warning
+
+    - check: no_surface_leak
+      description: Feature specs may name high-level interface dependencies but must not define exact API, CLI, event, schema, config, telemetry, or adapter surfaces; use Contract artifacts for normative interface detail
+      severity: blocking
 
   automated_checks:
     - pattern: "\\[NEEDS CLARIFICATION"
@@ -123,7 +129,7 @@ relationships:
   informs:
     - user-stories
     - solution-design
-    - api-contracts
+    - contract
     - test-plan
 
   registered_in:
