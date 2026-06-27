@@ -39,11 +39,12 @@ artifact in the stack where implementation status belongs; feature-spec
 - Test plan — `docs/helix/03-test/test-plan.md` and
   `docs/helix/03-test/feature-story-e2e-traceability.md`
 
-**In scope**: the forward build slices in this plan (contract conformance,
-FEAT-021 Kafka transport, FEAT-022 remaining guardrails, serializable
-isolation, local-first sync design, BYOC remaining scope, test-coverage
-completion). **Out of scope**: reopening product or design decisions; live
-issue state (the tracker owns that).
+**In scope**: the build slices in this plan. Most are now delivered
+(contract conformance, FEAT-021 Kafka transport, BYOC control plane); the
+remaining open work is serializable isolation (B-104), local-first sync
+design (B-105), and test-coverage closeout (B-107). **Out of scope**:
+reopening product or design decisions; live issue state (the tracker owns
+that — all 1074 tracker beads are now closed and the queues are empty).
 
 ## Current Implementation Baseline (verified 2026-06-10)
 
@@ -100,19 +101,25 @@ as tracker beads; they form Slice B-101 below.
 
 ## Implementation Slices
 
-Ordered by dependency: conformance debt first (it blocks contract-frozen
-surfaces), then transport/guardrail completion, then isolation upgrade, then
-the two design-first P1 expansions, then coverage closeout.
+Originally ordered by dependency: conformance debt first (it blocks
+contract-frozen surfaces), then transport/guardrail completion, then isolation
+upgrade, then the two design-first P1 expansions, then coverage closeout. As
+of 2026-06-27 the conformance, transport, guardrail, and BYOC slices are
+delivered; B-104 (serializable isolation) and B-105 (local-first sync design)
+remain the open work, with B-107 coverage closeout following.
 
-| Slice | Story / Area | Governing Artifacts | Depends On | Validation Gate | Notes |
-|-------|--------------|---------------------|------------|-----------------|-------|
-| B-101 | Contract conformance: drop `dbName`/`dbPath` (GraphQL+SDK), retire un-prefixed legacy routes (`/auth/me`, `/databases/*`), SDK governed-workflow methods, tenant-aware MCP endpoints/URIs, Idempotency-Key header deprecation, CONTRACT-008 auth-default amendment | CONTRACT-001, -002, -003, -008, -009; ADR-018; FEAT-028 BIN-10 | None | `grep -r 'dbName\|dbPath' sdk/typescript/src crates/axon-server crates/axon-control-plane` returns nothing; `cargo test -p axon-server` contract tests pass; SDK tests pass | First: every later slice extends these surfaces; conformance debt compounds. Beads: axon-b8078b63, axon-b684338f, axon-784bc974, axon-95b137d0, axon-c62971d9, axon-87fee98b |
-| B-102 | FEAT-021 Kafka CDC transport (envelope + JSONL/in-memory sinks exist; Kafka producer, delivery semantics, config) | FEAT-021, CONTRACT-006, ADR-014 | B-101 (config surface frozen by CONTRACT-008 amendment) | Integration test publishes CDC envelopes to a Kafka testcontainer and replays them; `cargo test -p axon-audit` passes | Completes the last unimplemented FEAT-021 transport |
-| B-103 | FEAT-022 remaining guardrail scope (semantic validation hooks; rate limiting + actor scope already shipped) | FEAT-022, ADR-016, ADR-024 | B-101 | Guardrail hook tests in `crates/axon-server` exercise hook rejection paths; `cargo test -p axon-server` passes | Completes the P0 safety-guardrail vision scope |
-| B-104 | Serializable isolation (P1): read-set tracking to detect write skew; effective-isolation inspectability | FEAT-008 (TXN-05, Constraints), ADR-004 | B-101 | axon-sim `CycleWorkload` extended with a write-skew workload that fails under SI and passes under serializable; `cargo test -p axon-sim` | Upgrades the corrected SI baseline; do not relabel docs until this lands |
-| B-105 | Local-first sync (FR-32, newly promoted P1) — **design first**: ADR + solution design before any build issue | PRD v0.7.1 FR-32 | None for design; build blocked on accepted ADR | ADR merged in `docs/helix/02-design/adr/`; design review recorded | No build scope may be invented before the ADR exists |
-| B-106 | BYOC (FR-27 P1) remaining scope beyond shipped control plane (tenant/user/credential/database/member mgmt is live) | PRD FR-27, ADR-017, FEAT-025 | B-101 | Control-plane monitoring + remaining FEAT-025 acceptance criteria pass in `crates/axon-control-plane`/`axon-server` tests | Scope = FEAT-025 "monitoring not implemented" remainder plus BYOC packaging |
-| B-107 | Story-test-plan / coverage closeout: PROP-002..005 property tests, L6 contract-suite completion, story-test-plans for remaining non-guardrail features per test-plan §AC allocation | test-plan.md, feature-story-e2e-traceability.md, STP set | B-101..B-104 (tests target final surfaces) | `cargo test` workspace green; traceability doc shows no unallocated ACs | Last: validates the completed surfaces, not the interim ones |
+Status legend: **DELIVERED** = shipped and verified in-tree; **OUTSTANDING** =
+real open gap, not yet built.
+
+| Slice | Status | Story / Area | Governing Artifacts | Depends On | Validation Gate | Notes |
+|-------|--------|--------------|---------------------|------------|-----------------|-------|
+| B-101 | **DELIVERED** | Contract conformance: dropped `dbName`/`dbPath` (GraphQL+SDK), retired un-prefixed legacy routes (`/auth/me`, `/databases/*`), added SDK governed-workflow methods, tenant-aware MCP endpoints/URIs, Idempotency-Key header deprecation, CONTRACT-008 auth-default amendment | CONTRACT-001, -002, -003, -008, -009; ADR-018; FEAT-028 BIN-10 | None | Verified: `grep -r 'dbName\|dbPath' sdk/typescript/src crates/` returns nothing; `cargo test -p axon-server` contract tests pass; SDK tests pass | Delivered. Beads closed: axon-b8078b63, axon-b684338f, axon-784bc974, axon-95b137d0, axon-c62971d9, axon-87fee98b |
+| B-102 | **DELIVERED** | FEAT-021 Kafka CDC transport (Kafka producer, delivery semantics, config; envelope + JSONL/in-memory sinks pre-existed) | FEAT-021, CONTRACT-006, ADR-014 | B-101 (config surface frozen by CONTRACT-008 amendment) | Verified: `KafkaCdcSink` shipped in `crates/axon-audit/src/cdc.rs`; `cargo test -p axon-audit` passes | Delivered — the last FEAT-021 transport is implemented |
+| B-103 | **DELIVERED** | FEAT-022 remaining guardrail scope (semantic validation hooks; rate limiting + actor scope already shipped) | FEAT-022, ADR-016, ADR-024 | B-101 | Guardrail hook tests in `crates/axon-server` exercise hook rejection paths; `cargo test -p axon-server` passes | Completes the P0 safety-guardrail vision scope |
+| B-104 | **OUTSTANDING** | Serializable isolation (P1): read-set tracking to detect write skew; effective-isolation inspectability | FEAT-008 (TXN-05, Constraints), ADR-004 | B-101 | axon-sim `CycleWorkload` extended with a write-skew workload that fails under SI and passes under serializable; `cargo test -p axon-sim` | **Real open gap.** Upgrades the corrected SI baseline; do not relabel docs (no serializable claims) until this lands. Tracked as an operator-decision item in `AR-2026-06-27-full-repo.md` §2 H2 |
+| B-105 | **OUTSTANDING** | Local-first sync (FR-32, newly promoted P1) — **design first**: ADR + solution design before any build issue | PRD v0.7.1 FR-32 | None for design; build blocked on accepted ADR | ADR merged in `docs/helix/02-design/adr/`; design review recorded | No build scope may be invented before the ADR exists |
+| B-106 | **DELIVERED** | BYOC (FR-27 P1) control plane: tenant/user/credential/database/member management shipped | PRD FR-27, ADR-017, FEAT-025 | B-101 | Verified: control plane shipped in `crates/axon-control-plane`; FEAT-025 acceptance criteria pass in `crates/axon-control-plane`/`axon-server` tests | Delivered. Any residual BYOC packaging beyond the shipped control plane carries forward into ordinary release work, not a distinct open slice |
+| B-107 | partial | Story-test-plan / coverage closeout: PROP-002..005 property tests, L6 contract-suite completion, story-test-plans for remaining non-guardrail features per test-plan §AC allocation | test-plan.md, feature-story-e2e-traceability.md, STP set | B-101..B-104 (tests target final surfaces) | `cargo test` workspace green; traceability doc shows no unallocated ACs | Last: validates the completed surfaces; final closeout follows B-104 |
 
 ## Issue Decomposition
 
@@ -126,15 +133,15 @@ Story-level work is tracked as beads in `.ddx/beads.jsonl` via `ddx bead`.
 - Blockers as `--depends-on` links
 - Closure requires durable evidence (commit ref, execution bundle, or notes)
 
-| Story / Area | Goal | Dependencies |
-|--------------|------|--------------|
-| B-101 conformance (6 beads filed: axon-b8078b63, axon-b684338f, axon-784bc974, axon-95b137d0, axon-c62971d9, axon-87fee98b) | Code matches CONTRACT-001..010 as written | None |
-| B-102 Kafka transport | FEAT-021 complete | axon-87fee98b (config contract) |
-| B-103 guardrail hooks | FEAT-022 complete | None hard; sequence after B-101 |
-| B-104 serializable isolation | FEAT-008 P1 constraint discharged | None hard; sequence after B-101 |
-| B-105 local-first sync ADR | Accepted design for FR-32 | None (design work) |
-| B-106 BYOC remainder | FR-27 P1 scope complete | B-101 |
-| B-107 coverage closeout | No unallocated ACs; PROP-002..005 coded | B-101..B-104 |
+| Story / Area | Goal | Dependencies | Status |
+|--------------|------|--------------|--------|
+| B-101 conformance (6 beads closed: axon-b8078b63, axon-b684338f, axon-784bc974, axon-95b137d0, axon-c62971d9, axon-87fee98b) | Code matches CONTRACT-001..010 as written | None | DELIVERED |
+| B-102 Kafka transport | FEAT-021 complete | axon-87fee98b (config contract) | DELIVERED |
+| B-103 guardrail hooks | FEAT-022 complete | None hard; sequence after B-101 | DELIVERED |
+| B-104 serializable isolation | FEAT-008 P1 constraint discharged | None hard; sequence after B-101 | OUTSTANDING |
+| B-105 local-first sync ADR | Accepted design for FR-32 | None (design work) | OUTSTANDING |
+| B-106 BYOC remainder | FR-27 P1 scope complete | B-101 | DELIVERED |
+| B-107 coverage closeout | No unallocated ACs; PROP-002..005 coded | B-101..B-104 | partial |
 
 ## Validation Plan
 
