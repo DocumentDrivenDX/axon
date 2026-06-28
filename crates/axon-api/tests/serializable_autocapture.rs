@@ -7,7 +7,10 @@
 #![allow(clippy::unwrap_used)]
 
 use axon_api::handler::AxonHandler;
-use axon_api::request::{CreateEntityRequest, GetEntityRequest, QueryEntitiesRequest};
+use axon_api::request::{
+    AggregateFunction, AggregateRequest, CreateEntityRequest, CreateLinkRequest, GetEntityRequest,
+    QueryEntitiesRequest, TraverseRequest,
+};
 use axon_api::transaction::{IsolationLevel, Transaction};
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
@@ -152,5 +155,117 @@ fn phantom_prevented_via_auto_capture_query() {
     assert!(
         matches!(err, axon_core::error::AxonError::ConflictingVersion { .. }),
         "expected phantom serialization conflict, got: {err}"
+    );
+}
+
+/// Phantom that shifts an aggregate, via `tx_aggregate`: each transaction sums a
+/// field over the collection (auto-recording the structural version) then
+/// inserts a new matching row. Under Serializable the second committer aborts
+/// because the aggregated collection's membership changed.
+#[test]
+fn aggregate_phantom_prevented_via_auto_capture() {
+    let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+    create(&mut h, "a", 5);
+    create(&mut h, "b", 5);
+
+    let agg = || AggregateRequest {
+        collection: guards(),
+        function: AggregateFunction::Sum,
+        field: "flag".into(),
+        filter: None,
+        group_by: None,
+    };
+
+    let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
+    let mut t2 = Transaction::with_isolation(IsolationLevel::Serializable);
+    h.tx_aggregate(&mut t1, agg()).expect("t1 aggregates");
+    h.tx_aggregate(&mut t2, agg()).expect("t2 aggregates");
+
+    t1.create(Entity::new(
+        guards(),
+        EntityId::new("c"),
+        json!({ "flag": 5 }),
+    ))
+    .expect("stage c");
+    t2.create(Entity::new(
+        guards(),
+        EntityId::new("d"),
+        json!({ "flag": 5 }),
+    ))
+    .expect("stage d");
+
+    h.commit_transaction(t1, Some("t1".into()), None)
+        .expect("T1 commits (membership changes)");
+    let err = h
+        .commit_transaction(t2, Some("t2".into()), None)
+        .expect_err("T2 must abort: aggregated collection's membership changed");
+    assert!(
+        matches!(err, axon_core::error::AxonError::ConflictingVersion { .. }),
+        "expected phantom serialization conflict, got: {err}"
+    );
+}
+
+/// A concurrent change to a traversed member aborts a Serializable transaction,
+/// via `tx_traverse` auto-capture (each returned entity is recorded as a
+/// key-addressed read). No manual `record_read`.
+#[test]
+fn traverse_member_change_prevented_via_auto_capture() {
+    let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+    create(&mut h, "A", 1); // base
+    create(&mut h, "B", 1); // traversed target
+    h.create_link(CreateLinkRequest {
+        source_collection: guards(),
+        source_id: EntityId::new("A"),
+        target_collection: guards(),
+        target_id: EntityId::new("B"),
+        link_type: "rel".into(),
+        metadata: json!(null),
+        actor: Some("seed".into()),
+        attribution: None,
+    })
+    .expect("seed link");
+
+    let trav = || TraverseRequest {
+        collection: guards(),
+        id: EntityId::new("A"),
+        link_type: Some("rel".into()),
+        max_depth: Some(2),
+        direction: Default::default(),
+        hop_filter: None,
+    };
+
+    let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
+    let mut t2 = Transaction::with_isolation(IsolationLevel::Serializable);
+    let r1 = h.tx_traverse(&mut t1, trav()).expect("t1 traverses");
+    assert!(
+        r1.entities.iter().any(|e| e.id.as_str() == "B"),
+        "traversal should reach B"
+    );
+    h.tx_traverse(&mut t2, trav()).expect("t2 traverses"); // both record B@v1
+
+    // T1 mutates the traversed member B (it recorded B@v1, so its own commit
+    // validates before applying — no self-abort).
+    t1.update(
+        Entity::new(guards(), EntityId::new("B"), json!({ "flag": 2 })),
+        1,
+        None,
+    )
+    .expect("stage B update");
+    h.commit_transaction(t1, Some("t1".into()), None)
+        .expect("T1 commits (B -> v2)");
+
+    // T2 stages an unrelated write; its auto-captured read of B is now stale.
+    t2.update(
+        Entity::new(guards(), EntityId::new("A"), json!({ "flag": 9 })),
+        1,
+        None,
+    )
+    .expect("stage A update");
+    let err = h
+        .commit_transaction(t2, Some("t2".into()), None)
+        .expect_err("T2 must abort: a traversed member changed");
+    assert!(
+        matches!(err, axon_core::error::AxonError::ConflictingVersion { .. }),
+        "expected serialization conflict on the traversed member, got: {err}"
     );
 }

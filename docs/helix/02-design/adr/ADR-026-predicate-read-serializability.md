@@ -194,13 +194,16 @@ mutable predicates must still be guarded at the application level.
   `(id, version)` or adopt SSI so predicate changes via in-place updates are
   caught. Deferred deliberately: a version-inclusive signature over-aborts on any
   concurrent update to a scanned collection.
-- **Auto-capture — delivered for entity reads/queries.** `AxonHandler::tx_get_entity`
-  (key-addressed) and `tx_query_entities` (scan/phantom) perform the
+- **Auto-capture — delivered for entity reads, queries, aggregates, and
+  traversals.** `AxonHandler::tx_get_entity` (key-addressed), `tx_query_entities`
+  and `tx_aggregate` (scan/phantom over a collection), and `tx_traverse`
+  (links-collection signal + base + per-member key-reads) perform the
   policy-enforced read and record into the supplied `&mut Transaction`, so
   reading through the transaction *is* recording — callers cannot forget.
-  **Still a follow-up:** auto-capture for the remaining read paths (`aggregate`,
-  `traverse`, the Cypher executor), which are not yet threaded through a
-  transaction-aware method; those reads must record explicitly for now.
+  **Still a follow-up:** auto-capture for the **Cypher executor** (axon-cypher /
+  the GraphQL query layer), which spans arbitrary labels + links and is not
+  threaded through a handler transaction; those reads must record explicitly for
+  now.
 - **Full Cahill SSI** (SIREAD locks, rw-antidependency / dangerous-structure
   pivot detection) for *precise* serializability with minimal aborts. The
   structural-version guard is intentionally coarser (collection-granular,
@@ -212,7 +215,7 @@ mutable predicates must still be guarded at the application level.
 | Type | Impact |
 |------|--------|
 | Positive | Sound phantom prevention on **every** backend (generic scan default + native overrides); reuses existing `ConflictingVersion` retry contract; Snapshot path unchanged and zero-overhead; read-derived signatures add no write-path cost and need no schema migration |
-| Negative | Conservative: over-aborts on non-matching concurrent inserts/deletes to a scanned collection (acceptable for low-contention agentic workloads, ADR-004); the generic default and SQLite paths are O(n)-ids per scanned collection at commit (Postgres push-down and memory are O(1)); membership-only (update-driven predicate skew not caught); auto-capture delivered for entity reads/queries (`tx_get_entity`/`tx_query_entities`), follow-up for aggregate/traverse/Cypher |
+| Negative | Conservative: over-aborts on non-matching concurrent inserts/deletes to a scanned collection (acceptable for low-contention agentic workloads, ADR-004); the generic default and SQLite paths are O(n)-ids per scanned collection at commit (Postgres push-down and memory are O(1)); membership-only (update-driven predicate skew not caught); auto-capture delivered for entity reads/queries/aggregates/traversals (`tx_get_entity`/`tx_query_entities`/`tx_aggregate`/`tx_traverse`), follow-up for Cypher |
 | Neutral | Collection-granular guard is coarser than true SSI; the honest claim grows to "key-addressed reads + collection-granular phantom reads, all backends" |
 
 ## Risks

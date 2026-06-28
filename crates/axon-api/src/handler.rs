@@ -4153,6 +4153,78 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(resp)
     }
 
+    /// Transaction-aware [`aggregate`](Self::aggregate): records the aggregated
+    /// collection's [`StorageAdapter::structural_version`] into `tx`'s scan-read
+    /// set (ADR-026), so a Serializable commit aborts if a concurrent
+    /// create/delete changed the collection's membership (a phantom that would
+    /// shift the aggregate). Structural version captured before the read.
+    pub fn tx_aggregate(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: AggregateRequest,
+    ) -> Result<AggregateResponse, AxonError> {
+        let collection = req.collection.clone();
+        let observed = self.storage.structural_version(&collection)?;
+        let resp = self.aggregate(req)?;
+        tx.record_scan_read(collection, observed)?;
+        Ok(resp)
+    }
+
+    /// Transaction-aware [`traverse`](Self::traverse): records the read set a
+    /// traversal depends on so a Serializable commit aborts on a concurrent
+    /// change. Captured: the **links collection** structural version (a new or
+    /// removed link is the traversal phantom signal — `put_link`/`delete_link`
+    /// change the links-collection membership on every backend), the **base
+    /// entity** (key-addressed, observed-absent = 0), and **each returned
+    /// entity** (key-addressed, so a concurrent delete/update of a member
+    /// aborts). Bounded by the transaction's read-set cap.
+    pub fn tx_traverse(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: TraverseRequest,
+    ) -> Result<TraverseResponse, AxonError> {
+        self.tx_traverse_inner(tx, req, None, None)
+    }
+
+    /// Caller-scoped variant of [`tx_traverse`](Self::tx_traverse).
+    pub fn tx_traverse_with_caller(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: TraverseRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<TraverseResponse, AxonError> {
+        self.tx_traverse_inner(tx, req, Some(caller), attribution)
+    }
+
+    fn tx_traverse_inner(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: TraverseRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<TraverseResponse, AxonError> {
+        let base_collection = req.collection.clone();
+        let base_id = req.id.clone();
+        // Capture the phantom/base signals before the traversal read.
+        let base_version = self
+            .storage
+            .get(&base_collection, &base_id)?
+            .map(|e| e.version)
+            .unwrap_or(0);
+        let links_collection = Link::links_collection();
+        let links_version = self.storage.structural_version(&links_collection)?;
+
+        let resp = self.traverse_with_read_context(req, caller, attribution.as_ref())?;
+
+        tx.record_read(base_collection, base_id, base_version)?;
+        tx.record_scan_read(links_collection, links_version)?;
+        for entity in &resp.entities {
+            tx.record_read(entity.collection.clone(), entity.id.clone(), entity.version)?;
+        }
+        Ok(resp)
+    }
+
     fn get_entity_with_read_context(
         &self,
         req: GetEntityRequest,
