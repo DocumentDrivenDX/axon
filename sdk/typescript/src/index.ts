@@ -63,6 +63,16 @@ export type {
   AuditEntry,
   TraverseResult,
 } from "./types.js";
+export {
+  LocalReplica,
+  asyncIterableSource,
+  type ChangeEvent,
+  type ChangeOp,
+  type ChangeSource,
+  type QueryOptions,
+  type ReplicaRecord,
+  type SortDir,
+} from "./local-replica.js";
 
 // Re-export generated proto types for advanced usage.
 export * as proto from "./generated/axon.js";
