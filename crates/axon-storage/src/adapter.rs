@@ -213,6 +213,34 @@ pub trait StorageAdapter: Send + Sync {
     /// Returns the number of entities in the given collection.
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError>;
 
+    /// Return a monotonic structural-version counter for a collection (ADR-026).
+    ///
+    /// The contract: the returned value **strictly increases whenever the
+    /// membership of the collection changes** — i.e. on any create or delete of
+    /// an entity (or link) in that collection. Pure in-place updates (which bump
+    /// an entity's `version` but not the *set* of ids) need not advance it.
+    ///
+    /// This is the phantom guard for predicate/scan reads under
+    /// [`crate::adapter::StorageAdapter`]-backed Serializable transactions: a
+    /// transaction records this value when it performs a scan/predicate read and
+    /// re-checks it at commit; a change means a concurrent insert/delete touched
+    /// the scanned collection (a possible phantom), so the transaction aborts
+    /// first-committer-wins.
+    ///
+    /// **Fail-closed default.** The default returns
+    /// [`AxonError::InvalidOperation`] rather than a constant. A constant would
+    /// make every recorded scan read *appear* valid forever — a silent soundness
+    /// hole. Failing closed means a Serializable transaction that recorded a scan
+    /// read against an adapter without structural-version support aborts loudly
+    /// instead of committing an unvalidated phantom. Snapshot transactions never
+    /// call this, so unmigrated adapters are unaffected for the default level.
+    fn structural_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+        let _ = collection;
+        Err(AxonError::InvalidOperation(
+            "structural_version not supported by this adapter".into(),
+        ))
+    }
+
     /// Returns entities in a collection ordered by entity ID.
     ///
     /// - `start`: inclusive lower bound (no lower bound if `None`)
@@ -1256,6 +1284,9 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
     }
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
         (**self).count(collection)
+    }
+    fn structural_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+        (**self).structural_version(collection)
     }
     fn range_scan(
         &self,

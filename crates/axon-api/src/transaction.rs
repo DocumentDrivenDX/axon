@@ -74,6 +74,19 @@ pub(crate) struct ReadRef {
     pub(crate) observed_version: u64,
 }
 
+/// A predicate/scan read observed during a transaction, tracked for
+/// Serializable phantom validation (FEAT-008 TXN-05, ADR-026).
+///
+/// Records the [`StorageAdapter::structural_version`] of a scanned collection at
+/// read time. At commit the structural version is re-checked; a change means a
+/// concurrent create/delete touched the scanned collection (a possible phantom),
+/// so the transaction aborts first-committer-wins.
+#[derive(Debug, Clone)]
+pub(crate) struct ScanReadRef {
+    pub(crate) collection: CollectionId,
+    pub(crate) observed_structural_version: u64,
+}
+
 /// Global counter for generating unique transaction IDs.
 static TX_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -124,6 +137,10 @@ pub struct Transaction {
     /// Entity versions observed during the transaction (FEAT-008 TXN-05).
     /// Only populated and validated under [`IsolationLevel::Serializable`].
     reads: Vec<ReadRef>,
+    /// Per-collection structural versions observed via scan/predicate reads
+    /// (FEAT-008 TXN-05, ADR-026). Only populated and validated under
+    /// [`IsolationLevel::Serializable`].
+    scan_reads: Vec<ScanReadRef>,
     /// Effective isolation level for this transaction (FEAT-008 TXN-05).
     isolation: IsolationLevel,
     created_at: Instant,
@@ -138,6 +155,7 @@ impl Transaction {
             id: next_tx_id(),
             ops: Vec::new(),
             reads: Vec::new(),
+            scan_reads: Vec::new(),
             isolation: IsolationLevel::default(),
             created_at: Instant::now(),
             timeout: DEFAULT_TIMEOUT,
@@ -202,6 +220,49 @@ impl Transaction {
             collection,
             id,
             observed_version,
+        });
+        Ok(())
+    }
+
+    /// Record the structural version of a collection observed via a
+    /// scan/predicate read (FEAT-008 TXN-05, ADR-026).
+    ///
+    /// Callers that run a query, index scan, traversal, or aggregation over a
+    /// collection under [`IsolationLevel::Serializable`] should record the
+    /// collection's [`StorageAdapter::structural_version`] at read time. At
+    /// commit, every recorded scan read is re-validated; if the collection's
+    /// structural version changed (a concurrent create/delete — a possible
+    /// phantom), the transaction aborts first-committer-wins, surfaced as
+    /// [`AxonError::ConflictingVersion`] (409, retryable).
+    ///
+    /// This is the **predicate/phantom** read guard, complementing
+    /// [`Self::record_read`]'s key-addressed read set. It is conservative
+    /// (collection-granular): it aborts on any concurrent insert/delete to a
+    /// scanned collection, even one that does not match the predicate. This is
+    /// **sound** — every phantom is a membership change — at the cost of a higher
+    /// abort rate (ADR-026).
+    ///
+    /// Under [`IsolationLevel::Snapshot`] this is a no-op (the scan-read set is
+    /// not consulted), so snapshot transactions pay no capture cost.
+    ///
+    /// Returns `Err(InvalidArgument)` if the scan-read set already has
+    /// [`MAX_READS`] entries.
+    pub fn record_scan_read(
+        &mut self,
+        collection: CollectionId,
+        observed_structural_version: u64,
+    ) -> Result<(), AxonError> {
+        if self.isolation != IsolationLevel::Serializable {
+            return Ok(());
+        }
+        if self.scan_reads.len() >= MAX_READS {
+            return Err(AxonError::InvalidArgument(format!(
+                "transaction exceeds maximum of {MAX_READS} tracked scan reads"
+            )));
+        }
+        self.scan_reads.push(ScanReadRef {
+            collection,
+            observed_structural_version,
         });
         Ok(())
     }
@@ -570,6 +631,25 @@ impl Transaction {
                         expected: r.observed_version,
                         actual: current_version,
                         current_entity: current.map(Box::new),
+                    });
+                }
+            }
+
+            // ── Phase 1b (cont.): predicate/phantom scan-read validation ─────
+            // (FEAT-008 TXN-05, ADR-026). Every scanned collection's structural
+            // version must be unchanged. A change means a concurrent
+            // create/delete touched the collection — a possible phantom — so we
+            // abort first-committer-wins, surfaced as `ConflictingVersion` like
+            // the key-addressed path. `structural_version` is fail-closed on
+            // adapters that do not support it, so a scan-read recorded against
+            // such an adapter aborts loudly rather than committing unvalidated.
+            for sr in &self.scan_reads {
+                let current_structural = storage.structural_version(&sr.collection)?;
+                if current_structural != sr.observed_structural_version {
+                    return Err(AxonError::ConflictingVersion {
+                        expected: sr.observed_structural_version,
+                        actual: current_structural,
+                        current_entity: None,
                     });
                 }
             }
@@ -1247,5 +1327,125 @@ mod tests {
             matches!(err, AxonError::ConflictingVersion { expected: 0, .. }),
             "expected conflict on observed-absent read, got: {err}"
         );
+    }
+
+    // ── Predicate/phantom write skew (FEAT-008 TXN-05, ADR-026) ──────────────
+    //
+    // Invariant: "at most one on-call engineer". The anomaly is a *phantom* —
+    // each transaction inserts a NEW row that the other never read by id, so the
+    // key-addressed read set cannot see it. Only the per-collection
+    // structural-version guard catches it.
+
+    fn engineers() -> CollectionId {
+        CollectionId::new("engineers")
+    }
+
+    fn on_call(id: &str) -> Entity {
+        Entity::new(engineers(), EntityId::new(id), json!({"on_call": true}))
+    }
+
+    #[test]
+    fn phantom_write_skew_allowed_under_snapshot() {
+        // Two transactions each scan engineers, see zero on-call, and each
+        // INSERTS a new on-call engineer. Under Snapshot both commit and the
+        // "at most one on-call" invariant is violated — documents the SI gap.
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+
+        // T1: scan (snapshot → record_scan_read is a no-op), insert E1.
+        let mut t1 = Transaction::new();
+        let v1 = storage.structural_version(&engineers()).unwrap();
+        t1.record_scan_read(engineers(), v1).unwrap();
+        t1.create(on_call("E1")).unwrap();
+        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
+            .expect("T1 commits");
+
+        // T2 scanned before T1 inserted, inserts E2. Snapshot allows it.
+        let mut t2 = Transaction::new();
+        t2.record_scan_read(engineers(), v1).unwrap();
+        t2.create(on_call("E2")).unwrap();
+        t2.commit(&mut storage, &mut audit, Some("t2".into()), None)
+            .expect("under snapshot isolation T2 also commits (phantom skew allowed)");
+
+        // Invariant "at most one on-call" is VIOLATED — both rows exist.
+        assert_eq!(storage.count(&engineers()).unwrap(), 2);
+    }
+
+    #[test]
+    fn phantom_write_skew_prevented_under_serializable() {
+        // Same scenario under Serializable: T2's scanned collection changed
+        // structurally (T1 inserted E1), so its scan read is stale and the
+        // structural-version guard aborts it.
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+
+        let v0 = storage.structural_version(&engineers()).unwrap();
+
+        // T1: scan@v0, insert E1. Commits, bumping the structural version.
+        let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
+        t1.record_scan_read(engineers(), v0).unwrap();
+        t1.create(on_call("E1")).unwrap();
+        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
+            .expect("T1 commits on fresh state");
+
+        // T2 observed the collection at v0 before T1 inserted; inserts E2.
+        // Its scan read is now stale (structural version advanced), so
+        // serializable validation must abort it.
+        let mut t2 = Transaction::with_isolation(IsolationLevel::Serializable);
+        t2.record_scan_read(engineers(), v0).unwrap();
+        t2.create(on_call("E2")).unwrap();
+        let err = t2
+            .commit(&mut storage, &mut audit, Some("t2".into()), None)
+            .expect_err("serializable must reject T2: its scanned collection changed");
+        assert!(
+            matches!(err, AxonError::ConflictingVersion { expected, .. } if expected == v0),
+            "expected phantom serialization conflict, got: {err}"
+        );
+
+        // Invariant holds: only E1 was inserted (T2 aborted).
+        assert_eq!(storage.count(&engineers()).unwrap(), 1);
+    }
+
+    #[test]
+    fn serializable_scan_read_tolerates_pure_updates() {
+        // A pure in-place update does NOT change collection membership, so the
+        // structural version must not advance and a scan read over a
+        // concurrently-updated (but not inserted/deleted) collection must NOT
+        // falsely abort. (Updates are covered by the key-addressed read set.)
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        storage.put(on_call("E1")).unwrap();
+
+        let v = storage.structural_version(&engineers()).unwrap();
+
+        // Concurrent pure update of E1 (version 1 → 2): membership unchanged.
+        storage
+            .compare_and_swap(
+                Entity::new(engineers(), EntityId::new("E1"), json!({"on_call": false})),
+                1,
+            )
+            .unwrap();
+
+        // A serializable txn that scanned the collection commits unaffected by
+        // the update because the structural version is unchanged.
+        let mut tx = Transaction::with_isolation(IsolationLevel::Serializable);
+        tx.record_scan_read(engineers(), v).unwrap();
+        tx.create(on_call("E2")).unwrap();
+        tx.commit(&mut storage, &mut audit, None, None)
+            .expect("pure update must not bump the structural version");
+    }
+
+    #[test]
+    fn record_scan_read_is_noop_under_snapshot() {
+        // Snapshot must not consult the scan-read set: a stale scan-read must
+        // not cause an abort.
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        let mut tx = Transaction::new();
+        // Record a deliberately-wrong structural version; snapshot ignores it.
+        tx.record_scan_read(engineers(), 999).unwrap();
+        tx.create(on_call("E1")).unwrap();
+        tx.commit(&mut storage, &mut audit, None, None)
+            .expect("snapshot must ignore the scan-read set");
     }
 }

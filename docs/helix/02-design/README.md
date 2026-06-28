@@ -37,6 +37,7 @@ contracts, and technical spikes.
 - [ADR-023: Preview-Record Audit Threading](adr/ADR-023-preview-audit-threading.md)
 - [ADR-024: Rate Limiting Semantics — Per-Actor Sliding Window](adr/ADR-024-rate-limiting-semantics.md)
 - [ADR-025: Client-Projection Cursor API — Opaque, Restart/Schema-Stable Resume Tokens](adr/ADR-025-client-projection-cursor-api.md) (refines ADR-014's projection model for the client local replica, FEAT-032)
+- [ADR-026: Predicate-Read Serializability — Per-Collection Structural-Version Phantom Guard](adr/ADR-026-predicate-read-serializability.md) (extends ADR-004 Serializable to collection-granular predicate/phantom reads, FEAT-008 TXN-05)
 
 ### Contracts
 

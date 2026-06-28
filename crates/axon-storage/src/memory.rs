@@ -109,6 +109,15 @@ pub struct MemoryStorageAdapter {
     namespaces: BTreeMap<String, BTreeSet<String>>,
     /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
     tx_snapshot: Option<TxSnapshot>,
+    /// Per-collection monotonic structural-version counter (ADR-026).
+    ///
+    /// Strictly increases on any membership change (create/delete) in a
+    /// collection. Used as the phantom guard for predicate/scan reads under
+    /// Serializable transactions. Intentionally **not** rolled back by
+    /// `abort_tx`: the counter must be monotonic so that a concurrent scan-read
+    /// transaction reliably observes that membership churned, even if the
+    /// churning transaction later aborted.
+    structural_versions: HashMap<CatalogKey, u64>,
     /// EAV secondary index: (collection, field, value) → set of entity IDs.
     indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
     /// Compound indexes: (collection, index_position, compound_key) → set of entity IDs.
@@ -210,6 +219,7 @@ impl Default for MemoryStorageAdapter {
             databases,
             namespaces,
             tx_snapshot: None,
+            structural_versions: HashMap::new(),
             indexes: BTreeMap::new(),
             compound_indexes: BTreeMap::new(),
             numeric_ids: NumericIdCache::default(),
@@ -332,6 +342,13 @@ impl MemoryStorageAdapter {
         }
     }
 
+    /// Advance the monotonic structural-version counter for a collection
+    /// (ADR-026). Called from every membership-changing mutation.
+    fn bump_structural_version(&mut self, key: &CatalogKey) {
+        let counter = self.structural_versions.entry(key.clone()).or_insert(0);
+        *counter = counter.saturating_add(1);
+    }
+
     fn remove_catalog_key(&mut self, key: &CatalogKey) {
         self.collections.remove(key);
         self.schema_versions.remove(key);
@@ -344,7 +361,15 @@ impl MemoryStorageAdapter {
     }
 
     fn purge_collection_entities(&mut self, collection: &CatalogKey) {
-        self.data.remove(collection);
+        // Dropping a collection removes all of its members → membership change
+        // (ADR-026). Bump only if it actually held data.
+        if self
+            .data
+            .remove(collection)
+            .is_some_and(|col| !col.is_empty())
+        {
+            self.bump_structural_version(collection);
+        }
     }
 
     fn purge_doomed_collection_entities(&mut self, doomed: &[CatalogKey]) {
@@ -387,17 +412,31 @@ impl StorageAdapter for MemoryStorageAdapter {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let mut stored = entity;
         stored.collection = key.collection.clone();
+        let is_new = !self
+            .data
+            .get(&key)
+            .is_some_and(|col| col.contains_key(&stored.id));
         self.data
-            .entry(key)
+            .entry(key.clone())
             .or_default()
             .insert(stored.id.clone(), stored);
+        // Membership change → bump the structural-version counter (ADR-026).
+        if is_new {
+            self.bump_structural_version(&key);
+        }
         Ok(())
     }
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        if let Some(col) = self.data.get_mut(&key) {
-            col.remove(id);
+        let removed = if let Some(col) = self.data.get_mut(&key) {
+            col.remove(id).is_some()
+        } else {
+            false
+        };
+        // Membership change → bump the structural-version counter (ADR-026).
+        if removed {
+            self.bump_structural_version(&key);
         }
         Ok(())
     }
@@ -405,6 +444,11 @@ impl StorageAdapter for MemoryStorageAdapter {
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         Ok(self.data.get(&key).map_or(0, |col| col.len()))
+    }
+
+    fn structural_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        Ok(self.structural_versions.get(&key).copied().unwrap_or(0))
     }
 
     fn range_scan(
@@ -505,9 +549,11 @@ impl StorageAdapter for MemoryStorageAdapter {
             ..entity
         };
         self.data
-            .entry(key)
+            .entry(key.clone())
             .or_default()
             .insert(inserted.id.clone(), inserted.clone());
+        // Membership change → bump the structural-version counter (ADR-026).
+        self.bump_structural_version(&key);
         Ok(inserted)
     }
 

@@ -107,15 +107,23 @@ create). A stale read aborts the transaction first-committer-wins, surfaced as
 `ConflictingVersion` (409, retryable) — the same retry contract as a write
 conflict. The effective level is inspectable via `Transaction::isolation_level`.
 
-**Remaining gap — predicate/phantom serializability is not provided.** The
-read-set is key-addressed: it covers entities read **by id** and recorded via
-`record_read`. It does **not** cover anomalies expressed over query results,
-secondary-index scans, link traversals, or aggregations, where a
-concurrently-inserted/removed row changes a predicate result without changing
-any previously-read entity version. General predicate serializability requires
-SSI (Cahill-style rw-antidependency / SIREAD locks) or predicate locking and
-remains future work. No surface may claim unqualified "serializable"; the
-honest claim is "Serializable for key-addressed read sets."
+**Predicate/phantom serializability — conservative guard delivered (ADR-026).**
+The key-addressed read set above covers entities read **by id**. Predicate /
+phantom anomalies — expressed over query results, secondary-index scans, link
+traversals, or aggregations, where a concurrently-inserted/removed row changes a
+predicate result without changing any previously-read entity version — are
+addressed by a **per-collection structural-version guard** (ADR-026): a
+Serializable transaction records the structural version of each scanned
+collection via `Transaction::record_scan_read` and aborts at commit if that
+collection's membership changed (any concurrent create/delete). This is sound but
+**conservative** (it over-aborts on non-matching inserts/deletes) and is
+**delivered on the memory adapter only**; SQLite and PostgreSQL fail closed on
+scan-read-recording Serializable transactions via `structural_version`'s
+fail-closed default. **Automatic capture from the query layer** and **full Cahill
+SSI** (rw-antidependency / SIREAD pivot detection) for precise serializability
+with minimal aborts remain future work. No surface may claim unqualified
+"serializable"; the honest claim is "Serializable for key-addressed read sets,
+plus a conservative collection-granular predicate guard (memory adapter)."
 
 ### Audit Integration
 
@@ -242,14 +250,14 @@ and maps cleanly onto all three StorageAdapter backends.
 |------|--------|
 | Positive | Deadlock-free. Simple implementation — version check is a comparison, not a lock acquisition. Works uniformly across SQLite, PostgreSQL, and memory. Conflict response carries current state, enabling intelligent client-side merging |
 | Negative | Callers must implement retry logic on conflict. High-contention workloads (unlikely for agentic use cases) will retry frequently |
-| Neutral | Snapshot Isolation is the default (write-set OCC prevents lost updates and dirty reads but not write skew). Opt-in Serializable adds key-addressed read-set validation (B-104), preventing write skew over entities read by id; predicate/phantom serializability (SSI/predicate locking) remains future work per FEAT-008 |
+| Neutral | Snapshot Isolation is the default (write-set OCC prevents lost updates and dirty reads but not write skew). Opt-in Serializable adds key-addressed read-set validation (B-104), preventing write skew over entities read by id, plus a conservative collection-granular predicate guard on the memory adapter (ADR-026); precise predicate serializability (SSI/predicate locking), the guard on SQL backends, and query-layer auto-capture remain future work per FEAT-008 |
 
 ## Risks
 
 | Risk | Prob | Impact | Mitigation |
 |------|------|--------|------------|
 | Key-addressed write skew violates application invariants | Low | Medium | Delivered (B-104): opt-in Serializable validates the key-addressed read set. Invariant-critical flows read their guard entities through `record_read` under Serializable |
-| Predicate/phantom write skew (query/scan/traversal invariants) not caught by Serializable | Medium | Medium | Documented scope limit; such invariants must be enforced at the application level or serialized on a single guard entity until SSI/predicate locking lands |
+| Predicate/phantom write skew (query/scan/traversal invariants) not caught by Serializable | Medium | Medium | Conservative collection-granular guard delivered for the memory adapter (ADR-026, opt-in Serializable + `record_scan_read`); SQL backends fail closed; precise SSI and query-layer auto-capture remain future. Until then, predicate invariants on SQL backends must be app-enforced or serialized on a single guard entity |
 | High-contention hot entities degrade to spin-retry | Low | Medium | Conflict response includes current state for intelligent merge; agentic workloads are low-contention by design |
 | Crash between `commit_tx()` and audit flush leaves committed mutation unaudited | Low | High | INV-003 recovery invariant required for durable backends (same-transaction audit or intent log replay) |
 
