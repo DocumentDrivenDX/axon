@@ -132,6 +132,8 @@ const UPDATE_ENTITY_TRANSACTION_INPUT: &str = "UpdateEntityTransactionInput";
 const PATCH_ENTITY_TRANSACTION_INPUT: &str = "PatchEntityTransactionInput";
 const DELETE_ENTITY_TRANSACTION_INPUT: &str = "DeleteEntityTransactionInput";
 const READ_ENTITY_TRANSACTION_INPUT: &str = "ReadEntityTransactionInput";
+const READ_NAMED_QUERY_TRANSACTION_INPUT: &str = "ReadNamedQueryTransactionInput";
+const TRANSACTION_ISOLATION_ENUM: &str = "TransactionIsolation";
 const CREATE_LINK_TRANSACTION_INPUT: &str = "CreateLinkTransactionInput";
 const DELETE_LINK_TRANSACTION_INPUT: &str = "DeleteLinkTransactionInput";
 const COMMIT_TRANSACTION_PAYLOAD: &str = "CommitTransactionPayload";
@@ -807,6 +809,21 @@ fn commit_transaction_input_object() -> InputObject {
             "operations",
             TypeRef::named_nn_list_nn(TRANSACTION_OPERATION_INPUT),
         ))
+        // Optional isolation level (FEAT-008 TXN-05). Omitted → SNAPSHOT (the V1
+        // default, write-set OCC). SERIALIZABLE additionally validates the
+        // transaction's recorded read footprint (readEntity / readNamedQuery)
+        // at commit, aborting first-committer-wins on a conflicting concurrent
+        // write or membership change.
+        .field(InputValue::new(
+            "isolation",
+            TypeRef::named(TRANSACTION_ISOLATION_ENUM),
+        ))
+}
+
+fn transaction_isolation_enum() -> Enum {
+    Enum::new(TRANSACTION_ISOLATION_ENUM)
+        .item("SNAPSHOT")
+        .item("SERIALIZABLE")
 }
 
 fn transaction_operation_input_object() -> InputObject {
@@ -814,6 +831,10 @@ fn transaction_operation_input_object() -> InputObject {
         .field(InputValue::new(
             "readEntity",
             TypeRef::named(READ_ENTITY_TRANSACTION_INPUT),
+        ))
+        .field(InputValue::new(
+            "readNamedQuery",
+            TypeRef::named(READ_NAMED_QUERY_TRANSACTION_INPUT),
         ))
         .field(InputValue::new(
             "createEntity",
@@ -901,6 +922,21 @@ fn read_entity_transaction_input_object() -> InputObject {
         // id is optional — caller may supply `data` for a data-only explain.
         .field(InputValue::new("id", TypeRef::named(TypeRef::ID)))
         .field(InputValue::new("data", TypeRef::named("JSON")))
+}
+
+fn read_named_query_transaction_input_object() -> InputObject {
+    InputObject::new(READ_NAMED_QUERY_TRANSACTION_INPUT)
+        // The schema-declared named query to record as a read footprint. The
+        // query's referenced (aliased) labels are resolved to collections and
+        // recorded as scan reads so a Serializable commit aborts on a concurrent
+        // membership change to any queried collection (FEAT-008 TXN-05).
+        .field(InputValue::new("name", TypeRef::named_nn(TypeRef::STRING)))
+        // Optional collection that declares the named query. When omitted, the
+        // query name is resolved across all collection schemas.
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named(TypeRef::STRING),
+        ))
 }
 
 fn create_link_transaction_input_object() -> InputObject {
@@ -7113,6 +7149,29 @@ fn transaction_child_preview<S: StorageAdapter>(
     }
     let (variant, payload) = variants[0];
     let payload = required_object(payload, variant, index)?;
+    // Read ops (FEAT-008 TXN-05) stage no mutation, so they have no preview
+    // diff/pre-image — treat them as an inert no-op in the preview path.
+    if matches!(variant, "readEntity" | "readNamedQuery") {
+        return Ok(MutationPreviewComputation {
+            explain_request: ExplainPolicyRequest {
+                operation: "read".into(),
+                collection: None,
+                entity_id: None,
+                expected_version: None,
+                data: None,
+                patch: None,
+                lifecycle_name: None,
+                target_state: None,
+                to_version: None,
+                operations: Vec::new(),
+                actor_override: None,
+            },
+            pre_images: Vec::new(),
+            diff: Value::Null,
+            affected_fields: Vec::new(),
+            schema_version: 0,
+        });
+    }
     let normalized = transaction_payload_to_canonical_operation(variant, payload)?;
     let kind = match variant {
         "createEntity" => MutationOperationKind::CreateEntity,
@@ -8181,12 +8240,66 @@ fn transaction_payload_value(tx_id: &str, written: &[Entity], replay_hit: bool) 
     })
 }
 
+/// Stage a schema-declared named-query read footprint into `tx` (FEAT-008
+/// TXN-05). Resolves the named query's cypher, maps its (aliased) labels to
+/// collections via the named-query alias helpers, adds the links collection when
+/// the query traverses relationships, and records a scan read for each — so a
+/// Serializable commit aborts first-committer-wins on a concurrent membership
+/// change to any queried collection. Recording is a no-op under Snapshot.
+async fn stage_named_query_read<S: StorageAdapter + 'static>(
+    handler: &SharedHandler<S>,
+    tx: &mut axon_api::transaction::Transaction,
+    name: &str,
+    declaring_collection: Option<&str>,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+) -> Result<(), AxonError> {
+    // Resolve the named-query definition from the (build-time) schema map. When
+    // a declaring collection is given, look only there; otherwise scan all.
+    let named_query = match declaring_collection {
+        Some(decl) => schemas_by_collection
+            .get(decl)
+            .and_then(|schema| schema.queries.get(name).cloned()),
+        None => schemas_by_collection
+            .values()
+            .find_map(|schema| schema.queries.get(name).cloned()),
+    }
+    .ok_or_else(|| {
+        AxonError::NotFound(format!(
+            "named query '{name}' is not declared on any collection"
+        ))
+    })?;
+
+    let query = axon_cypher::parse(&named_query.cypher)
+        .map_err(|err| AxonError::InvalidArgument(format!("invalid named query cypher: {err}")))?;
+
+    // Alias-aware: resolve the query's bound labels to collections (handles the
+    // GraphQL label aliases) rather than recording raw label names.
+    let bindings = named_query_variable_collections(&query, schemas_by_collection);
+    let mut collections: Vec<CollectionId> = bindings.into_values().collect();
+    collections.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    collections.dedup();
+    // A traversal depends on link membership; record the links collection too.
+    if query
+        .matches
+        .iter()
+        .any(|m| m.patterns.iter().any(|p| !p.steps.is_empty()))
+    {
+        collections.push(Link::links_collection());
+    }
+
+    let guard = handler.lock().await;
+    guard.tx_record_scan_collections(tx, &collections)?;
+    drop(guard);
+    Ok(())
+}
+
 async fn commit_transaction_resolver<S: StorageAdapter + 'static>(
     ctx: async_graphql::dynamic::ResolverContext<'_>,
     handler: SharedHandler<S>,
     caller: CallerIdentity,
+    schemas_by_collection: Arc<HashMap<String, CollectionSchema>>,
 ) -> Result<Option<FieldValue<'static>>, GqlError> {
-    use axon_api::transaction::Transaction;
+    use axon_api::transaction::{IsolationLevel, Transaction};
 
     let input = ctx.args.try_get("input")?.as_value();
     let input_json = gql_input_to_json(input)?;
@@ -8197,6 +8310,19 @@ async fn commit_transaction_resolver<S: StorageAdapter + 'static>(
         .get("operations")
         .and_then(Value::as_array)
         .ok_or_else(|| GqlError::new("operations must be a list"))?;
+
+    // Isolation opt-in (FEAT-008 TXN-05): SNAPSHOT (default) keeps V1 write-set
+    // OCC; SERIALIZABLE additionally validates the recorded read footprint at
+    // commit. The level is fixed for the whole transaction.
+    let isolation = match input_obj.get("isolation").and_then(Value::as_str) {
+        None | Some("SNAPSHOT") => IsolationLevel::Snapshot,
+        Some("SERIALIZABLE") => IsolationLevel::Serializable,
+        Some(other) => {
+            return Err(axon_error_to_gql(AxonError::InvalidArgument(format!(
+                "unknown transaction isolation '{other}'"
+            ))));
+        }
+    };
 
     if operations.len() > 100 {
         return Err(axon_error_to_gql(AxonError::InvalidArgument(
@@ -8219,7 +8345,7 @@ async fn commit_transaction_resolver<S: StorageAdapter + 'static>(
         }
     }
 
-    let mut tx = Transaction::new();
+    let mut tx = Transaction::with_isolation(isolation);
 
     for (index, op) in operations.iter().enumerate() {
         let obj = required_object(op, "operation", index)?;
@@ -8242,6 +8368,55 @@ async fn commit_transaction_resolver<S: StorageAdapter + 'static>(
         let (variant, payload) = variants[0];
         let payload = required_object(payload, variant, index)?;
         let stage_result = match variant {
+            // ── Auto-capturing reads (FEAT-008 TXN-05) ──────────────────────
+            // Read ops stage NO write; they record a read footprint into `tx`.
+            // Under SERIALIZABLE that footprint is validated at commit (aborts
+            // first-committer-wins on a conflicting concurrent change); under
+            // SNAPSHOT recording is a no-op, so behavior is unchanged.
+            "readEntity" => {
+                let collection = required_str(payload, "collection", index)?;
+                // `id` is required for a key-addressed transactional read; the
+                // data-only explain form is preview-path only, not a read op.
+                let id = required_str(payload, "id", index)?;
+                let guard = handler.lock().await;
+                // Auto-captures the observed version (or observed-absent = 0)
+                // into the transaction's key-addressed read set, policy-enforced.
+                let read = guard.tx_get_entity_with_caller(
+                    &mut tx,
+                    GetEntityRequest {
+                        collection: CollectionId::new(&collection),
+                        id: EntityId::new(&id),
+                    },
+                    &caller,
+                    None,
+                );
+                drop(guard);
+                // A missing entity is a legitimate observed-absent read (already
+                // recorded as version 0); only surface other errors.
+                match read {
+                    Ok(_) | Err(AxonError::NotFound(_)) => Ok(()),
+                    Err(err) => Err(err),
+                }
+            }
+            "readNamedQuery" => {
+                let name = required_str(payload, "name", index)?;
+                let declaring = payload
+                    .get("collection")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                match stage_named_query_read(
+                    &handler,
+                    &mut tx,
+                    &name,
+                    declaring.as_deref(),
+                    &schemas_by_collection,
+                )
+                .await
+                {
+                    Ok(()) => Ok(()),
+                    Err(err) => return Err(op_error(axon_error_to_gql(err), index)),
+                }
+            }
             "createEntity" => {
                 let collection = required_str(payload, "collection", index)?;
                 let id = required_str(payload, "id", index)?;
@@ -9562,15 +9737,20 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     // ── Global transaction mutation ──────────────────────────────────────────
     {
         let handler_commit_transaction = Arc::clone(&handler);
+        // Capture the build-time schema map so the named-query read footprint
+        // (FEAT-008 TXN-05) can resolve aliased labels to collections; the
+        // in-memory adapter does not enumerate schema collections at runtime.
+        let commit_schemas = Arc::new(schemas_by_collection.clone());
         let commit_transaction_field = Field::new(
             "commitTransaction",
             TypeRef::named_nn(COMMIT_TRANSACTION_PAYLOAD),
             move |ctx| {
                 let handler = Arc::clone(&handler_commit_transaction);
+                let schemas = Arc::clone(&commit_schemas);
                 let caller = caller_from_ctx(&ctx);
-                FieldFuture::new(
-                    async move { commit_transaction_resolver(ctx, handler, caller).await },
-                )
+                FieldFuture::new(async move {
+                    commit_transaction_resolver(ctx, handler, caller, schemas).await
+                })
             },
         )
         .argument(InputValue::new(
@@ -9734,6 +9914,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     .register(commit_transaction_input_object())
     .register(transaction_operation_input_object())
     .register(read_entity_transaction_input_object())
+    .register(read_named_query_transaction_input_object())
     .register(create_entity_transaction_input_object())
     .register(update_entity_transaction_input_object())
     .register(patch_entity_transaction_input_object())
@@ -9754,6 +9935,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     }
     schema_builder = schema_builder
         .register(aggregate_function_enum())
+        .register(transaction_isolation_enum())
         .register(aggregate_value_object());
     schema_builder = register_root_objects(schema_builder);
 
@@ -10119,6 +10301,7 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         .register(commit_transaction_input_object())
         .register(transaction_operation_input_object())
         .register(read_entity_transaction_input_object())
+        .register(read_named_query_transaction_input_object())
         .register(create_entity_transaction_input_object())
         .register(update_entity_transaction_input_object())
         .register(patch_entity_transaction_input_object())
@@ -10139,6 +10322,7 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
     }
     schema_builder = schema_builder
         .register(aggregate_function_enum())
+        .register(transaction_isolation_enum())
         .register(aggregate_value_object());
     schema_builder = register_root_objects(schema_builder);
 
@@ -10819,6 +11003,7 @@ fn is_reserved_graphql_type_name(name: &str) -> bool {
 mod tests {
     use super::*;
     use axon_api::test_fixtures::seed_procurement_fixture;
+    use axon_api::transaction::{IsolationLevel, Transaction};
     use axon_core::id::CollectionId;
     use axon_schema::access_control::AccessControlPolicy;
     use axon_storage::MemoryStorageAdapter;
@@ -13175,6 +13360,273 @@ mod tests {
             broker.receiver_count(),
             0,
             "no receivers should remain after stream is dropped"
+        );
+    }
+
+    // ── FEAT-008 TXN-05: serializable named-query / Cypher reads in a commit ──
+
+    /// A `tasks` schema declaring an `open_tasks` named query over the (aliased)
+    /// `Task` label. The named-query read footprint resolves this alias back to
+    /// the `tasks` collection.
+    fn named_query_tasks_schema() -> CollectionSchema {
+        let mut schema = test_schema();
+        // The named-query planner requires an index for the predicated field.
+        schema.indexes.push(axon_schema::schema::IndexDef {
+            field: "status".into(),
+            index_type: axon_schema::schema::IndexType::String,
+            unique: false,
+        });
+        schema.queries.insert(
+            "open_tasks".into(),
+            NamedQueryDef {
+                description: "Open tasks".into(),
+                cypher: "MATCH (t:Task {status: 'open'}) RETURN t".into(),
+                parameters: Vec::new(),
+            },
+        );
+        schema
+    }
+
+    fn create_task(guard: &mut AxonHandler<MemoryStorageAdapter>, id: &str, status: &str) {
+        guard
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new(id),
+                data: json!({ "title": id, "status": status }),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("seed task");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_transaction_input_exposes_isolation_and_read_named_query() {
+        // The isolation opt-in and the new read-op variant must be reachable in
+        // the generated schema (both surface to GraphQL clients).
+        let schema = build_schema(&[named_query_tasks_schema()]).expect("schema builds");
+        let sdl = schema.schema.sdl();
+        assert!(
+            sdl.contains("enum TransactionIsolation"),
+            "isolation enum missing from SDL"
+        );
+        assert!(sdl.contains("SERIALIZABLE"), "SERIALIZABLE missing");
+        assert!(
+            sdl.contains("input ReadNamedQueryTransactionInput"),
+            "readNamedQuery input missing from SDL"
+        );
+        // CommitTransactionInput must declare the `isolation` field.
+        let result = schema
+            .schema
+            .execute(r#"{ __type(name: "CommitTransactionInput") { inputFields { name } } }"#)
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let body = result.data.into_json().expect("json");
+        let fields: Vec<&str> = body["__type"]["inputFields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["name"].as_str())
+            .collect();
+        assert!(fields.contains(&"isolation"), "isolation field missing");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn serializable_named_query_read_aborts_on_concurrent_insert() {
+        // Proves the GraphQL named-query read footprint is validated under
+        // SERIALIZABLE. The GraphQL resolver stages the read footprint via the
+        // same helper used by `commitTransaction` (`stage_named_query_read`), so
+        // we stage the read, let a concurrent insert into the queried collection
+        // commit, then commit the transaction — which must abort.
+        let schema_def = named_query_tasks_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let caller = CallerIdentity::anonymous();
+        let schemas: HashMap<String, CollectionSchema> =
+            HashMap::from([(schema_def.collection.to_string(), schema_def.clone())]);
+
+        {
+            let mut guard = handler.lock().await;
+            create_task(&mut guard, "anchor", "open");
+        }
+        let mut tx = Transaction::with_isolation(IsolationLevel::Serializable);
+        // Stage the named-query read footprint (records the `tasks` scan read).
+        stage_named_query_read(&handler, &mut tx, "open_tasks", Some("tasks"), &schemas)
+            .await
+            .expect("named-query read footprint staged");
+        // Stage a write so the transaction has an effect to commit.
+        tx.update(
+            Entity::new(
+                CollectionId::new("tasks"),
+                EntityId::new("anchor"),
+                json!({"title": "anchor", "status": "done"}),
+            ),
+            1,
+            None,
+        )
+        .expect("stage write");
+
+        // Concurrent committed insert into the queried collection (a phantom).
+        {
+            let mut guard = handler.lock().await;
+            create_task(&mut guard, "new-open", "open");
+        }
+
+        let err = {
+            let mut guard = handler.lock().await;
+            guard
+                .commit_transaction_with_caller(tx, &caller, None)
+                .expect_err("serializable must abort: queried collection changed")
+        };
+        assert!(
+            matches!(err, AxonError::ConflictingVersion { .. }),
+            "expected conflict, got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_named_query_read_commits_through_graphql() {
+        // SNAPSHOT (default) leaves the read footprint inert: the same shape
+        // commits even though a concurrent insert happened. Driven end-to-end
+        // through the GraphQL `commitTransaction` mutation.
+        let schema_def = named_query_tasks_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            create_task(&mut guard, "seed", "open");
+        }
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema builds");
+
+        let result = schema
+            .schema
+            .execute(
+                r#"mutation {
+                    commitTransaction(input: {
+                        operations: [
+                            { readNamedQuery: { name: "open_tasks", collection: "tasks" } },
+                            { createEntity: { collection: "tasks", id: "added", data: { title: "Added", status: "open" } } }
+                        ]
+                    }) { transactionId }
+                }"#,
+            )
+            .await;
+        assert!(
+            result.errors.is_empty(),
+            "snapshot read op must not block commit: {:?}",
+            result.errors
+        );
+        let data = result.data.into_json().expect("json");
+        assert!(data["commitTransaction"]["transactionId"].is_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn serializable_read_entity_aborts_on_concurrent_update() {
+        // readEntity auto-capture: a serializable tx that reads an entity then a
+        // concurrent update to it must abort. The GraphQL resolver records this
+        // read via `tx_get_entity_with_caller`; we exercise that same path.
+        let schema_def = named_query_tasks_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let caller = CallerIdentity::anonymous();
+        {
+            let mut guard = handler.lock().await;
+            create_task(&mut guard, "watched", "open");
+            create_task(&mut guard, "anchor2", "open");
+        }
+
+        let mut tx = Transaction::with_isolation(IsolationLevel::Serializable);
+        // Auto-capture the read of `watched` (observed version 1).
+        {
+            let guard = handler.lock().await;
+            guard
+                .tx_get_entity_with_caller(
+                    &mut tx,
+                    GetEntityRequest {
+                        collection: CollectionId::new("tasks"),
+                        id: EntityId::new("watched"),
+                    },
+                    &caller,
+                    None,
+                )
+                .expect("read watched");
+        }
+        // Stage a disjoint write (the txn's actual effect).
+        tx.update(
+            Entity::new(
+                CollectionId::new("tasks"),
+                EntityId::new("anchor2"),
+                json!({"title": "anchor2", "status": "done"}),
+            ),
+            1,
+            None,
+        )
+        .expect("stage write");
+
+        // Concurrent committed update of the read entity → bumps its version.
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .update_entity(UpdateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("watched"),
+                    data: json!({"title": "watched", "status": "done"}),
+                    expected_version: 1,
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("concurrent update");
+        }
+
+        let err = {
+            let mut guard = handler.lock().await;
+            guard
+                .commit_transaction_with_caller(tx, &caller, None)
+                .expect_err("serializable must abort: read entity changed")
+        };
+        assert!(
+            matches!(
+                err,
+                AxonError::ConflictingVersion {
+                    expected: 1,
+                    actual: 2,
+                    ..
+                }
+            ),
+            "expected read-set conflict, got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_read_entity_commits_through_graphql() {
+        // readEntity is wired into the staging path (previously errored as an
+        // "unsupported transaction operation"); under SNAPSHOT it is inert and
+        // the transaction commits end-to-end through GraphQL.
+        let schema_def = named_query_tasks_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            create_task(&mut guard, "watched", "open");
+        }
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema builds");
+
+        let result = schema
+            .schema
+            .execute(
+                r#"mutation {
+                    commitTransaction(input: {
+                        operations: [
+                            { readEntity: { collection: "tasks", id: "watched" } },
+                            { createEntity: { collection: "tasks", id: "fresh", data: { title: "Fresh", status: "open" } } }
+                        ]
+                    }) { transactionId }
+                }"#,
+            )
+            .await;
+        assert!(
+            result.errors.is_empty(),
+            "readEntity must be staged, not rejected: {:?}",
+            result.errors
         );
     }
 }

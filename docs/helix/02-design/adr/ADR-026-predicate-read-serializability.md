@@ -205,9 +205,12 @@ mutable predicates must still be guarded at the application level.
   `tx_record_scan_collections` for callers that resolve aliased labels
   themselves, e.g. the GraphQL named-query layer) records a scan read per
   referenced collection (+ the links collection when relationships are
-  traversed). **Remaining integration (not a guard gap):** GraphQL named-query
-  reads do not yet *run inside* a commit-transaction, so the footprint primitive
-  has no production caller there until that wiring lands.
+  traversed). **GraphQL integration delivered:** `commitTransaction` accepts a
+  `TransactionIsolation` level (SNAPSHOT default / SERIALIZABLE) and `readEntity`
+  / `readNamedQuery` operations that auto-capture into the transaction —
+  `readNamedQuery` resolves the named query's aliased labels to collections and
+  records the footprint via `tx_record_scan_collections`. So a serializable
+  GraphQL transaction's declared reads are validated at commit.
 - **Full Cahill SSI** (SIREAD locks, rw-antidependency / dangerous-structure
   pivot detection) for *precise* serializability with minimal aborts. The
   structural-version guard is intentionally coarser (collection-granular,
@@ -219,7 +222,7 @@ mutable predicates must still be guarded at the application level.
 | Type | Impact |
 |------|--------|
 | Positive | Sound phantom prevention on **every** backend (generic scan default + native overrides); reuses existing `ConflictingVersion` retry contract; Snapshot path unchanged and zero-overhead; read-derived signatures add no write-path cost and need no schema migration |
-| Negative | Conservative: over-aborts on non-matching concurrent inserts/deletes to a scanned collection (acceptable for low-contention agentic workloads, ADR-004); the generic default and SQLite paths are O(n)-ids per scanned collection at commit (Postgres push-down and memory are O(1)); membership-only (update-driven predicate skew not caught); auto-capture delivered for entity reads/queries/aggregates/traversals + Cypher footprints (`tx_get_entity`/`tx_query_entities`/`tx_aggregate`/`tx_traverse`/`tx_record_cypher_scan`); GraphQL named-query-inside-transaction wiring is a remaining integration |
+| Negative | Conservative: over-aborts on non-matching concurrent inserts/deletes to a scanned collection (acceptable for low-contention agentic workloads, ADR-004); the generic default and SQLite paths are O(n)-ids per scanned collection at commit (Postgres push-down and memory are O(1)); membership-only (update-driven predicate skew not caught); auto-capture delivered for entity reads/queries/aggregates/traversals + Cypher footprints (`tx_get_entity`/`tx_query_entities`/`tx_aggregate`/`tx_traverse`/`tx_record_cypher_scan`); GraphQL `commitTransaction` exposes isolation + `readEntity`/`readNamedQuery` auto-capture |
 | Neutral | Collection-granular guard is coarser than true SSI; the honest claim grows to "key-addressed reads + collection-granular phantom reads, all backends" |
 
 ## Risks
