@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/axon-core",
+    "crates/axon-esf",
     "crates/axon-schema",
     "crates/axon-audit",
     "crates/axon-storage",
@@ -91,7 +92,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "json", "uuid"] }
 
 # Schema validation
-jsonschema = "0.28"
+jsonschema = { version = "0.28", default-features = false }
 serde_yaml = "0.9"
 regex = "1"
 

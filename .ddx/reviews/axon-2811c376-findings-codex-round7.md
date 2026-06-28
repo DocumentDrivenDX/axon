@@ -1,0 +1,13 @@
+### Findings
+
+| Severity | Area | Finding |
+|---|---|---|
+| BLOCKING | Index model / workspace compile | The plan says to delete `axon-schema`’s local `IndexType`, `IndexDef`, `CompoundIndexField`, and `CompoundIndexDef`, then re-export the new `axon-esf::IndexType` with variants `Hash`, `BTree`, and `FullText`. The current workspace uses `IndexType` as the indexed value kind: `String`, `Integer`, `Float`, `Datetime`, `Boolean` in [schema.rs](/Users/erik/Projects/axon/crates/axon-schema/src/schema.rs:73). That type is matched in named-query validation at [named_queries.rs](/Users/erik/Projects/axon/crates/axon-schema/src/named_queries.rs:277), used in tests at [named_queries.rs](/Users/erik/Projects/axon/crates/axon-schema/src/named_queries.rs:573), and referenced broadly across API, GraphQL, storage, server, MCP, and Cypher code. Following the plan literally removes those variants and changes semantics, so final `cargo check` cannot pass without extra migration design not specified in the plan. |
+| BLOCKING | Storage semantics | `CollectionSchema.indexes: Vec<IndexDef>` currently carries value-type information used by storage extraction and query behavior; the plan replaces that `IndexDef.index_type` with an index mechanism enum. Evidence: `CollectionSchema.indexes` is typed as `Vec<IndexDef>` in [schema.rs](/Users/erik/Projects/axon/crates/axon-schema/src/schema.rs:183), while storage matches `IndexType::String`, `Integer`, `Float`, `Boolean`, and `Datetime` in `crates/axon-storage/src/adapter.rs`. The plan does not define how storage obtains value-kind metadata after this replacement. |
+| WARNING | Plan scope | The plan says `axon-schema::EsfDocument` should split unified `indexes` into `CollectionSchema.indexes` and `CollectionSchema.compound_indexes`, but it does not resolve the type conflict between external ESF index declarations and the internal storage-facing index declarations. This makes implementation agents likely to either preserve compilation by drifting from the specified `Hash/BTree/FullText` enum or follow the plan and break internal callers. |
+
+### Verdict: REQUEST_CHANGES
+
+### Summary
+
+The plan has converged on validation and crate-boundary details, but it has not converged on the index type model. The proposed moved `IndexType` is not the same type currently used by `axon-schema`; replacing it as specified would break compilation and remove value-kind information required by storage/query code. The plan needs an explicit compatibility or split-type design before execution.

@@ -45,8 +45,8 @@ pub use rules::validate_rule_definitions;
 pub use rules::ValidationRule;
 pub use schema::{
     Cardinality, CollectionSchema, CollectionView, CompoundIndexDef, CompoundIndexField,
-    EsfDocument, GateDef, IndexDef, IndexType, LifecycleDef, LinkTypeDef, NamedQueryDef,
-    NamedQueryParameter,
+    EsfDocument, GateDef, IndexDeclaration, IndexDef, IndexType, LifecycleDef, LinkTypeDef,
+    NamedQueryDef, NamedQueryParameter,
 };
 pub use validation::{
     compile_entity_schema, validate, validate_entity, validate_link_metadata,

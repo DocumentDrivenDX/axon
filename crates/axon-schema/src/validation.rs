@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use axon_core::error::AxonError;
+use axon_esf::{CompiledSchema, RawValidationError};
 
 use crate::schema::CollectionSchema;
 
@@ -105,19 +106,20 @@ pub fn validate_entity(
         return Ok(());
     };
 
-    let validator = jsonschema::options()
-        .with_draft(jsonschema::Draft::Draft202012)
-        .build(json_schema)
-        .map_err(|e| {
-            SchemaValidationErrors(vec![SchemaValidationError::new(
-                "/",
-                format!("invalid schema definition: {e}"),
-            )])
-        })?;
+    let validator = CompiledSchema::compile(json_schema).map_err(|e| {
+        SchemaValidationErrors(vec![SchemaValidationError::new(
+            "/",
+            format!("invalid schema definition: {}", e.message),
+        )])
+    })?;
 
     let errors: Vec<SchemaValidationError> = validator
-        .iter_errors(data)
-        .map(|e| enhance_json_schema_error(&e, json_schema))
+        .validate(data)
+        .err()
+        .map(|errs| errs.0)
+        .unwrap_or_default()
+        .iter()
+        .map(|e| enhance_raw_schema_error(e, json_schema))
         .collect();
 
     if errors.is_empty() {
@@ -169,29 +171,24 @@ pub fn validate_link_metadata(metadata_schema: &Value, metadata: &Value) -> Resu
 /// valid JSON Schema 2020-12 document. Returns `Ok(())` if it compiles
 /// successfully.
 pub fn compile_entity_schema(json_schema: &Value) -> Result<(), AxonError> {
-    jsonschema::options()
-        .with_draft(jsonschema::Draft::Draft202012)
-        .build(json_schema)
+    CompiledSchema::compile(json_schema)
         .map(|_| ())
-        .map_err(|e| AxonError::SchemaValidation(format!("invalid schema: {e}")))
+        .map_err(|e| AxonError::SchemaValidation(format!("invalid schema: {}", e.message)))
 }
 
 // ── JSON Schema error enhancement ────────────────────────────────────────────
 
 /// Enhance a JSON Schema validation error with actionable information.
-fn enhance_json_schema_error(
-    error: &jsonschema::ValidationError,
-    schema: &Value,
-) -> SchemaValidationError {
-    let field_path = error.instance_path.to_string();
+fn enhance_raw_schema_error(error: &RawValidationError, schema: &Value) -> SchemaValidationError {
+    let field_path = error.instance_path.clone();
     let field_name = match field_path.rsplit('/').next() {
         Some(segment) if !segment.is_empty() => segment.to_string(),
         _ => field_path.clone(),
     };
-    let raw_msg = error.to_string();
+    let raw_msg = error.message.clone();
 
     // Try to classify the error and produce better messages.
-    let kind = classify_json_schema_error(&raw_msg, error);
+    let kind = classify_json_schema_error(&raw_msg, &error.instance);
 
     match kind {
         JsonSchemaErrorKind::RequiredMissing { field } => {
@@ -272,10 +269,7 @@ enum JsonSchemaErrorKind {
     Other,
 }
 
-fn classify_json_schema_error(
-    msg: &str,
-    error: &jsonschema::ValidationError,
-) -> JsonSchemaErrorKind {
+fn classify_json_schema_error(msg: &str, instance: &Value) -> JsonSchemaErrorKind {
     // Required property missing.
     if msg.contains("is a required property") {
         // The message format is: '"field_name" is a required property'
@@ -288,7 +282,7 @@ fn classify_json_schema_error(
 
     // Enum mismatch: look at the error instance value and try to extract allowed values.
     if msg.contains("is not one of") {
-        let actual = format_value_brief(error.instance.as_ref());
+        let actual = format_value_brief(instance);
         // Try to extract allowed values from the error message.
         let allowed = extract_enum_values(msg);
         if !allowed.is_empty() {
@@ -298,7 +292,7 @@ fn classify_json_schema_error(
 
     // Type mismatch.
     if msg.contains("is not of type") || msg.contains("is not of types") {
-        let actual = json_type_name(error.instance.as_ref());
+        let actual = json_type_name(instance);
         let expected = extract_type_from_msg(msg);
         if !expected.is_empty() {
             return JsonSchemaErrorKind::TypeMismatch { expected, actual };
@@ -661,6 +655,37 @@ entity_schema:
             type_err.message
         );
         assert!(type_err.fix.is_some(), "should have a fix suggestion");
+    }
+
+    #[test]
+    fn malformed_date_time_format_is_rejected() {
+        let schema = CollectionSchema {
+            collection: CollectionId::new("test"),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "created_at": { "type": "string", "format": "date-time" }
+                }
+            })),
+            link_types: Default::default(),
+            access_control: None,
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            queries: Default::default(),
+            lifecycles: Default::default(),
+        };
+
+        let errs = validate_entity(&schema, &json!({"created_at": "not-a-date"}))
+            .expect_err("format assertions should reject malformed date-time");
+
+        assert!(
+            errs.0.iter().any(|err| err.field_path == "/created_at"),
+            "expected date-time error at /created_at, got {errs}"
+        );
     }
 
     #[test]

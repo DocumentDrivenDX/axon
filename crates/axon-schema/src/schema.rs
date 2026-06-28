@@ -6,6 +6,8 @@ use serde_json::Value;
 use axon_core::error::AxonError;
 use axon_core::id::CollectionId;
 
+pub use axon_esf::{CompoundIndexDef, CompoundIndexField, IndexDeclaration, IndexDef, IndexType};
+
 use crate::access_control::AccessControlPolicy;
 use crate::rules::ValidationRule;
 
@@ -62,71 +64,6 @@ pub struct GateDef {
     /// must also pass for review to pass.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub includes: Vec<String>,
-}
-
-/// Value type for an index field (ESF Layer 4).
-///
-/// Determines which EAV index table the value is stored in and how
-/// comparisons (equality, range) are performed.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum IndexType {
-    String,
-    Integer,
-    Float,
-    Datetime,
-    Boolean,
-}
-
-impl std::fmt::Display for IndexType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IndexType::String => write!(f, "string"),
-            IndexType::Integer => write!(f, "integer"),
-            IndexType::Float => write!(f, "float"),
-            IndexType::Datetime => write!(f, "datetime"),
-            IndexType::Boolean => write!(f, "boolean"),
-        }
-    }
-}
-
-/// A single-field secondary index declaration (ESF Layer 4).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IndexDef {
-    /// JSON field path to index (e.g. `"status"`, `"address.city"`).
-    pub field: String,
-    /// Value type for this index.
-    #[serde(rename = "type")]
-    pub index_type: IndexType,
-    /// When `true`, the index enforces uniqueness: no two entities in
-    /// the same collection may share the same indexed value.
-    #[serde(default)]
-    pub unique: bool,
-}
-
-/// A single field within a compound index.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CompoundIndexField {
-    /// JSON field path.
-    pub field: String,
-    /// Value type.
-    #[serde(rename = "type")]
-    pub index_type: IndexType,
-}
-
-/// A compound (multi-field) secondary index declaration (ESF Layer 4, US-033).
-///
-/// Compound indexes accelerate queries that filter on multiple fields.
-/// The field order matters: leftmost prefix matching is supported (a
-/// compound index on `[status, priority]` also accelerates queries
-/// filtering on `status` alone).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CompoundIndexDef {
-    /// Ordered list of fields in the compound key.
-    pub fields: Vec<CompoundIndexField>,
-    /// When `true`, the combination of all indexed field values must be unique.
-    #[serde(default)]
-    pub unique: bool,
 }
 
 /// A named schema-declared graph query (FEAT-009 / ADR-021).
@@ -332,17 +269,32 @@ pub struct EsfDocument {
     pub esf_version: String,
     /// The collection this schema governs.
     pub collection: String,
+    /// Optional human-readable description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Layer 1: JSON Schema 2020-12 document governing entity bodies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_schema: Option<Value>,
     /// Layer 2: Link-type definitions (Axon vocabulary). Stored as raw JSON for now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_types: Option<Value>,
     /// Schema-adjacent data-layer access-control policy metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_control: Option<Value>,
     /// Schema-declared named graph queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queries: Option<Value>,
     /// Layer 3: Custom validation rules with severity. Stored as raw JSON for now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_rules: Option<Value>,
+    /// Unified ESF Layer 4 secondary index declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexes: Vec<IndexDeclaration>,
+    /// Legacy split-form compound index declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compound_indexes: Vec<CompoundIndexDef>,
     /// Layer 6: Lifecycle definitions. Stored as raw JSON for now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycles: Option<Value>,
 }
 
@@ -362,6 +314,16 @@ impl EsfDocument {
     /// name from the document, the Layer 1 JSON Schema, and Layer 2 link-type
     /// definitions.
     pub fn into_collection_schema(self) -> Result<CollectionSchema, AxonError> {
+        let mut indexes = Vec::new();
+        let mut compound_indexes = Vec::new();
+        for index in self.indexes {
+            match index {
+                IndexDeclaration::Single(index) => indexes.push(index),
+                IndexDeclaration::Compound(index) => compound_indexes.push(index),
+            }
+        }
+        compound_indexes.extend(self.compound_indexes);
+
         let link_types: HashMap<String, LinkTypeDef> = match self.link_types {
             Some(val) => serde_json::from_value(val).map_err(|e| {
                 AxonError::SchemaValidation(format!("invalid link_types definition: {e}"))
@@ -388,15 +350,15 @@ impl EsfDocument {
         };
         Ok(CollectionSchema {
             collection: CollectionId::new(self.collection),
-            description: None,
+            description: self.description,
             version: 1,
             entity_schema: self.entity_schema,
             link_types,
             access_control,
             gates: HashMap::new(),
             validation_rules: Vec::new(),
-            indexes: Vec::new(),
-            compound_indexes: Vec::new(),
+            indexes,
+            compound_indexes,
             queries,
             lifecycles,
         })
@@ -580,6 +542,46 @@ access_control:
         assert_eq!(schema.collection.as_str(), "invoices");
         assert_eq!(schema.version, 1);
         assert!(schema.entity_schema.is_some());
+    }
+
+    #[test]
+    fn esf_description_and_indexes_convert_to_collection_schema() {
+        let doc = EsfDocument::parse(
+            r#"
+esf_version: "1.0"
+collection: tasks
+description: "Task schema"
+entity_schema:
+  type: object
+indexes:
+  - field: status
+    type: string
+  - fields:
+      - field: status
+        type: string
+      - field: priority
+        type: integer
+    unique: true
+compound_indexes:
+  - fields:
+      - field: owner_id
+        type: string
+"#,
+        )
+        .expect("indexed ESF should parse");
+
+        let schema = doc
+            .into_collection_schema()
+            .expect("indexed ESF should convert to collection schema");
+
+        assert_eq!(schema.description.as_deref(), Some("Task schema"));
+        assert_eq!(schema.indexes.len(), 1);
+        assert_eq!(schema.indexes[0].field, "status");
+        assert_eq!(schema.indexes[0].index_type, IndexType::String);
+        assert_eq!(schema.compound_indexes.len(), 2);
+        assert_eq!(schema.compound_indexes[0].fields[1].field, "priority");
+        assert!(schema.compound_indexes[0].unique);
+        assert_eq!(schema.compound_indexes[1].fields[0].field, "owner_id");
     }
 
     #[test]

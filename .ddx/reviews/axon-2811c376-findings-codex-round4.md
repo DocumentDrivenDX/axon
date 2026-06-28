@@ -1,0 +1,17 @@
+### Findings
+
+| Severity | Area | Finding |
+|---|---|---|
+| BLOCKING | Workspace integration | The plan never explicitly says to add `crates/axon-esf` to `[workspace].members`, but the acceptance commands require `cargo test -p axon-esf` and `cargo tree -p axon-esf`. The current workspace member list has no `axon-esf` entry at [Cargo.toml](/Users/erik/Projects/axon/Cargo.toml:1). |
+| BLOCKING | Performance acceptance | The perf example is not implementable deterministically enough: it requires release average `< 1 microsecond`, admits it is hardware-sensitive, but does not fix schema shape, record count, warmup, timing method, CPU assumptions, or whether CI must run it. Two implementers can produce materially different examples and pass/fail behavior. |
+| WARNING | Public re-exports | `axon_schema::schema::*` is specified to re-export `IndexDeclaration`, but “Preserve crate-root re-exports” is ambiguous. Current crate-root exports include `IndexDef`, `IndexType`, `CompoundIndexDef`, and `CompoundIndexField`, but not `IndexDeclaration` because it does not exist yet: [crates/axon-schema/src/lib.rs](/Users/erik/Projects/axon/crates/axon-schema/src/lib.rs:45). The plan should state whether `axon_schema::IndexDeclaration` is public. |
+| WARNING | `compile_entity_schema` contract | “`compile_entity_schema` calls `CompiledSchema::compile`” does not explicitly preserve the existing `Result<(), AxonError>` signature. Current downstream use appears to treat it as validation-only, and current implementation returns `Result<(), AxonError>` at [crates/axon-schema/src/validation.rs](/Users/erik/Projects/axon/crates/axon-schema/src/validation.rs:171). |
+| WARNING | Format validation boundary | The plan requires invalid `email`, `uuid`, and `date-time` to fail while also changing `jsonschema` to `default-features = false`. Current lockfile shows `jsonschema` pulling `reqwest` and format-related crates under the existing feature set. The plan should explicitly verify that the disabled-default feature set still includes the needed format validators. |
+| WARNING | ESF conversion compatibility | The plan says unified `indexes` is split and legacy `compound_indexes` is appended, but does not say whether duplicate compound indexes are preserved, rejected, or deduplicated. Current `CollectionSchema` has separate `indexes` and `compound_indexes` fields at [crates/axon-schema/src/schema.rs](/Users/erik/Projects/axon/crates/axon-schema/src/schema.rs:181), so this choice affects serialized schema compatibility. |
+| NOTE | Validation refactor | The enhancer refactor is specific enough for the main path: current code uses `ValidationError.instance`, `instance_path`, and `to_string()` at [crates/axon-schema/src/validation.rs](/Users/erik/Projects/axon/crates/axon-schema/src/validation.rs:181), and the plan maps those to `RawValidationError` fields. |
+
+### Verdict: REQUEST_CHANGES
+
+### Summary
+
+The plan is close, but not fully converged. The missing workspace-member instruction and underspecified performance gate are the main rework risks. The remaining issues are smaller API-boundary ambiguities that should be pinned down before implementation to avoid incompatible but plausible interpretations.

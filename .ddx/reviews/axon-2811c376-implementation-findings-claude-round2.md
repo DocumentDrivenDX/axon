@@ -1,0 +1,20 @@
+## Round 2 Adversarial Review — `axon-2811c376`
+
+I independently re-derived the round 1 blocker, traced the discriminate-then-check logic, confirmed the format-validator dependencies survive `default-features = false` via `Cargo.lock`, and audited the broader integration. Cargo execution requires approval in this environment, so test/clippy results below rest on code inspection plus the lockfile, not a fresh run.
+
+### Findings
+
+| Severity | Area | Finding |
+|---|---|---|
+| NOTE | esf/types.rs (round-1 blocker) | **Blocker is fixed.** `IndexDeclaration::deserialize` (`types.rs:82-101`) discriminates on `(contains "field", contains "fields")` *before* applying allowed-key checks: single → `["field","type","unique"]` (`:86`), compound → `["fields","unique"]` (`:92`). The round-1 case `{"fields":[…],"type":"string"}` falls into `(false,true)` and `"type"` is now rejected via `unknown_field`. Directly covered by `index_declaration_rejects_ambiguous_or_unknown_shapes` (`:237`) and the carrier tests `document_carriers_reject_malformed_compound_indexes` (`:280-297`). |
+| WARNING | axon-schema/validation.rs | `validate_entity` now routes through `CompiledSchema::compile`, which sets `should_validate_formats(true)` (esf `validation.rs:75`). The prior inline path did **not**. This is a product-wide semantic change — every collection's entity validation now asserts `email`/`uuid`/`date-time` formats, so previously-accepted entities can now be rejected. It is intentional (new test `malformed_date_time_format_is_rejected`, `validation.rs:660`) and `default-features=false` still pulls `email_address`/`idna`/`uuid-simd`/`fancy-regex` (Cargo.lock), but downstream `axon-api`/`axon-server` entity-validation suites were not re-verified in this review; only `-p axon-schema` was claimed green. Not a confirmed defect, but a risk riding along in a "crate extraction" change. |
+| NOTE | axon-schema/validation.rs:142 | Format enforcement is now inconsistent: `validate_entity` asserts formats, but `validate_link_metadata` (`:142-145`) still uses the inline builder without `should_validate_formats(true)`. Link-metadata format strings remain annotation-only. Pre-existing, but the divergence is newly introduced by this change. |
+| NOTE | esf/types.rs:116-118 | The `map.is_empty()` branch in `reject_unknown_keys` is unreachable: it is only called from the `(true,false)`/`(false,true)` arms, where the map already contains `"field"` or `"fields"`. The empty-map case is handled earlier by `(false,false)` (`:98`). Harmless dead path. |
+| NOTE | esf/types.rs | Two pre-existing leniencies, neither the round-1 blocker: `{"fields":[]}` deserializes to a zero-field compound index (no arity check), and inner `CompoundIndexField` lacks `deny_unknown_fields`, so e.g. a per-field `"unique":true` is silently dropped. Footguns, not pre-commit defects. |
+| NOTE | axon-schema/schema.rs | The new `EsfDocument` index test (`:547`) covers only the happy path; malformed-index rejection through the `EsfDocument` carrier is not asserted there (it is covered at the `IndexDeclaration` type level and via the esf carrier tests, which share the same deserializer). Minor coverage gap. |
+
+### Verdict: APPROVE
+
+### Summary
+
+The round 1 blocker is genuinely fixed: allowed-key validation now happens *after* single/compound discrimination, and the exact malformed shape (`fields` + top-level `type`) is rejected with direct regression coverage at both the `IndexDeclaration` and document-carrier levels. No new blocker remains. The one item worth the implementer's attention before commit is non-blocking: enabling format assertions in `validate_entity` is a product-wide behavior change bundled into a crate-extraction bead — worth confirming `axon-api`/`axon-server` entity tests are green (not just `axon-schema`) and deciding whether `validate_link_metadata` should match.
