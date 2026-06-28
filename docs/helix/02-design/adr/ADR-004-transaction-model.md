@@ -259,7 +259,7 @@ and maps cleanly onto all three StorageAdapter backends.
 |------|--------|
 | Positive | Deadlock-free. Simple implementation — version check is a comparison, not a lock acquisition. Works uniformly across SQLite, PostgreSQL, and memory. Conflict response carries current state, enabling intelligent client-side merging |
 | Negative | Callers must implement retry logic on conflict. High-contention workloads (unlikely for agentic use cases) will retry frequently |
-| Neutral | Snapshot Isolation is the default (write-set OCC prevents lost updates and dirty reads but not write skew). Opt-in Serializable adds key-addressed read-set validation (B-104) plus a conservative collection-granular phantom guard on **all** backends (ADR-026), with auto-capture for entity reads, queries, aggregates, traversals, and Cypher footprints (`tx_get_entity`/`tx_query_entities`/`tx_aggregate`/`tx_traverse`/`tx_record_cypher_scan`); update-driven predicate serializability (SSI/predicate locking) remains future work per FEAT-008 |
+| Neutral | Snapshot Isolation is the default (write-set OCC prevents lost updates and dirty reads but not write skew). Opt-in Serializable adds key-addressed read-set validation (B-104) plus a conservative collection-granular phantom guard on **all** backends (ADR-026), with auto-capture for entity reads, queries, aggregates, traversals, and Cypher footprints (`tx_get_entity`/`tx_query_entities`/`tx_aggregate`/`tx_traverse`/`tx_record_cypher_scan`). An opt-in `SerializableStrict` level swaps the scan signature for a `content_version` (`(id, version)` hash), additionally catching update-driven predicate skew (conservatively). Precise, minimal-abort serializability (full SSI) remains future per FEAT-008 |
 
 ## Risks
 
@@ -267,7 +267,7 @@ and maps cleanly onto all three StorageAdapter backends.
 |------|------|--------|------------|
 | Key-addressed write skew violates application invariants | Low | Medium | Delivered (B-104): opt-in Serializable validates the key-addressed read set. Invariant-critical flows read their guard entities through `record_read` under Serializable |
 | Insert/delete phantom write skew (query/scan/traversal invariants) not caught by Serializable | Low | Medium | Conservative collection-granular phantom guard delivered on **all** backends (ADR-026, opt-in Serializable + `record_scan_read`) |
-| Update-driven predicate write skew (an in-place update flips a predicate) not caught | Medium | Medium | Out of scope: the guard is membership-only; needs a version-inclusive signature or SSI (future). Until then, mutable-predicate invariants must be app-enforced or serialized on a single guard entity |
+| Update-driven predicate write skew (an in-place update flips a predicate) not caught by default Serializable | Medium | Medium | Default Serializable is membership-only. The opt-in `SerializableStrict` level uses a `content_version` `(id, version)` signature that catches it (conservatively — over-aborts on non-matching concurrent updates). Precise, minimal-abort SSI is future |
 | High-contention hot entities degrade to spin-retry | Low | Medium | Conflict response includes current state for intelligent merge; agentic workloads are low-contention by design |
 | Crash between `commit_tx()` and audit flush leaves committed mutation unaudited | Low | High | INV-003 recovery invariant required for durable backends (same-transaction audit or intent log replay) |
 

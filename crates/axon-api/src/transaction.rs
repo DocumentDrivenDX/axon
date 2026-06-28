@@ -45,13 +45,32 @@ pub enum IsolationLevel {
     /// write skew whose invariant is expressed over **specific entities read by
     /// id**.
     ///
-    /// Scope limit (honesty): it does **not** prevent predicate/phantom write
-    /// skew — invariants expressed over query results, index scans, link
-    /// traversals, or aggregations, where a concurrently-inserted row changes a
-    /// predicate result without changing any previously-read entity version.
-    /// General (predicate) serializability requires SSI / predicate locking and
-    /// is out of scope for V1 (see FEAT-008 TXN-05 and ADR-004).
+    /// Predicate/phantom reads recorded via [`Transaction::record_scan_read`] are
+    /// additionally validated against the scanned collection's **membership
+    /// signature** ([`StorageAdapter::structural_version`](axon_storage::StorageAdapter::structural_version)),
+    /// so a concurrent **insert/delete** to a scanned collection aborts (ADR-026).
+    ///
+    /// Scope limit (honesty): the scan guard is **membership-only** — it does
+    /// **not** catch *update-driven* predicate skew (a concurrent in-place update
+    /// that flips a predicate without changing the id-set, e.g.
+    /// `status: open → closed`). Use [`SerializableStrict`](Self::SerializableStrict)
+    /// for that, at a higher abort rate.
     Serializable,
+    /// Serializable with a **content** signature for predicate/phantom reads.
+    ///
+    /// Like [`Serializable`](Self::Serializable) for key-addressed reads, but
+    /// scan reads are validated against the scanned collection's
+    /// [`content_version`](axon_storage::StorageAdapter::content_version) — a hash
+    /// of `(id, version)` pairs — instead of the membership signature. This
+    /// catches **update-driven** predicate skew (any concurrent create, delete,
+    /// *or* in-place update to a scanned collection aborts), closing the gap
+    /// `Serializable` leaves.
+    ///
+    /// It is intentionally **conservative**: it over-aborts on concurrent updates
+    /// to non-matching rows in a scanned collection (table-granular). Precise,
+    /// minimal-abort serializability needs full SSI (FEAT-008 TXN-05, ADR-026) and
+    /// remains future work. Opt in only for invariants over mutable predicates.
+    SerializableStrict,
 }
 
 impl IsolationLevel {
@@ -60,7 +79,18 @@ impl IsolationLevel {
         match self {
             IsolationLevel::Snapshot => "snapshot",
             IsolationLevel::Serializable => "serializable",
+            IsolationLevel::SerializableStrict => "serializable_strict",
         }
+    }
+
+    /// Whether this level performs serializable read-set validation at commit
+    /// (both [`Serializable`](Self::Serializable) and
+    /// [`SerializableStrict`](Self::SerializableStrict)).
+    pub fn is_serializable(&self) -> bool {
+        matches!(
+            self,
+            IsolationLevel::Serializable | IsolationLevel::SerializableStrict
+        )
     }
 }
 
@@ -208,7 +238,7 @@ impl Transaction {
         id: EntityId,
         observed_version: u64,
     ) -> Result<(), AxonError> {
-        if self.isolation != IsolationLevel::Serializable {
+        if !self.isolation.is_serializable() {
             return Ok(());
         }
         if self.reads.len() >= MAX_READS {
@@ -252,7 +282,7 @@ impl Transaction {
         collection: CollectionId,
         observed_structural_version: u64,
     ) -> Result<(), AxonError> {
-        if self.isolation != IsolationLevel::Serializable {
+        if !self.isolation.is_serializable() {
             return Ok(());
         }
         if self.scan_reads.len() >= MAX_READS {
@@ -260,6 +290,10 @@ impl Transaction {
                 "transaction exceeds maximum of {MAX_READS} tracked scan reads"
             )));
         }
+        // Holds the level-appropriate signature: the membership
+        // (`structural_version`) under Serializable, or the content
+        // (`content_version`) signature under SerializableStrict. The caller
+        // captures the matching one; commit re-checks with the same.
         self.scan_reads.push(ScanReadRef {
             collection,
             observed_structural_version,
@@ -622,7 +656,7 @@ impl Transaction {
         // abort first-committer-wins. Surfaced as `ConflictingVersion` (409,
         // retryable) like any other OCC conflict. This covers the key-addressed
         // read set only; predicate/phantom anomalies are out of scope (ADR-004).
-        if matches!(self.isolation, IsolationLevel::Serializable) {
+        if self.isolation.is_serializable() {
             for r in &self.reads {
                 let current = storage.get(&r.collection, &r.id)?;
                 let current_version = current.as_ref().map(|e| e.version).unwrap_or(0);
@@ -636,19 +670,26 @@ impl Transaction {
             }
 
             // ── Phase 1b (cont.): predicate/phantom scan-read validation ─────
-            // (FEAT-008 TXN-05, ADR-026). Every scanned collection's structural
-            // version must be unchanged. A change means a concurrent
-            // create/delete touched the collection — a possible phantom — so we
-            // abort first-committer-wins, surfaced as `ConflictingVersion` like
-            // the key-addressed path. `structural_version` is fail-closed on
-            // adapters that do not support it, so a scan-read recorded against
-            // such an adapter aborts loudly rather than committing unvalidated.
+            // (FEAT-008 TXN-05, ADR-026). Every scanned collection's signature
+            // must be unchanged. Under Serializable the signature is the
+            // membership `structural_version` (a concurrent create/delete — a
+            // phantom — aborts). Under SerializableStrict it is the
+            // `content_version` (a concurrent create, delete, *or in-place
+            // update* aborts), closing the update-driven predicate-skew gap. The
+            // caller recorded the matching signature; we re-check with the same.
+            // Both are fail-closed on adapters lacking support, so a scan read
+            // recorded against such an adapter aborts loudly.
+            let strict = matches!(self.isolation, IsolationLevel::SerializableStrict);
             for sr in &self.scan_reads {
-                let current_structural = storage.structural_version(&sr.collection)?;
-                if current_structural != sr.observed_structural_version {
+                let current_signature = if strict {
+                    storage.content_version(&sr.collection)?
+                } else {
+                    storage.structural_version(&sr.collection)?
+                };
+                if current_signature != sr.observed_structural_version {
                     return Err(AxonError::ConflictingVersion {
                         expected: sr.observed_structural_version,
-                        actual: current_structural,
+                        actual: current_signature,
                         current_entity: None,
                     });
                 }

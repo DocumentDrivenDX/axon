@@ -180,20 +180,32 @@ signature is recaptured at commit and compared to the value observed at scan tim
 collection-granular predicate/phantom reads, on **every** storage backend, via a
 conservative membership-signature guard." No backend fails closed.
 
-**Scope limit (still honest):** the guard is **membership-only** — it catches
-insert/delete phantoms, not **update-driven** predicate changes (e.g. a
-concurrent `status: open → closed` that flips a `WHERE status = open` count
-without changing the id-set). Catching those soundly requires either a
-version-inclusive signature (which over-aborts on every concurrent update to a
-scanned collection) or full SSI; both remain future work. Invariants over
-mutable predicates must still be guarded at the application level.
+**Scope of the default guard:** the default `Serializable` guard is
+**membership-only** — it catches insert/delete phantoms, not **update-driven**
+predicate changes (e.g. a concurrent `status: open → closed` that flips a
+`WHERE status = open` count without changing the id-set).
+
+**Strict tier (delivered):** the opt-in `IsolationLevel::SerializableStrict`
+validates scan reads against a **content signature** — `StorageAdapter::content_version`,
+a hash of `(id, version)` pairs (`content_version_by_scan` default; the handler's
+`scan_signature` picks it when the txn is strict). Any concurrent create,
+delete, *or in-place update* to a scanned collection then aborts, catching
+update-driven predicate skew. It is the version-inclusive signature option below,
+shipped as an explicit opt-in so the cheaper membership default is unaffected. It
+is **conservative** (over-aborts on non-matching concurrent updates —
+table-granular). Invariants needing *minimal* aborts still want full SSI.
 
 ## What remains future work
 
-- **Update-driven predicate serializability** — extend the signature to
-  `(id, version)` or adopt SSI so predicate changes via in-place updates are
-  caught. Deferred deliberately: a version-inclusive signature over-aborts on any
-  concurrent update to a scanned collection.
+- **Precise, minimal-abort serializability** — full Cahill SSI (SIREAD locks,
+  rw-antidependency / dangerous-structure pivot detection). The delivered
+  `SerializableStrict` content signature catches update-driven skew but
+  over-aborts; SSI is the path to precise serializability with low abort rates.
+- **Native `content_version` overrides** for SQLite/PostgreSQL (the strict tier
+  uses the O(n) scan default on all backends today; structural_version has native
+  push-downs, content_version does not yet).
+- **GraphQL exposure** of `SERIALIZABLE_STRICT` on the `commitTransaction`
+  isolation enum (the level is reachable via the handler/Rust API today).
 - **Auto-capture — delivered for entity reads, queries, aggregates, traversals,
   and Cypher.** `AxonHandler::tx_get_entity` (key-addressed), `tx_query_entities`
   and `tx_aggregate` (scan/phantom over a collection), and `tx_traverse`
@@ -222,7 +234,7 @@ mutable predicates must still be guarded at the application level.
 | Type | Impact |
 |------|--------|
 | Positive | Sound phantom prevention on **every** backend (generic scan default + native overrides); reuses existing `ConflictingVersion` retry contract; Snapshot path unchanged and zero-overhead; read-derived signatures add no write-path cost and need no schema migration |
-| Negative | Conservative: over-aborts on non-matching concurrent inserts/deletes to a scanned collection (acceptable for low-contention agentic workloads, ADR-004); the generic default and SQLite paths are O(n)-ids per scanned collection at commit (Postgres push-down and memory are O(1)); membership-only (update-driven predicate skew not caught); auto-capture delivered for entity reads/queries/aggregates/traversals + Cypher footprints (`tx_get_entity`/`tx_query_entities`/`tx_aggregate`/`tx_traverse`/`tx_record_cypher_scan`); GraphQL `commitTransaction` exposes isolation + `readEntity`/`readNamedQuery` auto-capture |
+| Negative | Conservative: over-aborts on non-matching concurrent inserts/deletes to a scanned collection (acceptable for low-contention agentic workloads, ADR-004); the generic default and SQLite paths are O(n)-ids per scanned collection at commit (Postgres push-down and memory are O(1)); default Serializable is membership-only (update-driven skew caught only by the opt-in `SerializableStrict` content-signature tier, which over-aborts); auto-capture delivered for entity reads/queries/aggregates/traversals + Cypher footprints (`tx_get_entity`/`tx_query_entities`/`tx_aggregate`/`tx_traverse`/`tx_record_cypher_scan`); GraphQL `commitTransaction` exposes isolation + `readEntity`/`readNamedQuery` auto-capture |
 | Neutral | Collection-granular guard is coarser than true SSI; the honest claim grows to "key-addressed reads + collection-granular phantom reads, all backends" |
 
 ## Risks
