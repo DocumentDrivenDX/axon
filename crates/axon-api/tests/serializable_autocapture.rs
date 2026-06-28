@@ -269,3 +269,86 @@ fn traverse_member_change_prevented_via_auto_capture() {
         "expected serialization conflict on the traversed member, got: {err}"
     );
 }
+
+/// Cypher read footprint via `tx_record_cypher_scan`: a serializable txn records
+/// the collections a Cypher query reads; a concurrent insert into a referenced
+/// collection aborts the second committer. No manual `record_scan_read`.
+#[test]
+fn cypher_phantom_prevented_via_auto_capture() {
+    let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+    create(&mut h, "a", 1);
+
+    let cypher = "MATCH (g:guards) RETURN g";
+    let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
+    let mut t2 = Transaction::with_isolation(IsolationLevel::Serializable);
+    h.tx_record_cypher_scan(&mut t1, cypher)
+        .expect("t1 records cypher footprint");
+    h.tx_record_cypher_scan(&mut t2, cypher)
+        .expect("t2 records cypher footprint");
+
+    t1.create(Entity::new(
+        guards(),
+        EntityId::new("b"),
+        json!({ "flag": 1 }),
+    ))
+    .expect("stage b");
+    t2.create(Entity::new(
+        guards(),
+        EntityId::new("c"),
+        json!({ "flag": 1 }),
+    ))
+    .expect("stage c");
+
+    h.commit_transaction(t1, Some("t1".into()), None)
+        .expect("T1 commits (guards membership changes)");
+    let err = h
+        .commit_transaction(t2, Some("t2".into()), None)
+        .expect_err("T2 must abort: a Cypher-referenced collection changed");
+    assert!(
+        matches!(err, axon_core::error::AxonError::ConflictingVersion { .. }),
+        "expected phantom serialization conflict, got: {err}"
+    );
+}
+
+/// Under Snapshot, the same Cypher footprint recording is inert — both commit.
+#[test]
+fn cypher_footprint_is_noop_under_snapshot() {
+    let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+    create(&mut h, "a", 1);
+    let cypher = "MATCH (g:guards) RETURN g";
+
+    let mut t1 = Transaction::new();
+    let mut t2 = Transaction::new();
+    h.tx_record_cypher_scan(&mut t1, cypher).expect("t1");
+    h.tx_record_cypher_scan(&mut t2, cypher).expect("t2");
+    t1.create(Entity::new(
+        guards(),
+        EntityId::new("b"),
+        json!({ "flag": 1 }),
+    ))
+    .expect("stage b");
+    t2.create(Entity::new(
+        guards(),
+        EntityId::new("c"),
+        json!({ "flag": 1 }),
+    ))
+    .expect("stage c");
+    h.commit_transaction(t1, Some("t1".into()), None)
+        .expect("T1");
+    h.commit_transaction(t2, Some("t2".into()), None)
+        .expect("snapshot ignores the recorded footprint");
+}
+
+/// Invalid Cypher surfaces as a rejectable error, not a panic.
+#[test]
+fn cypher_scan_rejects_invalid_query() {
+    let h = AxonHandler::new(MemoryStorageAdapter::default());
+    let mut tx = Transaction::with_isolation(IsolationLevel::Serializable);
+    let err = h
+        .tx_record_cypher_scan(&mut tx, "this is not cypher")
+        .expect_err("invalid cypher must error");
+    assert!(matches!(
+        err,
+        axon_core::error::AxonError::InvalidArgument(_)
+    ));
+}

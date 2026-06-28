@@ -4225,6 +4225,54 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(resp)
     }
 
+    /// Records a scan read (ADR-026 phantom guard) into `tx` for each of
+    /// `collections`, capturing each collection's structural version. The
+    /// building block for auto-capturing a query whose collection footprint is
+    /// already known — e.g. a GraphQL named query whose aliased labels were
+    /// resolved to collections by the caller.
+    pub fn tx_record_scan_collections(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        collections: &[CollectionId],
+    ) -> Result<(), AxonError> {
+        for collection in collections {
+            let observed = self.storage.structural_version(collection)?;
+            tx.record_scan_read(collection.clone(), observed)?;
+        }
+        Ok(())
+    }
+
+    /// Transaction-aware Cypher read footprint (FEAT-008 TXN-05): parses
+    /// `cypher` and records a scan read for every collection its node patterns
+    /// reference — plus the links collection when the query traverses
+    /// relationships — so a Serializable commit aborts on a concurrent
+    /// membership change to any queried collection. The caller executes the
+    /// query itself (via the Cypher executor / GraphQL layer); this records the
+    /// read set.
+    ///
+    /// Labels are resolved by collection name (canonical Cypher, e.g.
+    /// `MATCH (t:tasks)`). Callers that apply label aliases (the GraphQL
+    /// named-query layer) should resolve labels to collections themselves and
+    /// call [`tx_record_scan_collections`](Self::tx_record_scan_collections) for
+    /// exact coverage. Recording a scan read for a non-existent collection is
+    /// harmless (its membership signature is a stable empty value).
+    pub fn tx_record_cypher_scan(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        cypher: &str,
+    ) -> Result<(), AxonError> {
+        let query = axon_cypher_ast::parse(cypher)
+            .map_err(|e| AxonError::InvalidArgument(format!("invalid cypher: {e}")))?;
+        let mut collections: Vec<CollectionId> = axon_cypher_ast::referenced_labels(&query)
+            .into_iter()
+            .map(CollectionId::new)
+            .collect();
+        if axon_cypher_ast::references_relationships(&query) {
+            collections.push(Link::links_collection());
+        }
+        self.tx_record_scan_collections(tx, &collections)
+    }
+
     fn get_entity_with_read_context(
         &self,
         req: GetEntityRequest,

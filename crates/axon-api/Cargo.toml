@@ -15,6 +15,7 @@ test-fixtures = []
 
 [dependencies]
 axon-core = { path = "../axon-core" }
+axon-cypher-ast = { path = "../axon-cypher-ast" }
 axon-schema = { path = "../axon-schema" }
 axon-audit = { path = "../axon-audit" }
 axon-storage = { path = "../axon-storage" }
