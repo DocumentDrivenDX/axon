@@ -8,6 +8,7 @@
 pub mod adapter;
 pub mod auth_schema;
 pub mod conformance;
+pub mod cursor_store;
 pub mod index_builder;
 pub mod memory;
 pub mod postgres;
@@ -21,6 +22,7 @@ pub use adapter::{
     CompoundKey, IndexValue, OrderedFloat, StorageAdapter,
 };
 pub use auth_schema::{apply_auth_migrations_postgres, apply_auth_migrations_sqlite};
+pub use cursor_store::{StorageCursorStore, CDC_CURSORS_COLLECTION};
 pub use memory::MemoryStorageAdapter;
 pub use postgres::{
     deprovision_postgres_database, provision_postgres_database, tenant_dsn, PostgresStorageAdapter,
