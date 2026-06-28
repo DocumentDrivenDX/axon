@@ -1,4 +1,4 @@
-axon-esf v0.2.8 (/Users/erik/Projects/axon/crates/axon-esf)
+axon-esf v0.3.0 (/Users/erik/Projects/axon/crates/axon-esf)
 ├── jsonschema v0.28.3
 │   ├── ahash v0.8.12
 │   │   ├── cfg-if v1.0.4
