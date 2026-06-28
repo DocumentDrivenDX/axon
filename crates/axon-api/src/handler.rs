@@ -4057,6 +4057,102 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.get_entity_with_read_context(req, Some(caller), attribution.as_ref())
     }
 
+    // ── Transaction-aware reads (FEAT-008 TXN-05 auto-capture) ──────────────
+    //
+    // These perform the same policy-enforced read as their plain counterparts
+    // AND record the read into the supplied transaction's read sets, so a
+    // Serializable commit validates it. Reading *through* the transaction is the
+    // recording — callers cannot forget to call `record_read` /
+    // `record_scan_read`. Under Snapshot isolation the recording is a no-op
+    // (`Transaction::record_read` early-returns), so there is no added cost.
+
+    /// Transaction-aware [`get_entity`](Self::get_entity): records the observed
+    /// entity version into `tx`'s key-addressed read set. A missing entity is
+    /// recorded as observed-absent (version 0) so a concurrent create is caught,
+    /// then the original `NotFound` is returned.
+    pub fn tx_get_entity(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: GetEntityRequest,
+    ) -> Result<GetEntityResponse, AxonError> {
+        self.tx_get_entity_inner(tx, req, None, None)
+    }
+
+    /// Caller-scoped variant of [`tx_get_entity`](Self::tx_get_entity).
+    pub fn tx_get_entity_with_caller(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: GetEntityRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<GetEntityResponse, AxonError> {
+        self.tx_get_entity_inner(tx, req, Some(caller), attribution)
+    }
+
+    fn tx_get_entity_inner(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: GetEntityRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<GetEntityResponse, AxonError> {
+        let collection = req.collection.clone();
+        let id = req.id.clone();
+        let result = self.get_entity_with_read_context(req, caller, attribution.as_ref());
+        match result {
+            Ok(resp) => {
+                tx.record_read(collection, id, resp.entity.version)?;
+                Ok(resp)
+            }
+            Err(AxonError::NotFound(msg)) => {
+                // Observed-absent: record version 0 so a concurrent create that
+                // would change a "does this exist?" invariant aborts the txn.
+                tx.record_read(collection, id, 0)?;
+                Err(AxonError::NotFound(msg))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Transaction-aware [`query_entities`](Self::query_entities): records the
+    /// scanned collection's [`StorageAdapter::structural_version`] into `tx`'s
+    /// scan-read set (ADR-026 phantom guard), so a Serializable commit aborts if
+    /// a concurrent create/delete changed the collection's membership. The
+    /// structural version is captured *before* the query, so any membership
+    /// change observable to the query is also caught (conservative, sound).
+    pub fn tx_query_entities(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: QueryEntitiesRequest,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
+        self.tx_query_entities_inner(tx, req, None, None)
+    }
+
+    /// Caller-scoped variant of [`tx_query_entities`](Self::tx_query_entities).
+    pub fn tx_query_entities_with_caller(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: QueryEntitiesRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
+        self.tx_query_entities_inner(tx, req, Some(caller), attribution)
+    }
+
+    fn tx_query_entities_inner(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        req: QueryEntitiesRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
+        let collection = req.collection.clone();
+        let observed = self.storage.structural_version(&collection)?;
+        let resp = self.query_entities_with_read_context(req, caller, attribution.as_ref())?;
+        tx.record_scan_read(collection, observed)?;
+        Ok(resp)
+    }
+
     fn get_entity_with_read_context(
         &self,
         req: GetEntityRequest,

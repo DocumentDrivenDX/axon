@@ -124,9 +124,11 @@ native overrides — memory (O(1) counter), SQLite (ordered-id hash), PostgreSQL
 cost, no schema migration, no counter contention); no backend fails closed. The
 guard is **membership-only** — it catches insert/delete phantoms but **not
 update-driven** predicate changes (a concurrent in-place update that flips a
-predicate, e.g. `status: open → closed`). **Update-driven predicate
-serializability, automatic capture from the query layer, and full Cahill SSI**
-(rw-antidependency / SIREAD pivot detection) remain future work. No surface may
+predicate, e.g. `status: open → closed`). Reads via the transaction-aware
+handler methods `tx_get_entity` / `tx_query_entities` **auto-capture** into the
+transaction. **Update-driven predicate serializability, auto-capture for
+aggregate/traverse/Cypher reads, and full Cahill SSI** (rw-antidependency /
+SIREAD pivot detection) remain future work. No surface may
 claim unqualified "serializable"; the honest claim is "Serializable for
 key-addressed read sets, plus a conservative collection-granular phantom guard on
 all backends."
@@ -256,7 +258,7 @@ and maps cleanly onto all three StorageAdapter backends.
 |------|--------|
 | Positive | Deadlock-free. Simple implementation — version check is a comparison, not a lock acquisition. Works uniformly across SQLite, PostgreSQL, and memory. Conflict response carries current state, enabling intelligent client-side merging |
 | Negative | Callers must implement retry logic on conflict. High-contention workloads (unlikely for agentic use cases) will retry frequently |
-| Neutral | Snapshot Isolation is the default (write-set OCC prevents lost updates and dirty reads but not write skew). Opt-in Serializable adds key-addressed read-set validation (B-104), preventing write skew over entities read by id, plus a conservative collection-granular predicate guard on the memory adapter (ADR-026); precise predicate serializability (SSI/predicate locking), the guard on SQL backends, and query-layer auto-capture remain future work per FEAT-008 |
+| Neutral | Snapshot Isolation is the default (write-set OCC prevents lost updates and dirty reads but not write skew). Opt-in Serializable adds key-addressed read-set validation (B-104) plus a conservative collection-granular phantom guard on **all** backends (ADR-026), with auto-capture for entity reads/queries (`tx_get_entity`/`tx_query_entities`); update-driven predicate serializability (SSI/predicate locking) and auto-capture for aggregate/traverse/Cypher remain future work per FEAT-008 |
 
 ## Risks
 
