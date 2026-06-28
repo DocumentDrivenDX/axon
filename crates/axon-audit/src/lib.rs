@@ -7,6 +7,7 @@
 
 pub mod cdc;
 pub mod cursor;
+pub mod cursor_token;
 pub mod entry;
 pub mod log;
 pub mod prov;
@@ -16,6 +17,7 @@ pub use cdc::{
     MemoryCdcSink,
 };
 pub use cursor::{CdcCursorStore, MemoryCursorStore};
+pub use cursor_token::{CursorScope, CursorToken, CursorTokenError};
 pub use entry::{
     compute_diff, AuditAttribution, AuditEntry, FieldDiff, MutationIntentApproverMetadata,
     MutationIntentAuditMetadata, MutationIntentAuditOrigin, MutationIntentAuditOriginSurface,
