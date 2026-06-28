@@ -1080,6 +1080,28 @@ impl StorageAdapter for SqliteStorageAdapter {
         Ok(n as usize)
     }
 
+    /// Native membership signature (ADR-026 phantom guard): fetch the ordered
+    /// id-set and hash it via the shared [`crate::hash_id_set`]. Read-only (no
+    /// write-path cost); transfers ids only, not full rows. Membership-only —
+    /// changes on create/delete, stable across updates and reads. Runs within
+    /// the active transaction during commit validation, so it sees the correct
+    /// snapshot.
+    fn structural_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        let ids: Vec<String> = self.block_on(
+            sqlx::query_scalar(
+                "SELECT id FROM entities
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
+                 ORDER BY id",
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_all(&self.pool),
+        )?;
+        Ok(crate::hash_id_set(&ids))
+    }
+
     fn range_scan(
         &self,
         collection: &CollectionId,

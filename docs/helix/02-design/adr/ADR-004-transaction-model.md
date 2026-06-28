@@ -117,13 +117,19 @@ Serializable transaction records the structural version of each scanned
 collection via `Transaction::record_scan_read` and aborts at commit if that
 collection's membership changed (any concurrent create/delete). This is sound but
 **conservative** (it over-aborts on non-matching inserts/deletes) and is
-**delivered on the memory adapter only**; SQLite and PostgreSQL fail closed on
-scan-read-recording Serializable transactions via `structural_version`'s
-fail-closed default. **Automatic capture from the query layer** and **full Cahill
-SSI** (rw-antidependency / SIREAD pivot detection) for precise serializability
-with minimal aborts remain future work. No surface may claim unqualified
-"serializable"; the honest claim is "Serializable for key-addressed read sets,
-plus a conservative collection-granular predicate guard (memory adapter)."
+**delivered on every storage backend**: a backend-agnostic membership-signature
+default (`structural_version_by_scan`, an id-set hash via `range_scan`) plus
+native overrides — memory (O(1) counter), SQLite (ordered-id hash), PostgreSQL
+(`md5(string_agg)` push-down). The signatures are **read-derived** (no write-path
+cost, no schema migration, no counter contention); no backend fails closed. The
+guard is **membership-only** — it catches insert/delete phantoms but **not
+update-driven** predicate changes (a concurrent in-place update that flips a
+predicate, e.g. `status: open → closed`). **Update-driven predicate
+serializability, automatic capture from the query layer, and full Cahill SSI**
+(rw-antidependency / SIREAD pivot detection) remain future work. No surface may
+claim unqualified "serializable"; the honest claim is "Serializable for
+key-addressed read sets, plus a conservative collection-granular phantom guard on
+all backends."
 
 ### Audit Integration
 
@@ -257,7 +263,8 @@ and maps cleanly onto all three StorageAdapter backends.
 | Risk | Prob | Impact | Mitigation |
 |------|------|--------|------------|
 | Key-addressed write skew violates application invariants | Low | Medium | Delivered (B-104): opt-in Serializable validates the key-addressed read set. Invariant-critical flows read their guard entities through `record_read` under Serializable |
-| Predicate/phantom write skew (query/scan/traversal invariants) not caught by Serializable | Medium | Medium | Conservative collection-granular guard delivered for the memory adapter (ADR-026, opt-in Serializable + `record_scan_read`); SQL backends fail closed; precise SSI and query-layer auto-capture remain future. Until then, predicate invariants on SQL backends must be app-enforced or serialized on a single guard entity |
+| Insert/delete phantom write skew (query/scan/traversal invariants) not caught by Serializable | Low | Medium | Conservative collection-granular phantom guard delivered on **all** backends (ADR-026, opt-in Serializable + `record_scan_read`) |
+| Update-driven predicate write skew (an in-place update flips a predicate) not caught | Medium | Medium | Out of scope: the guard is membership-only; needs a version-inclusive signature or SSI (future). Until then, mutable-predicate invariants must be app-enforced or serialized on a single guard entity |
 | High-contention hot entities degrade to spin-retry | Low | Medium | Conflict response includes current state for intelligent merge; agentic workloads are low-contention by design |
 | Crash between `commit_tx()` and audit flush leaves committed mutation unaudited | Low | High | INV-003 recovery invariant required for durable backends (same-transaction audit or intent log replay) |
 

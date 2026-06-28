@@ -187,6 +187,50 @@ pub fn resolve_field_path<'a>(
     Some(current)
 }
 
+/// Backend-agnostic membership signature for the structural-version phantom
+/// guard (ADR-026): a stable hash of a collection's entity id-set.
+///
+/// The value changes when the set of ids changes (create/delete) and is stable
+/// across in-place updates (which change an entity's `version` but not the
+/// id-set) and reads. It is the default [`StorageAdapter::structural_version`]
+/// implementation — sound on any adapter via [`range_scan`](StorageAdapter::range_scan),
+/// at O(n) read cost and zero write-path cost. Adapters override
+/// `structural_version` when they can compute the signature more cheaply.
+///
+/// The hash is computed with a fixed-seed [`DefaultHasher`](std::collections::hash_map::DefaultHasher),
+/// so it is deterministic across calls and processes; a transaction compares its
+/// own observed value against the value at commit, so only intra-comparison
+/// stability is required.
+pub fn structural_version_by_scan<S: StorageAdapter + ?Sized>(
+    storage: &S,
+    collection: &CollectionId,
+) -> Result<u64, AxonError> {
+    let ids: Vec<String> = storage
+        .range_scan(collection, None, None, None)?
+        .into_iter()
+        .map(|e| e.id.to_string())
+        .collect();
+    Ok(hash_id_set(&ids))
+}
+
+/// Stable order-independent hash of a collection's entity id-set.
+///
+/// Used by [`structural_version_by_scan`] and by adapters that fetch ids
+/// natively (e.g. SQLite). Sorts internally, so callers need not pre-sort.
+/// Fixed-seed [`DefaultHasher`](std::collections::hash_map::DefaultHasher) →
+/// deterministic.
+pub fn hash_id_set(ids: &[String]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut sorted: Vec<&str> = ids.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    sorted.len().hash(&mut hasher);
+    for id in sorted {
+        id.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Abstraction over Axon's backing storage.
 ///
 /// Implementations wrap specific databases (SQLite, PostgreSQL, FoundationDB).
@@ -227,18 +271,20 @@ pub trait StorageAdapter: Send + Sync {
     /// the scanned collection (a possible phantom), so the transaction aborts
     /// first-committer-wins.
     ///
-    /// **Fail-closed default.** The default returns
-    /// [`AxonError::InvalidOperation`] rather than a constant. A constant would
-    /// make every recorded scan read *appear* valid forever — a silent soundness
-    /// hole. Failing closed means a Serializable transaction that recorded a scan
-    /// read against an adapter without structural-version support aborts loudly
-    /// instead of committing an unvalidated phantom. Snapshot transactions never
-    /// call this, so unmigrated adapters are unaffected for the default level.
+    /// **Backend-agnostic default.** Computes a membership signature by scanning
+    /// the collection's entity ids and hashing them
+    /// ([`structural_version_by_scan`]). This works on every adapter via
+    /// [`range_scan`](StorageAdapter::range_scan) — no adapter fails closed — at
+    /// O(n) read cost per scanned collection and **zero write-path cost**.
+    /// Adapters that can compute the signature more cheaply (an O(1) counter, or
+    /// an in-database checksum push-down) SHOULD override it: `MemoryStorageAdapter`
+    /// (counter), `SqliteStorageAdapter`, and `PostgresStorageAdapter`
+    /// (in-DB push-down) do. The signature is **membership-only** — it changes on
+    /// create/delete and is stable across updates and reads — so the guard
+    /// catches insert/delete phantoms but not update-driven predicate changes
+    /// (see ADR-026 for scope and limits).
     fn structural_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
-        let _ = collection;
-        Err(AxonError::InvalidOperation(
-            "structural_version not supported by this adapter".into(),
-        ))
+        structural_version_by_scan(self, collection)
     }
 
     /// Returns entities in a collection ordered by entity ID.
@@ -1743,5 +1789,61 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
 
     fn revoke_credential(&self, jti: Uuid, revoked_by: UserId) -> Result<(), AxonError> {
         (**self).revoke_credential(jti, revoked_by)
+    }
+}
+
+#[cfg(test)]
+mod structural_version_tests {
+    use super::*;
+    use crate::memory::MemoryStorageAdapter;
+    use axon_core::types::Entity;
+    use serde_json::json;
+
+    fn col() -> CollectionId {
+        CollectionId::new("things")
+    }
+    fn ent(id: &str) -> Entity {
+        Entity::new(col(), EntityId::new(id), json!({ "v": id }))
+    }
+
+    #[test]
+    fn hash_id_set_is_order_independent_and_membership_sensitive() {
+        let ab = hash_id_set(&["a".to_string(), "b".to_string()]);
+        let ba = hash_id_set(&["b".to_string(), "a".to_string()]);
+        assert_eq!(ab, ba, "hash must be order-independent");
+        assert_ne!(ab, hash_id_set(&["a".to_string()]), "fewer ids must differ");
+        assert_ne!(
+            ab,
+            hash_id_set(&["a".to_string(), "b".to_string(), "c".to_string()]),
+            "more ids must differ"
+        );
+    }
+
+    #[test]
+    fn generic_default_via_scan_tracks_membership() {
+        // Exercises the backend-agnostic default path directly. MemoryStorageAdapter
+        // overrides structural_version, so call the free helper to test the
+        // generic (range_scan-based) logic any non-overriding adapter would use.
+        let mut s = MemoryStorageAdapter::default();
+        let v0 = structural_version_by_scan(&s, &col()).expect("scan sig");
+
+        s.put(ent("a")).expect("put");
+        let v1 = structural_version_by_scan(&s, &col()).expect("scan sig");
+        assert_ne!(v1, v0, "create changes the generic membership signature");
+
+        // In-place update leaves the id-set unchanged.
+        s.compare_and_swap(ent("a"), 1).expect("cas");
+        assert_eq!(
+            structural_version_by_scan(&s, &col()).expect("scan sig"),
+            v1,
+            "update is invisible to the membership signature"
+        );
+
+        s.delete(&col(), &EntityId::new("a")).expect("delete");
+        assert_eq!(
+            structural_version_by_scan(&s, &col()).expect("scan sig"),
+            v0,
+            "delete returns to the empty signature"
+        );
     }
 }

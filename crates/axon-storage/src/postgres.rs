@@ -704,6 +704,29 @@ impl StorageAdapter for PostgresStorageAdapter {
         Ok(count as usize)
     }
 
+    /// Native membership signature (ADR-026 phantom guard) pushed fully into the
+    /// database: an `md5` over the ordered id-set, transferred as 32 hex chars
+    /// regardless of collection size. Read-only (no write-path cost);
+    /// membership-only — changes on create/delete, stable across updates and
+    /// reads. Runs in the active transaction during commit validation, so it
+    /// sees the correct snapshot.
+    fn structural_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        let hex: String = self.block_on(
+            sqlx::query_scalar(
+                "SELECT md5(coalesce(string_agg(id, ',' ORDER BY id), ''))
+                 FROM entities
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
+        // Fold the 128-bit md5 into u64 by taking its first 64 bits (16 hex chars).
+        Ok(u64::from_str_radix(hex.get(..16).unwrap_or("0"), 16).unwrap_or(0))
+    }
+
     fn range_scan(
         &self,
         collection: &CollectionId,

@@ -192,6 +192,47 @@ macro_rules! storage_conformance_tests {
                 s.delete(&tasks(), &EntityId::new("ghost")).expect("test operation should succeed");
             }
 
+            // ── Structural-version phantom guard (ADR-026) ──────────────────
+            // Membership signature: changes on create/delete, stable across
+            // in-place updates and reads. Verified on every backend (the guard
+            // works via the generic default or a native override).
+            #[test]
+            fn structural_version_tracks_membership_not_updates() {
+                let Some(mut s) = maybe_store() else { return; };
+
+                let v_empty = s.structural_version(&tasks()).expect("structural_version");
+                assert_eq!(
+                    v_empty,
+                    s.structural_version(&tasks()).expect("structural_version"),
+                    "structural version must be stable across reads"
+                );
+
+                // Create changes it.
+                s.put(entity("a", "a")).expect("test operation should succeed");
+                let v_a = s.structural_version(&tasks()).expect("structural_version");
+                assert_ne!(v_a, v_empty, "create must change the structural version");
+
+                // A second create changes it again.
+                s.put(entity("b", "b")).expect("test operation should succeed");
+                let v_ab = s.structural_version(&tasks()).expect("structural_version");
+                assert_ne!(v_ab, v_a, "a second create must change it");
+
+                // In-place update (same id-set) must NOT change it — the guard is
+                // membership-only (update-driven predicate skew needs SSI, ADR-026).
+                s.compare_and_swap(entity("a", "updated"), 1)
+                    .expect("test operation should succeed");
+                let v_after_update = s.structural_version(&tasks()).expect("structural_version");
+                assert_eq!(
+                    v_after_update, v_ab,
+                    "an in-place update must NOT change the membership signature"
+                );
+
+                // Delete changes it.
+                s.delete(&tasks(), &EntityId::new("b")).expect("test operation should succeed");
+                let v_after_delete = s.structural_version(&tasks()).expect("structural_version");
+                assert_ne!(v_after_delete, v_after_update, "delete must change it");
+            }
+
             #[test]
             fn range_scan_returns_sorted_entities() {
                 let Some(mut s) = maybe_store() else { return; };

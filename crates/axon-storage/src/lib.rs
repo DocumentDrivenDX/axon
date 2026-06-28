@@ -18,8 +18,9 @@ pub mod sqlite;
 mod proptest_storage;
 
 pub use adapter::{
-    extract_compound_key, extract_index_value, extract_index_values, resolve_field_path,
-    CompoundKey, IndexValue, OrderedFloat, StorageAdapter,
+    extract_compound_key, extract_index_value, extract_index_values, hash_id_set,
+    resolve_field_path, structural_version_by_scan, CompoundKey, IndexValue, OrderedFloat,
+    StorageAdapter,
 };
 pub use auth_schema::{apply_auth_migrations_postgres, apply_auth_migrations_sqlite};
 pub use cursor_store::{StorageCursorStore, CDC_CURSORS_COLLECTION};

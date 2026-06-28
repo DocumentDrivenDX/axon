@@ -103,23 +103,36 @@ O(number of distinct scanned collections), not O(rows scanned).
 
 ### Default-implementation strategy (the key tractability decision)
 
-`structural_version` is added to the trait **without** a silently-passing
-default. A default that returns a constant would make every Serializable scan
-read *appear* valid forever — a **silent soundness hole**. Instead the trait
-default is **fail-closed**: it returns
-`Err(AxonError::InvalidOperation("structural_version not supported by this
-adapter"))`. Phase-1b surfaces that error, so a Serializable transaction that
-recorded a scan read against an adapter without structural-version support
-**aborts loudly** rather than committing an unvalidated phantom. Snapshot
-transactions never call it, so unmigrated adapters are unaffected for the default
-isolation level.
+`structural_version` is added to the trait with a **sound, backend-agnostic
+default** rather than a fail-closed stub. An earlier iteration failed closed
+(returning `InvalidOperation`) so that unmigrated adapters aborted loudly instead
+of committing an unvalidated phantom — correct, but it left the guard working
+only on the memory adapter. The default is now
+`structural_version_by_scan`: it reads the collection's entity ids via
+`range_scan` and returns `hash_id_set(ids)` — a stable, order-independent hash of
+the **id-set**. The id-set hash changes on any insert/delete (a phantom changes
+the set) and is stable across in-place updates and reads, so the default is
+**sound for the phantom guard on every adapter**, at O(n) read cost per scanned
+collection and **zero write-path cost**. There is no silent-soundness-hole risk
+(the default is a real membership signature, not a constant) and nothing fails
+closed.
 
-`MemoryStorageAdapter` implements it concretely (a per-`CatalogKey` monotonic
-counter bumped on membership-changing mutations). SQLite and PostgreSQL keep the
-fail-closed default for now (see "Future work"), which is honest: Serializable +
-scan-read is only *sound and available* on the memory adapter in this increment;
-on SQL backends a scan-read-recording Serializable txn fails closed instead of
-giving a false guarantee.
+Adapters override `structural_version` when they can do better than a full
+range_scan:
+
+- `MemoryStorageAdapter` — a per-`CatalogKey` monotonic counter bumped on
+  membership-changing mutations (O(1)).
+- `SqliteStorageAdapter` — `SELECT id … ORDER BY id` hashed with the shared
+  `hash_id_set` (ids only, not full rows; runs inside the active `BEGIN
+  IMMEDIATE`).
+- `PostgresStorageAdapter` — `md5(string_agg(id, ',' ORDER BY id))` pushed fully
+  into the database (transfers 32 hex chars regardless of collection size; folded
+  to `u64`).
+
+All four paths are **read-derived signatures** (or, for memory, an equivalent
+maintained counter) — none requires a schema migration or a write-time counter
+on the SQL backends, so the common write path is never taxed and there is no
+counter-row contention.
 
 ## Soundness vs. abort-rate vs. implementation cost, across adapters
 
@@ -135,40 +148,52 @@ over scans. (C) is the smallest sound design. (B) **plus** a phantom guard
 collapses into (C) anyway (the phantom guard is the structural counter), so (C)
 subsumes the useful part of (B) at lower cost.
 
-**SQLite cost note**: a sound structural counter needs to survive process
-restart and bump inside the same `BEGIN IMMEDIATE` as the mutations. A natural
-implementation is a `collection_structural_version(collection_id INTEGER PRIMARY
-KEY, version INTEGER)` row bumped on every entity/link insert/delete, or deriving
-it from an existing monotonic audit/row sequence filtered by collection. Either
-is a schema migration — out of scope for this increment.
-
-**PostgreSQL cost note**: same shape; the storage transaction already runs at
-`SERIALIZABLE`, so Postgres' own engine already rejects many of these anomalies
-when the read happens *inside* the same DB transaction — but Axon's reads happen
-in a *separate* read request before the commit transaction opens, so the engine's
-guarantee does not transitively apply. An explicit counter (or `xmin`-range /
-sequence check) is still required to bridge read-request → commit-request.
+**Read-derived signature avoids the write-path cost.** Rather than maintaining a
+write-time counter on the SQL backends (a `collection_structural_version` row
+bumped on every insert/delete — a schema migration that also serializes
+concurrent inserts on the counter row), the SQL adapters compute the signature
+**read-only at scan-record and commit time**. The id-set hash is sound for
+phantoms because a new/removed id changes the set. This is the right trade for an
+**opt-in, rare** guard: it taxes only the Serializable-scan transactions that use
+it (O(n) read over ids), never the common write path. SQLite hashes ordered ids
+client-side; PostgreSQL pushes `md5(string_agg(...))` into the engine so only 32
+hex chars cross the wire. Reads run inside the active storage transaction
+(`BEGIN IMMEDIATE` / `SERIALIZABLE`) during commit validation, so they observe a
+consistent snapshot; the read-request → commit-request gap is bridged because the
+signature is recaptured at commit and compared to the value observed at scan time.
 
 ## What is delivered in this increment (honesty)
 
-- Trait method `StorageAdapter::structural_version` (fail-closed default).
-- `MemoryStorageAdapter` sound implementation (monotonic per-collection counter).
+- Trait method `StorageAdapter::structural_version` with a **sound,
+  backend-agnostic default** (`structural_version_by_scan` + `hash_id_set`).
+- Native overrides on **all three** shipped adapters: memory (O(1) counter),
+  SQLite (ordered-id hash), PostgreSQL (`md5(string_agg)` push-down).
 - `Transaction::record_scan_read` + Phase-1b validation reusing
   `ConflictingVersion`.
 - Tests proving predicate/phantom write skew is **allowed under Snapshot** and
-  **prevented under Serializable** on the memory adapter.
+  **prevented under Serializable** (axon-api transaction tests on memory), plus a
+  cross-adapter conformance test (`structural_version_tracks_membership_not_updates`)
+  run on memory, SQLite, and — when a cluster is reachable — PostgreSQL, and a
+  generic-default unit test exercising the scan-based path.
 
 **Delivered guarantee**: "Serializable for key-addressed read sets **and**
-collection-granular predicate/phantom reads, on the memory adapter, via a
-conservative structural-version guard." SQLite and PostgreSQL **fail closed** on
-scan-read-recording Serializable transactions (no false guarantee, but the
-feature is not yet available there).
+collection-granular predicate/phantom reads, on **every** storage backend, via a
+conservative membership-signature guard." No backend fails closed.
+
+**Scope limit (still honest):** the guard is **membership-only** — it catches
+insert/delete phantoms, not **update-driven** predicate changes (e.g. a
+concurrent `status: open → closed` that flips a `WHERE status = open` count
+without changing the id-set). Catching those soundly requires either a
+version-inclusive signature (which over-aborts on every concurrent update to a
+scanned collection) or full SSI; both remain future work. Invariants over
+mutable predicates must still be guarded at the application level.
 
 ## What remains future work
 
-- **SQLite + PostgreSQL structural-version persistence** — schema migration +
-  bump-in-transaction wiring so the predicate guard is available on durable
-  backends. Until then they fail closed.
+- **Update-driven predicate serializability** — extend the signature to
+  `(id, version)` or adopt SSI so predicate changes via in-place updates are
+  caught. Deferred deliberately: a version-inclusive signature over-aborts on any
+  concurrent update to a scanned collection.
 - **Wiring the handler read paths** (`query_entities`, `aggregate`, `traverse`,
   Cypher executor) to *automatically* call `record_scan_read` when a transaction
   is threaded through a read. This increment provides the transaction-level API
@@ -185,17 +210,17 @@ feature is not yet available there).
 
 | Type | Impact |
 |------|--------|
-| Positive | Sound phantom prevention on the memory adapter at O(scanned-collections) commit cost; reuses existing `ConflictingVersion` retry contract; Snapshot path unchanged and zero-overhead; fail-closed default prevents silent soundness holes |
-| Negative | Conservative: over-aborts on non-matching concurrent inserts/deletes to a scanned collection (acceptable for low-contention agentic workloads, ADR-004); only the memory adapter is wired now; handler auto-capture is a follow-up |
-| Neutral | Collection-granular guard is coarser than true SSI; the honest claim grows to "key-addressed reads + collection-granular predicate reads (memory adapter)" |
+| Positive | Sound phantom prevention on **every** backend (generic scan default + native overrides); reuses existing `ConflictingVersion` retry contract; Snapshot path unchanged and zero-overhead; read-derived signatures add no write-path cost and need no schema migration |
+| Negative | Conservative: over-aborts on non-matching concurrent inserts/deletes to a scanned collection (acceptable for low-contention agentic workloads, ADR-004); the generic default and SQLite paths are O(n)-ids per scanned collection at commit (Postgres push-down and memory are O(1)); membership-only (update-driven predicate skew not caught); handler auto-capture is a follow-up |
+| Neutral | Collection-granular guard is coarser than true SSI; the honest claim grows to "key-addressed reads + collection-granular phantom reads, all backends" |
 
 ## Risks
 
 | Risk | Prob | Impact | Mitigation |
 |------|------|--------|------------|
 | Over-abort under high-contention predicate workloads | Low (agentic = low contention) | Medium | Documented; SSI is the escalation path |
-| A backend forgets to bump the counter on a membership path | Low | High (silent miss) | Bumps are co-located with the membership mutations; conformance test asserts bump-on-insert/delete |
-| Callers assume SQL backends provide the guard | Medium | Medium | Fail-closed default + explicit "memory-only" wording in FEAT-008 / ADR-004 |
+| Memory's native counter misses a membership path (silent miss vs the read-derived default) | Low | High | Counter bumps are co-located with membership mutations; the cross-adapter conformance test asserts create/delete change the signature and updates do not, on every backend |
+| Hash collision masks a phantom (different id-set, same signature) | Negligible (~2⁻⁶⁴) | Medium | 64-bit fixed-seed hash / md5-folded; far better than the prior memory-only/fail-closed state; SSI removes it entirely if ever needed |
 
 ## Validation
 
