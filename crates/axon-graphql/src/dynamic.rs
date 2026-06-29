@@ -813,7 +813,10 @@ fn commit_transaction_input_object() -> InputObject {
         // default, write-set OCC). SERIALIZABLE additionally validates the
         // transaction's recorded read footprint (readEntity / readNamedQuery)
         // at commit, aborting first-committer-wins on a conflicting concurrent
-        // write or membership change.
+        // write or membership change. SERIALIZABLE_STRICT extends that to a
+        // content signature, so a concurrent update to a scanned collection
+        // aborts even when collection membership is unchanged (conservative,
+        // table-granular; see ADR-026).
         .field(InputValue::new(
             "isolation",
             TypeRef::named(TRANSACTION_ISOLATION_ENUM),
@@ -824,6 +827,7 @@ fn transaction_isolation_enum() -> Enum {
     Enum::new(TRANSACTION_ISOLATION_ENUM)
         .item("SNAPSHOT")
         .item("SERIALIZABLE")
+        .item("SERIALIZABLE_STRICT")
 }
 
 fn transaction_operation_input_object() -> InputObject {
@@ -8313,10 +8317,13 @@ async fn commit_transaction_resolver<S: StorageAdapter + 'static>(
 
     // Isolation opt-in (FEAT-008 TXN-05): SNAPSHOT (default) keeps V1 write-set
     // OCC; SERIALIZABLE additionally validates the recorded read footprint at
-    // commit. The level is fixed for the whole transaction.
+    // commit (membership guard); SERIALIZABLE_STRICT validates the content
+    // signature (aborts on concurrent updates to scanned collections). The
+    // level is fixed for the whole transaction.
     let isolation = match input_obj.get("isolation").and_then(Value::as_str) {
         None | Some("SNAPSHOT") => IsolationLevel::Snapshot,
         Some("SERIALIZABLE") => IsolationLevel::Serializable,
+        Some("SERIALIZABLE_STRICT") => IsolationLevel::SerializableStrict,
         Some(other) => {
             return Err(axon_error_to_gql(AxonError::InvalidArgument(format!(
                 "unknown transaction isolation '{other}'"
@@ -13412,6 +13419,10 @@ mod tests {
         );
         assert!(sdl.contains("SERIALIZABLE"), "SERIALIZABLE missing");
         assert!(
+            sdl.contains("SERIALIZABLE_STRICT"),
+            "SERIALIZABLE_STRICT missing"
+        );
+        assert!(
             sdl.contains("input ReadNamedQueryTransactionInput"),
             "readNamedQuery input missing from SDL"
         );
@@ -13480,6 +13491,125 @@ mod tests {
         assert!(
             matches!(err, AxonError::ConflictingVersion { .. }),
             "expected conflict, got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn serializable_strict_named_query_aborts_on_concurrent_update() {
+        // SERIALIZABLE_STRICT uses the content signature (id, version) of the
+        // scanned collection, so a concurrent UPDATE that leaves membership
+        // unchanged still aborts. The write target ("other") is disjoint from
+        // the concurrently-updated row ("anchor"), so write-set OCC alone would
+        // NOT catch this — only the strict read-set guard does.
+        let schema_def = named_query_tasks_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let caller = CallerIdentity::anonymous();
+        let schemas: HashMap<String, CollectionSchema> =
+            HashMap::from([(schema_def.collection.to_string(), schema_def.clone())]);
+
+        {
+            let mut guard = handler.lock().await;
+            create_task(&mut guard, "anchor", "open");
+            create_task(&mut guard, "other", "open");
+        }
+        let mut tx = Transaction::with_isolation(IsolationLevel::SerializableStrict);
+        stage_named_query_read(&handler, &mut tx, "open_tasks", Some("tasks"), &schemas)
+            .await
+            .expect("named-query read footprint staged");
+        // Disjoint write target so write-set OCC cannot be what aborts us.
+        tx.update(
+            Entity::new(
+                CollectionId::new("tasks"),
+                EntityId::new("other"),
+                json!({"title": "other", "status": "done"}),
+            ),
+            1,
+            None,
+        )
+        .expect("stage write");
+
+        // Concurrent committed UPDATE of a different row: membership unchanged,
+        // content (version) changed.
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .update_entity(UpdateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("anchor"),
+                    data: json!({"title": "anchor", "status": "done"}),
+                    expected_version: 1,
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("concurrent update");
+        }
+
+        let err = {
+            let mut guard = handler.lock().await;
+            guard
+                .commit_transaction_with_caller(tx, &caller, None)
+                .expect_err("strict must abort: scanned collection content changed")
+        };
+        assert!(
+            matches!(err, AxonError::ConflictingVersion { .. }),
+            "expected conflict, got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn serializable_named_query_tolerates_concurrent_update() {
+        // Same scenario as the strict test above, but plain SERIALIZABLE uses the
+        // membership (structural) signature: a content-only UPDATE that leaves the
+        // id-set unchanged does NOT abort. This pins the strict-vs-plain contrast.
+        let schema_def = named_query_tasks_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let caller = CallerIdentity::anonymous();
+        let schemas: HashMap<String, CollectionSchema> =
+            HashMap::from([(schema_def.collection.to_string(), schema_def.clone())]);
+
+        {
+            let mut guard = handler.lock().await;
+            create_task(&mut guard, "anchor", "open");
+            create_task(&mut guard, "other", "open");
+        }
+        let mut tx = Transaction::with_isolation(IsolationLevel::Serializable);
+        stage_named_query_read(&handler, &mut tx, "open_tasks", Some("tasks"), &schemas)
+            .await
+            .expect("named-query read footprint staged");
+        tx.update(
+            Entity::new(
+                CollectionId::new("tasks"),
+                EntityId::new("other"),
+                json!({"title": "other", "status": "done"}),
+            ),
+            1,
+            None,
+        )
+        .expect("stage write");
+
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .update_entity(UpdateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("anchor"),
+                    data: json!({"title": "anchor", "status": "done"}),
+                    expected_version: 1,
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("concurrent update");
+        }
+
+        let committed = {
+            let mut guard = handler.lock().await;
+            guard.commit_transaction_with_caller(tx, &caller, None)
+        };
+        assert!(
+            committed.is_ok(),
+            "plain serializable must tolerate a membership-preserving update: {committed:?}"
         );
     }
 
