@@ -15,8 +15,10 @@ use uuid::Uuid;
 
 /// A typed index value extracted from entity data.
 ///
-/// Values are stored in EAV index tables, one variant per [`IndexType`].
-/// The `Ord` implementation provides the sort order used for range scans.
+/// One variant per [`IndexType`]. The `Ord` implementation provides the sort
+/// order used for index range scans. Secondary indexes are maintained only by
+/// the in-memory adapter (an ephemeral `BTreeMap`, rebuilt from entity data);
+/// the SQL backends do not persist them and fall through to scans.
 ///
 /// # Canonical ordering (Store SSOT)
 ///

@@ -25,11 +25,16 @@ share the type system.
 
 `axon-storage`, however, does **not** use those bytes. It maintains its own
 ordered representation — the typed `IndexValue` enum (`String` / `Integer` /
-`Float` / `Boolean`) with an `Ord` implementation — materialised as:
+`Float` / `Boolean`) with an `Ord` implementation — materialised as a `BTreeMap`
+keyed by `IndexValue` / `CompoundKey`.
 
-- a `BTreeMap` keyed by `IndexValue` / `CompoundKey` in the in-memory adapter;
-- EAV index tables with typed value columns in the SQLite and PostgreSQL
-  adapters.
+Crucially, **only the in-memory adapter maintains secondary indexes.** The
+`update_indexes` / `index_lookup` / `index_range` `StorageAdapter` methods are
+no-op / `Err` defaults that **only `MemoryStorageAdapter` overrides**; SQLite and
+PostgreSQL do not implement them and the query planner falls through to a full
+scan for them. So the typed `IndexValue` ordering is an **in-memory, ephemeral**
+structure — rebuilt from entity data each process lifetime — not a persisted
+on-disk index. (There are no EAV index tables in the SQL backends today.)
 
 `axon-7fbe288e` added a cross-crate conformance test (`index_key_conformance`
 in `axon-storage`'s `adapter.rs`) that proves the typed `IndexValue` `Ord` and
@@ -79,14 +84,18 @@ byte-key migration as deferred-with-conditions.
 
 Concretely:
 
-1. **Datetime canonicalization (actionable).** Make the store index `Datetime`
-   fields by their canonical instant rather than their raw string: parse the
-   value to epoch nanoseconds (reusing the SSOT's RFC 3339 / epoch-nanos
-   coercion) and store it in the ordered domain (an `i64`, i.e. the existing
-   `IndexValue::Integer` lane or a dedicated datetime lane), so ordering is
-   instant-correct across offsets. This requires **reindexing existing datetime
-   indexes** (a data migration), so it is scoped as its own bead with a
-   migration step, not folded into a sweep.
+1. **Datetime canonicalization (actionable).** Make the index extraction
+   (`extract_index_value` / `extract_index_values`, consumed by the in-memory
+   index and by the handler's index-bound planning) encode `Datetime` fields by
+   their canonical instant rather than their raw string: parse the value to epoch
+   nanoseconds (reusing the SSOT's RFC 3339 / epoch-nanos coercion) and store it
+   in the ordered domain (an `i64` — a dedicated `IndexValue::Datetime(i64)` lane
+   is cleaner than overloading `Integer`), so ordering is instant-correct across
+   offsets. Because secondary indexes are **in-memory and ephemeral** (rebuilt
+   from entity data each process), there is **no persistent data migration** — the
+   query bound and the stored key both flow through the same extraction, so they
+   stay consistent automatically. (If the SQL backends later gain *persisted*
+   secondary indexes, a reindex migration becomes part of that work, not this.)
 2. **Type-mismatch policy (no change).** The `None`-vs-`Err` difference is
    intentional (FEAT-013) and already documented on both sides; no
    reconciliation is required.
@@ -98,21 +107,23 @@ Concretely:
 
 ### Why not the full byte-key migration now
 
-The migration's cost is high and concentrated in the query path and schema:
+The migration's cost is concentrated in the index/query path:
 
-- The EAV value columns (typed) become opaque `BYTEA` / `BLOB`; range-scan
-  bound translation must encode query bounds to canonical bytes on every
-  lookup; the in-memory `BTreeMap<IndexValue>` becomes `BTreeMap<Vec<u8>>`.
-- A full data migration to re-encode every existing index row across all three
-  backends.
+- The in-memory `BTreeMap<IndexValue>` / `BTreeMap<CompoundKey>` becomes
+  `BTreeMap<Vec<u8>>`, and every index-bound query must encode its bounds to
+  canonical bytes; the typed `IndexValue` lattice (and its `Display`, equality
+  lookups, unique-conflict checks) is replaced by opaque bytes, losing the type
+  information the typed model carries for free.
+- It would only become genuinely large if/when the SQL backends grow *persisted*
+  byte-keyed index tables (a new on-disk format + a data migration) — work that
+  does not exist today and that the targeted datetime fix does not require.
 - It changes the same datetime representation that the targeted fix changes —
-  so it does not avoid the migration, it *enlarges* it.
+  so doing it instead of the targeted fix does not avoid that change, it bundles
+  it into a much larger one.
 
 …while the benefit is largely **SSOT purity**, not correctness: equivalence of
 ordering for the scalar types is already proven by test. The single correctness
-gain (datetime) is obtainable far more cheaply by the targeted fix. Spending the
-larger migration now would be paying for aesthetics and pre-empting the cheap
-fix's data migration with a larger one.
+gain (datetime) is obtainable far more cheaply by the targeted fix.
 
 ### Conditions under which to revisit the byte-key migration
 
@@ -130,9 +141,11 @@ Adopt the literal byte-key store when **any** of these holds:
 
 ### 1. Full byte-key migration now (the original `axon-302fe6be` scope)
 
-Rejected for now: high cost (query path + EAV schema + cross-backend data
-migration), benefit dominated by SSOT aesthetics. Deferred with explicit
-revisit conditions; the conformance test holds the line in the meantime.
+Rejected for now: high cost (re-encoding the in-memory index/query path to opaque
+bytes, and a new persisted byte-keyed index format + migration if/when the SQL
+backends gain on-disk indexes), benefit dominated by SSOT aesthetics. Deferred
+with explicit revisit conditions; the conformance test holds the line in the
+meantime.
 
 ### 2. Status quo — verified equivalence + documented residuals only
 
@@ -151,7 +164,7 @@ migration remains available behind documented conditions.
 
 | Type | Impact |
 |------|--------|
-| Positive | The only real correctness defect (datetime cross-offset ordering) gets a scoped, migration-aware fix; the typed model and its test-verified SSOT equivalence are preserved; the FEAT-013 type-mismatch policy is unchanged; the large byte-key migration is not paid for prematurely and is gated behind concrete conditions |
+| Positive | The only real correctness defect (datetime cross-offset ordering) gets a scoped fix with no persistent migration (secondary indexes are in-memory/ephemeral); the typed model and its test-verified SSOT equivalence are preserved; the FEAT-013 type-mismatch policy is unchanged; the large byte-key migration is not paid for prematurely and is gated behind concrete conditions |
 | Negative | Two encodings of the canonical order continue to coexist (typed `Ord` in the store, bytes in `axon-esf`), so `axon-esf::index_key` remains the SSOT *by verified equivalence* rather than by direct use; until the datetime fix lands, mixed-offset datetime indexes mis-sort |
 | Neutral | No code change from this ADR itself; it records the decision, re-scopes `axon-302fe6be` to deferred-with-conditions, and spawns a focused datetime-canonicalization bead |
 
@@ -161,7 +174,7 @@ migration remains available behind documented conditions.
 |------|------|--------|------------|
 | A deployment already stores mixed-offset datetimes in an indexed field and relies on correct ordering before the targeted fix ships | Low | Medium | Prioritize the datetime-canonicalization bead; document the residual (done, in `IndexValue` docs + the esf Store-SSOT note); deployments emitting only `Z` datetimes are unaffected |
 | The two encodings drift on a future type or edge case the conformance test misses | Low | Medium | The `index_key_conformance` test is the guard; extend it whenever an index type or coercion rule changes |
-| The datetime fix's data migration is mishandled (stale string-form rows remain) | Medium | Medium | Treat reindexing as an explicit migration step in the fix's bead, with a conformance assertion over migrated data across all three backends |
+| A future persisted-index backend re-introduces the datetime residual on disk if it copies the string-form extraction | Low | Medium | Persisted-index work must use the canonical-instant extraction from the targeted fix, with a conformance assertion over its stored keys |
 
 ## Supersession
 
@@ -173,8 +186,9 @@ migration remains available behind documented conditions.
 ## Concern Impact
 
 - **rust-cargo**: None from this ADR (design-only). The targeted datetime fix it
-  authorizes will touch `axon-storage` index extraction across the three
-  adapters plus a data migration; that work is tracked separately.
+  authorizes will touch `axon-storage` index extraction (and the in-memory index
+  it feeds) plus a small public coercion in `axon-esf`; that work is tracked
+  separately.
 - **security-owasp**: None. Index ordering is a correctness concern; no new
   external surface.
 
