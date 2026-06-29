@@ -727,6 +727,33 @@ impl StorageAdapter for PostgresStorageAdapter {
         Ok(u64::from_str_radix(hex.get(..16).unwrap_or("0"), 16).unwrap_or(0))
     }
 
+    /// Native content signature (ADR-026 strict guard, FEAT-008 TXN-05
+    /// `SerializableStrict`) pushed fully into the database: an `md5` over the
+    /// ordered `id:version` pairs, transferred as 32 hex chars regardless of
+    /// collection size. Like [`Self::structural_version`] this is read-only and
+    /// pushes the aggregation into Postgres, but it is **version-inclusive**: an
+    /// in-place update bumps a row's `version` and moves the signature, catching
+    /// update-driven predicate skew the membership signature misses. Runs in the
+    /// active transaction during commit validation, so it sees the correct
+    /// snapshot.
+    fn content_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        let hex: String = self.block_on(
+            sqlx::query_scalar(
+                "SELECT md5(coalesce(
+                     string_agg(id || ':' || version::text, ',' ORDER BY id), ''))
+                 FROM entities
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
+        // Fold the 128-bit md5 into u64 by taking its first 64 bits (16 hex chars).
+        Ok(u64::from_str_radix(hex.get(..16).unwrap_or("0"), 16).unwrap_or(0))
+    }
+
     fn range_scan(
         &self,
         collection: &CollectionId,
@@ -2755,6 +2782,65 @@ mod tests {
             .expect("test operation should succeed");
         assert_eq!(got.data["title"], "hello");
         assert_eq!(got.version, 1);
+    }
+
+    #[test]
+    fn native_content_version_is_version_inclusive_when_available() {
+        // The native Postgres content_version push-down (ADR-026 strict guard,
+        // md5 over id:version) must move on an in-place update, while the native
+        // structural_version (md5 over the id-set) stays put — confirming the
+        // pushed-down strict signature catches update-driven predicate skew.
+        let _guard = postgres_test_guard();
+        let Some(mut s) =
+            store_or_skip("native_content_version_is_version_inclusive_when_available")
+        else {
+            return;
+        };
+
+        let col = CollectionId::new("tasks");
+        s.put(Entity::new(
+            col.clone(),
+            EntityId::new("t-001"),
+            serde_json::json!({"title": "a"}),
+        ))
+        .expect("put");
+        s.put(Entity::new(
+            col.clone(),
+            EntityId::new("t-002"),
+            serde_json::json!({"title": "b"}),
+        ))
+        .expect("put");
+
+        let membership_before = s.structural_version(&col).expect("structural");
+        let content_before = s.content_version(&col).expect("content");
+        // Re-reading without a write must be stable (self-consistent signature).
+        assert_eq!(
+            content_before,
+            s.content_version(&col).expect("content"),
+            "content signature must be stable across reads"
+        );
+
+        // In-place update: membership unchanged, version bumps.
+        s.compare_and_swap(
+            Entity::new(
+                col.clone(),
+                EntityId::new("t-001"),
+                serde_json::json!({"title": "a2"}),
+            ),
+            1,
+        )
+        .expect("cas");
+
+        assert_eq!(
+            membership_before,
+            s.structural_version(&col).expect("structural"),
+            "membership signature must be stable across an in-place update"
+        );
+        assert_ne!(
+            content_before,
+            s.content_version(&col).expect("content"),
+            "content signature must change on an in-place update"
+        );
     }
 
     #[test]

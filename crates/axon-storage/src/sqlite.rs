@@ -1102,6 +1102,39 @@ impl StorageAdapter for SqliteStorageAdapter {
         Ok(crate::hash_id_set(&ids))
     }
 
+    /// Native content signature (ADR-026 strict guard, FEAT-008 TXN-05
+    /// `SerializableStrict`): fetch the ordered `(id, version)` set and hash it
+    /// via the shared [`crate::hash_id_version_set`]. Like
+    /// [`Self::structural_version`] this is read-only and transfers ids+versions
+    /// only (not full row JSON), but it is **version-inclusive**, so it also
+    /// changes on in-place updates — catching update-driven predicate skew the
+    /// membership signature misses. Runs within the active transaction during
+    /// commit validation, so it sees the correct snapshot.
+    fn content_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+        use sqlx::Row;
+        let key = self.resolve_catalog_key(collection)?;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT id, version FROM entities
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
+                 ORDER BY id",
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_all(&self.pool),
+        )?;
+        let pairs: Vec<(String, u64)> = rows
+            .into_iter()
+            .map(|r| {
+                let id: String = r.get("id");
+                let version: i64 = r.get("version");
+                (id, version as u64)
+            })
+            .collect();
+        Ok(crate::hash_id_version_set(&pairs))
+    }
+
     fn range_scan(
         &self,
         collection: &CollectionId,
@@ -3445,6 +3478,49 @@ mod tests {
                 current_entity.expect("current_entity must be present on wrong-version conflict");
             assert_eq!(ce.version, 1);
         }
+    }
+
+    #[test]
+    fn native_content_version_is_version_inclusive_unlike_membership() {
+        // The native SQLite content_version push-down (ADR-026 strict guard) must
+        // move on an in-place update, while the native structural_version
+        // (membership) stays put — pinning the strict-vs-plain distinction at the
+        // adapter layer, not just on the by-scan default.
+        let mut s = store();
+        s.put(entity("t-001")).expect("put");
+        s.put(entity("t-002")).expect("put");
+
+        let membership_before = s.structural_version(&tasks()).expect("structural");
+        let content_before = s.content_version(&tasks()).expect("content");
+
+        // In-place update: membership unchanged, version bumps.
+        s.compare_and_swap(entity("t-001"), 1).expect("cas");
+
+        let membership_after = s.structural_version(&tasks()).expect("structural");
+        let content_after = s.content_version(&tasks()).expect("content");
+
+        assert_eq!(
+            membership_before, membership_after,
+            "membership signature must be stable across an in-place update"
+        );
+        assert_ne!(
+            content_before, content_after,
+            "content signature must change on an in-place update"
+        );
+    }
+
+    #[test]
+    fn native_content_version_matches_by_scan_default() {
+        // The push-down must agree with the generic by-scan default on the same
+        // state, so the strict guard is consistent regardless of which path runs.
+        let mut s = store();
+        s.put(entity("a")).expect("put");
+        s.put(entity("b")).expect("put");
+        s.compare_and_swap(entity("a"), 1).expect("cas");
+
+        let native = s.content_version(&tasks()).expect("native content");
+        let by_scan = crate::content_version_by_scan(&s, &tasks()).expect("by-scan content");
+        assert_eq!(native, by_scan, "native content_version must match by-scan");
     }
 
     #[test]
