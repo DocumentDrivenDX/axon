@@ -267,6 +267,32 @@ pub fn extract_index_key_bytes(
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CompoundKey(pub Vec<IndexValue>);
 
+impl CompoundKey {
+    /// Encode this typed key to the canonical **framed** composite bytes — the
+    /// same bytes [`axon_schema::schema::CompoundIndexDef::index_key`] persists
+    /// for the equivalent record values.
+    ///
+    /// Each typed [`IndexValue`] is mapped through
+    /// [`IndexValue::to_json`] / [`IndexValue::index_type`] into
+    /// [`axon_esf::encode_compound_index_key`], so re-encoding a typed lookup or
+    /// prefix key reproduces exactly the stored bytes (the compound analogue of
+    /// the single-field [`IndexValue::encode_key`] round-trip).
+    ///
+    /// Returns `Ok(None)` if any component is unencodable (mirroring the
+    /// single-field path's "no match" behavior); callers treat that as an empty
+    /// result.
+    pub fn encode_framed(&self) -> Result<Option<Vec<u8>>, axon_esf::IndexKeyError> {
+        let jsons: Vec<(serde_json::Value, axon_schema::schema::IndexType)> = self
+            .0
+            .iter()
+            .map(|v| (v.to_json(), v.index_type()))
+            .collect();
+        let refs: Vec<(&serde_json::Value, &axon_schema::schema::IndexType)> =
+            jsons.iter().map(|(j, t)| (j, t)).collect();
+        axon_esf::encode_compound_index_key(&refs)
+    }
+}
+
 /// Extract a compound key from entity data given a compound index definition.
 ///
 /// Returns `None` if any field in the compound key is null/missing/type-mismatch,

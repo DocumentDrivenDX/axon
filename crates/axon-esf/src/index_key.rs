@@ -378,6 +378,45 @@ fn frame(encoded: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(encoded);
 }
 
+/// Frame a sequence of already-resolved field values into a composite key.
+///
+/// Produces the **same** framed composite bytes that
+/// [`CompoundIndexDef::index_key`] (and [`IndexDef::index_key`] for a single
+/// field) produce from a whole record.
+///
+/// Each `(value, index_type)` pair is encoded in order as
+/// `len(u32 BE) ++ encoded_value` and concatenated, reusing the identical
+/// private `frame`/`encode_value` primitives as the record-driven encoders, so
+/// the output is byte-identical for equivalent inputs. Because of the length
+/// prefixes, the framed key of the leading field(s) is an exact byte-prefix of
+/// the full key (leftmost-prefix friendly), making this the bare-value
+/// counterpart used to re-encode a typed lookup/prefix key to the exact stored
+/// bytes.
+///
+/// Sparse / error semantics mirror [`CompoundIndexDef::index_key`]:
+///
+/// * `Ok(None)` — at least one value is JSON `null` (treated as
+///   missing/sparse: a compound entry requires every field to be present).
+/// * `Ok(Some(bytes))` — every field produced a value.
+/// * `Err(IndexKeyError)` — at least one value is present but not coercible to
+///   its declared [`IndexType`].
+///
+/// The error's `field` is reported as the field's positional index (e.g.
+/// `"0"`), since bare values carry no dotted path.
+pub fn encode_compound_index_key(
+    fields: &[(&Value, &IndexType)],
+) -> Result<Option<Vec<u8>>, IndexKeyError> {
+    let mut out = Vec::new();
+    for (pos, (value, index_type)) in fields.iter().enumerate() {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let encoded = encode_value(&pos.to_string(), value, index_type)?;
+        frame(&encoded, &mut out);
+    }
+    Ok(Some(out))
+}
+
 impl IndexDef {
     /// Compute the canonical, length-prefixed index key for this single-field
     /// index against `record`.
@@ -417,18 +456,43 @@ impl CompoundIndexDef {
     ///   index entry requires all fields).
     /// * `Err(IndexKeyError)` — at least one field value is present but invalid.
     pub fn index_key(&self, record: &Value) -> Result<Option<Vec<u8>>, IndexKeyError> {
-        let mut out = Vec::new();
+        // Resolve each field's value from the record (a missing path is sparse:
+        // `Ok(None)`), then delegate the framing to the shared bare-value
+        // encoder so both paths produce byte-identical composite keys.
+        let mut resolved: Vec<(&Value, &IndexType)> = Vec::with_capacity(self.fields.len());
         for f in &self.fields {
             let Some(value) = extract_path(record, &f.field) else {
                 return Ok(None);
             };
-            if value.is_null() {
-                return Ok(None);
-            }
-            let encoded = encode_value(&f.field, value, &f.index_type)?;
-            frame(&encoded, &mut out);
+            resolved.push((value, &f.index_type));
         }
-        Ok(Some(out))
+        // Map a positional `field` error back to the declared dotted path so
+        // callers still get the field name they configured.
+        encode_compound_index_key(&resolved).map_err(|err| match err {
+            IndexKeyError::TypeMismatch {
+                field,
+                expected,
+                found,
+            } => IndexKeyError::TypeMismatch {
+                field: self.field_name_at(&field).unwrap_or(field),
+                expected,
+                found,
+            },
+            IndexKeyError::Unencodable { field, reason } => IndexKeyError::Unencodable {
+                field: self.field_name_at(&field).unwrap_or(field),
+                reason,
+            },
+        })
+    }
+
+    /// Map a positional field index (as produced by [`encode_compound_index_key`])
+    /// back to this index's declared dotted field path.
+    fn field_name_at(&self, positional: &str) -> Option<String> {
+        positional
+            .parse::<usize>()
+            .ok()
+            .and_then(|i| self.fields.get(i))
+            .map(|f| f.field.clone())
     }
 }
 
@@ -1038,5 +1102,71 @@ mod tests {
         // Differing leading field dominates regardless of second field.
         let a_big_b_small = idx.index_key(&json!({"a": "y", "b": 0})).unwrap().unwrap();
         assert!(hi < a_big_b_small, "leading field must dominate ordering");
+    }
+
+    #[test]
+    fn encode_compound_index_key_matches_record_driven() {
+        let idx = compound(&[
+            ("status", IndexType::String),
+            ("priority", IndexType::Integer),
+        ]);
+        let record = json!({"status": "open", "priority": 5});
+        let from_record = idx.index_key(&record).unwrap().unwrap();
+
+        let status = json!("open");
+        let priority = json!(5);
+        let from_bare = encode_compound_index_key(&[
+            (&status, &IndexType::String),
+            (&priority, &IndexType::Integer),
+        ])
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            from_bare, from_record,
+            "bare-value encoder must produce byte-identical output to index_key"
+        );
+    }
+
+    #[test]
+    fn encode_compound_index_key_leading_prefix_is_byte_prefix_of_full() {
+        let status = json!("open");
+        let priority = json!(5);
+        let full = encode_compound_index_key(&[
+            (&status, &IndexType::String),
+            (&priority, &IndexType::Integer),
+        ])
+        .unwrap()
+        .unwrap();
+        let leading = encode_compound_index_key(&[(&status, &IndexType::String)])
+            .unwrap()
+            .unwrap();
+        assert!(
+            full.starts_with(&leading),
+            "leading-fields prefix must be a literal byte-prefix of the full key"
+        );
+    }
+
+    #[test]
+    fn encode_compound_index_key_sparse_on_null() {
+        let a = json!("x");
+        let null = Value::Null;
+        let key =
+            encode_compound_index_key(&[(&a, &IndexType::String), (&null, &IndexType::Integer)])
+                .unwrap();
+        assert_eq!(
+            key, None,
+            "a null field makes the whole compound key sparse"
+        );
+    }
+
+    #[test]
+    fn encode_compound_index_key_type_mismatch_is_error() {
+        let a = json!("x");
+        let bad = json!("not-an-int");
+        let err =
+            encode_compound_index_key(&[(&a, &IndexType::String), (&bad, &IndexType::Integer)])
+                .unwrap_err();
+        assert!(matches!(err, IndexKeyError::TypeMismatch { .. }));
     }
 }

@@ -5,7 +5,10 @@ pub mod index_key;
 pub mod types;
 pub mod validation;
 
-pub use index_key::{coerce_datetime_nanos, encode_index_value, extract_path, IndexKeyError};
+pub use index_key::{
+    coerce_datetime_nanos, encode_compound_index_key, encode_index_value, extract_path,
+    IndexKeyError,
+};
 pub use types::{
     CompoundIndexDef, CompoundIndexField, EntitySchemaDocument, EsfCoreDocument, IndexDeclaration,
     IndexDef, IndexType,

@@ -12,7 +12,27 @@ use axon_core::intent::{ApprovalState, MutationIntent};
 use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
-use crate::adapter::{IndexValue, StorageAdapter};
+use crate::adapter::{CompoundKey, IndexValue, StorageAdapter};
+
+/// Compute the exclusive byte-prefix upper bound for a leftmost-prefix range
+/// scan: the smallest byte string strictly greater than every string that has
+/// `prefix` as a literal prefix.
+///
+/// Increments the last byte that is `< 0xFF`, truncating any trailing `0xFF`
+/// bytes. If `prefix` is empty or all bytes are `0xFF` there is no finite upper
+/// bound (every longer string is still prefixed), so this returns `None` and the
+/// caller omits the upper bound (scanning to the end of the ordinal partition).
+fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    while let Some(last) = end.last_mut() {
+        if *last < 0xFF {
+            *last += 1;
+            return Some(end);
+        }
+        end.pop();
+    }
+    None
+}
 
 /// SQLite-backed storage adapter using an embedded database.
 ///
@@ -393,6 +413,34 @@ impl SqliteStorageAdapter {
             sqlx::query(
                 "CREATE INDEX IF NOT EXISTS idx_entity_index_range
                  ON entity_index (database_name, schema_name, collection, field, key)",
+            )
+            .execute(&self.pool),
+        )?;
+        // Persisted compound secondary index (FEAT-013 / US-033). `key` holds the
+        // canonical **framed** composite bytes from
+        // `axon_esf::encode_compound_index_key` (a `u32` BE length per field).
+        // `index_ordinal` is the compound index's position in the collection
+        // schema's `compound_indexes` list, matching how the in-memory adapter
+        // keys compound indexes by position. SQLite compares BLOBs bytewise, so a
+        // leftmost-prefix match is a byte-prefix range over `key`.
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS entity_compound_index (
+                    database_name TEXT NOT NULL,
+                    schema_name   TEXT NOT NULL,
+                    collection    TEXT NOT NULL,
+                    index_ordinal INTEGER NOT NULL,
+                    key           BLOB NOT NULL,
+                    entity_id     TEXT NOT NULL,
+                    PRIMARY KEY (database_name, schema_name, collection, index_ordinal, key, entity_id)
+                )",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_entity_compound_index_range
+                 ON entity_compound_index (database_name, schema_name, collection, index_ordinal, key)",
             )
             .execute(&self.pool),
         )?;
@@ -1074,6 +1122,54 @@ impl SqliteStorageAdapter {
         Ok(())
     }
 
+    /// Delete this entity's `entity_compound_index` rows for one ordinal.
+    fn delete_compound_index_rows(
+        &self,
+        key: &QualifiedCollectionId,
+        index_ordinal: i64,
+        entity_id: &EntityId,
+    ) -> Result<(), AxonError> {
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entity_compound_index
+                 WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3
+                   AND index_ordinal = ?4 AND entity_id = ?5",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .bind(index_ordinal)
+            .bind(entity_id.as_str())
+            .execute(&self.pool),
+        )?;
+        Ok(())
+    }
+
+    /// Insert one `entity_compound_index` row for a framed composite key.
+    fn insert_compound_index_row(
+        &self,
+        key: &QualifiedCollectionId,
+        index_ordinal: i64,
+        entity_id: &EntityId,
+        framed: &[u8],
+    ) -> Result<(), AxonError> {
+        self.block_on(
+            sqlx::query(
+                "INSERT OR REPLACE INTO entity_compound_index
+                    (database_name, schema_name, collection, index_ordinal, key, entity_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .bind(index_ordinal)
+            .bind(framed)
+            .bind(entity_id.as_str())
+            .execute(&self.pool),
+        )?;
+        Ok(())
+    }
+
     /// Rebuild all `entity_index` rows for a collection from its entities.
     ///
     /// Drops the collection's existing index rows, then scans every entity
@@ -1113,6 +1209,48 @@ impl SqliteStorageAdapter {
         Ok(())
     }
 
+    /// Rebuild all `entity_compound_index` rows for a collection from its
+    /// entities (the compound sibling of [`Self::reindex_collection`]).
+    ///
+    /// Clears the collection's existing compound rows, then for each entity
+    /// computes the framed composite key for each compound def (by ordinal) via
+    /// [`axon_schema::schema::CompoundIndexDef::index_key`], inserting one row
+    /// per entity whose key is non-sparse. Idempotent and correct over an empty
+    /// collection. A type-mismatch in a field is treated as not-indexed (the
+    /// `Err` from `index_key` is mapped to "no row"), matching FEAT-013's typed
+    /// in-memory adapter semantics.
+    pub fn reindex_compound_collection(
+        &mut self,
+        collection: &CollectionId,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entity_compound_index
+                 WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .execute(&self.pool),
+        )?;
+        if indexes.is_empty() {
+            return Ok(());
+        }
+        let entities = self.range_scan(collection, None, None, None)?;
+        for entity in &entities {
+            for (ordinal, idx) in indexes.iter().enumerate() {
+                // A type-mismatch (`Err`) is "not indexed" here; only a
+                // non-sparse `Ok(Some(_))` produces a row.
+                if let Ok(Some(framed)) = idx.index_key(&entity.data) {
+                    self.insert_compound_index_row(&key, ordinal as i64, &entity.id, &framed)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// One-time open-time backfill: for every collection whose latest schema
     /// declares single-field indexes but which has no `entity_index` rows yet,
     /// rebuild its index. Guarded so it never redoes work for collections that
@@ -1123,25 +1261,43 @@ impl SqliteStorageAdapter {
             let Some(schema) = self.get_schema(&collection)? else {
                 continue;
             };
-            if schema.indexes.is_empty() {
-                continue;
-            }
             let key = self.resolve_catalog_key(&collection)?;
-            let existing: i64 = self.block_on(
-                sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM entity_index
-                     WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3",
-                )
-                .bind(key.namespace.database.as_str())
-                .bind(key.namespace.schema.as_str())
-                .bind(key.collection.as_str())
-                .fetch_one(&self.pool),
-            )?;
-            if existing > 0 {
-                continue;
+
+            // Single-field index backfill (guarded so it never redoes work).
+            if !schema.indexes.is_empty() {
+                let existing: i64 = self.block_on(
+                    sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM entity_index
+                         WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3",
+                    )
+                    .bind(key.namespace.database.as_str())
+                    .bind(key.namespace.schema.as_str())
+                    .bind(key.collection.as_str())
+                    .fetch_one(&self.pool),
+                )?;
+                if existing == 0 {
+                    let indexes = schema.indexes.clone();
+                    self.reindex_collection(&collection, &indexes)?;
+                }
             }
-            let indexes = schema.indexes.clone();
-            self.reindex_collection(&collection, &indexes)?;
+
+            // Compound index backfill (independently guarded).
+            if !schema.compound_indexes.is_empty() {
+                let existing: i64 = self.block_on(
+                    sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM entity_compound_index
+                         WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3",
+                    )
+                    .bind(key.namespace.database.as_str())
+                    .bind(key.namespace.schema.as_str())
+                    .bind(key.collection.as_str())
+                    .fetch_one(&self.pool),
+                )?;
+                if existing == 0 {
+                    let compound_indexes = schema.compound_indexes.clone();
+                    self.reindex_compound_collection(&collection, &compound_indexes)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1886,6 +2042,8 @@ impl StorageAdapter for SqliteStorageAdapter {
         // dropping all indexes from a schema correctly empties the index too.
         let indexes = versioned.indexes.clone();
         self.reindex_collection(&schema.collection, &indexes)?;
+        let compound_indexes = versioned.compound_indexes.clone();
+        self.reindex_compound_collection(&schema.collection, &compound_indexes)?;
         Ok(())
     }
 
@@ -2366,7 +2524,166 @@ impl StorageAdapter for SqliteStorageAdapter {
             .bind(key.collection.as_str())
             .execute(&self.pool),
         )?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entity_compound_index
+                 WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
+    }
+
+    // ── Compound index operations (FEAT-013, US-033) ────────────────────
+
+    fn update_compound_indexes(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        // Remove this entity's prior rows for each ordinal (delete by
+        // (ordinal, entity_id) rather than recomputing the old key — equivalent
+        // to the in-memory adapter's old-entry removal).
+        if old_data.is_some() {
+            for (ordinal, _) in indexes.iter().enumerate() {
+                self.delete_compound_index_rows(&key, ordinal as i64, entity_id)?;
+            }
+        }
+
+        for (ordinal, idx) in indexes.iter().enumerate() {
+            // A type-mismatch (`Err`) is "not indexed"; a sparse `Ok(None)`
+            // produces no row.
+            let Ok(Some(framed)) = idx.index_key(new_data) else {
+                continue;
+            };
+            if idx.unique {
+                let found: Option<i64> = self.block_on(
+                    sqlx::query_scalar(
+                        "SELECT 1 FROM entity_compound_index
+                         WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3
+                           AND index_ordinal = ?4 AND key = ?5 AND entity_id <> ?6
+                         LIMIT 1",
+                    )
+                    .bind(key.namespace.database.as_str())
+                    .bind(key.namespace.schema.as_str())
+                    .bind(key.collection.as_str())
+                    .bind(ordinal as i64)
+                    .bind(framed.as_slice())
+                    .bind(entity_id.as_str())
+                    .fetch_optional(&self.pool),
+                )?;
+                if found.is_some() {
+                    // Format the typed key readably, like the single-field /
+                    // in-memory unique-violation path.
+                    let field_names: Vec<&str> =
+                        idx.fields.iter().map(|f| f.field.as_str()).collect();
+                    let value = match crate::extract_compound_key(new_data, &idx.fields) {
+                        Some(ckey) => format!("{ckey:?}"),
+                        None => format!("{framed:?}"),
+                    };
+                    return Err(AxonError::UniqueViolation {
+                        field: field_names.join(", "),
+                        value,
+                    });
+                }
+            }
+            self.insert_compound_index_row(&key, ordinal as i64, entity_id, &framed)?;
+        }
+        Ok(())
+    }
+
+    fn remove_compound_index_entries(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        _data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        for (ordinal, _) in indexes.iter().enumerate() {
+            self.delete_compound_index_rows(&key, ordinal as i64, entity_id)?;
+        }
+        Ok(())
+    }
+
+    fn compound_index_lookup(
+        &self,
+        collection: &CollectionId,
+        index_idx: usize,
+        key: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        let cat = self.resolve_catalog_key(collection)?;
+        // An unencodable key cannot match any stored row.
+        let Ok(Some(framed)) = key.encode_framed() else {
+            return Ok(vec![]);
+        };
+        let ids: Vec<String> = self.block_on(
+            sqlx::query_scalar(
+                "SELECT entity_id FROM entity_compound_index
+                 WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3
+                   AND index_ordinal = ?4 AND key = ?5
+                 ORDER BY entity_id ASC",
+            )
+            .bind(cat.namespace.database.as_str())
+            .bind(cat.namespace.schema.as_str())
+            .bind(cat.collection.as_str())
+            .bind(index_idx as i64)
+            .bind(framed.as_slice())
+            .fetch_all(&self.pool),
+        )?;
+        Ok(ids.into_iter().map(EntityId::new).collect())
+    }
+
+    fn compound_index_prefix(
+        &self,
+        collection: &CollectionId,
+        index_idx: usize,
+        prefix: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        use sqlx::Row;
+        let cat = self.resolve_catalog_key(collection)?;
+        let Ok(Some(framed)) = prefix.encode_framed() else {
+            return Ok(vec![]);
+        };
+        // Byte-prefix range: key >= P AND key < successor(P). When there is no
+        // finite successor (P empty / all 0xFF), omit the upper bound and scan
+        // to the end of the ordinal partition.
+        let upper = prefix_successor(&framed);
+        let mut sql = String::from(
+            "SELECT entity_id, key FROM entity_compound_index
+             WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3
+               AND index_ordinal = ?4 AND key >= ?5",
+        );
+        if upper.is_some() {
+            sql.push_str(" AND key < ?6");
+        }
+        sql.push_str(" ORDER BY key ASC, entity_id ASC");
+
+        let mut query = sqlx::query(&sql)
+            .bind(cat.namespace.database.as_str().to_owned())
+            .bind(cat.namespace.schema.as_str().to_owned())
+            .bind(cat.collection.as_str().to_owned())
+            .bind(index_idx as i64)
+            .bind(framed.clone());
+        if let Some(ub) = upper {
+            query = query.bind(ub);
+        }
+        let rows = self.block_on(query.fetch_all(&self.pool))?;
+        let ids = rows
+            .iter()
+            .map(|row| {
+                let id: String = row.get("entity_id");
+                EntityId::new(id)
+            })
+            .collect();
+        Ok(ids)
     }
 
     // ── Auth / tenancy (ADR-018) ─────────────────────────────────────────────
@@ -5016,6 +5333,282 @@ mod tests {
                 .query_scalar_i64("SELECT COUNT(*) FROM entity_index")
                 .expect("count");
             assert_eq!(n, 0);
+        }
+    }
+
+    // ── Compound persisted index tests (FEAT-013 / US-033) ───────────────
+    //
+    // Mirror the in-memory adapter's `compound_index_tests`: exact lookup,
+    // prefix match, sparse skip, unique reject/allow, update removes the old
+    // key, drop clears rows, plus a backfill (entities first, then index).
+    mod compound_index_tests {
+        use super::*;
+        use crate::adapter::{CompoundKey, IndexValue};
+        use axon_schema::schema::{
+            CollectionSchema, CompoundIndexDef, CompoundIndexField, IndexType,
+        };
+
+        fn status_priority_index(unique: bool) -> CompoundIndexDef {
+            CompoundIndexDef {
+                fields: vec![
+                    CompoundIndexField {
+                        field: "status".into(),
+                        index_type: IndexType::String,
+                    },
+                    CompoundIndexField {
+                        field: "priority".into(),
+                        index_type: IndexType::Integer,
+                    },
+                ],
+                unique,
+            }
+        }
+
+        fn ctask(id: &str, data: serde_json::Value) -> Entity {
+            Entity::new(tasks(), EntityId::new(id), data)
+        }
+
+        #[test]
+        fn compound_index_lookup_exact_match() {
+            let mut store = store();
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .expect("update");
+
+            let key = CompoundKey(vec![
+                IndexValue::String("pending".into()),
+                IndexValue::Integer(1),
+            ]);
+            let results = store.compound_index_lookup(&col, 0, &key).expect("lookup");
+            assert_eq!(results, vec![EntityId::new("t-001")]);
+        }
+
+        #[test]
+        fn compound_index_prefix_match() {
+            let mut store = store();
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            for (id, status, priority) in &[
+                ("t-001", "pending", 1),
+                ("t-002", "pending", 2),
+                ("t-003", "done", 1),
+            ] {
+                let eid = EntityId::new(*id);
+                let data = json!({"status": status, "priority": priority});
+                store
+                    .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                    .expect("update");
+            }
+
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            let mut results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix");
+            results.sort();
+            assert_eq!(
+                results,
+                vec![EntityId::new("t-001"), EntityId::new("t-002")]
+            );
+        }
+
+        #[test]
+        fn compound_index_missing_field_is_sparse() {
+            let mut store = store();
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            // Missing `priority` → no compound entry.
+            let data = json!({"status": "pending"});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .expect("update");
+
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            let results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix");
+            assert!(results.is_empty());
+            let n = store
+                .query_scalar_i64("SELECT COUNT(*) FROM entity_compound_index")
+                .expect("count");
+            assert_eq!(n, 0);
+        }
+
+        #[test]
+        fn compound_index_removes_old_entries_on_update() {
+            let mut store = store();
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            let old_data = json!({"status": "pending", "priority": 1});
+            let new_data = json!({"status": "done", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid, None, &old_data, &indexes)
+                .expect("update");
+            store
+                .update_compound_indexes(&col, &eid, Some(&old_data), &new_data, &indexes)
+                .expect("update");
+
+            let old_key = CompoundKey(vec![
+                IndexValue::String("pending".into()),
+                IndexValue::Integer(1),
+            ]);
+            assert!(store
+                .compound_index_lookup(&col, 0, &old_key)
+                .expect("lookup")
+                .is_empty());
+
+            let new_key = CompoundKey(vec![
+                IndexValue::String("done".into()),
+                IndexValue::Integer(1),
+            ]);
+            assert_eq!(
+                store
+                    .compound_index_lookup(&col, 0, &new_key)
+                    .expect("lookup"),
+                vec![EntityId::new("t-001")]
+            );
+        }
+
+        #[test]
+        fn compound_unique_index_rejects_duplicate_and_allows_same_entity() {
+            let mut store = store();
+            let col = tasks();
+            let indexes = vec![status_priority_index(true)];
+
+            let eid1 = EntityId::new("t-001");
+            let data1 = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid1, None, &data1, &indexes)
+                .expect("first insert");
+
+            // A different entity reusing the same key is rejected.
+            let eid2 = EntityId::new("t-002");
+            let data2 = json!({"status": "pending", "priority": 1});
+            let err = store
+                .update_compound_indexes(&col, &eid2, None, &data2, &indexes)
+                .expect_err("duplicate must fail");
+            assert!(matches!(err, AxonError::UniqueViolation { .. }));
+
+            // The SAME entity re-writing its own key is allowed (idempotent).
+            store
+                .update_compound_indexes(&col, &eid1, Some(&data1), &data1, &indexes)
+                .expect("same-entity rewrite must succeed");
+        }
+
+        #[test]
+        fn drop_indexes_clears_compound_rows() {
+            let mut store = store();
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .expect("update");
+            store.drop_indexes(&col).expect("drop");
+
+            let n = store
+                .query_scalar_i64("SELECT COUNT(*) FROM entity_compound_index")
+                .expect("count");
+            assert_eq!(n, 0);
+        }
+
+        #[test]
+        fn remove_compound_index_entries_cleans_up() {
+            let mut store = store();
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .expect("update");
+            store
+                .remove_compound_index_entries(&col, &eid, &data, &indexes)
+                .expect("remove");
+
+            let key = CompoundKey(vec![
+                IndexValue::String("pending".into()),
+                IndexValue::Integer(1),
+            ]);
+            assert!(store
+                .compound_index_lookup(&col, 0, &key)
+                .expect("lookup")
+                .is_empty());
+        }
+
+        #[test]
+        fn backfill_compound_via_reindex_covers_preexisting_entities() {
+            // Entities written BEFORE the compound index exists are found after
+            // the index is built from existing data.
+            let mut store = store();
+            let col = tasks();
+            store
+                .put(ctask("t-001", json!({"status": "pending", "priority": 1})))
+                .expect("put");
+            store
+                .put(ctask("t-002", json!({"status": "pending", "priority": 2})))
+                .expect("put");
+            // Sparse entity (missing priority) must not produce a row.
+            store
+                .put(ctask("t-003", json!({"status": "done"})))
+                .expect("put");
+
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            assert!(store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix")
+                .is_empty());
+
+            store
+                .reindex_compound_collection(&col, &[status_priority_index(false)])
+                .expect("reindex compound");
+
+            let mut results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix");
+            results.sort();
+            assert_eq!(
+                results,
+                vec![EntityId::new("t-001"), EntityId::new("t-002")]
+            );
+            // Exactly two rows (t-003 was sparse).
+            let n = store
+                .query_scalar_i64("SELECT COUNT(*) FROM entity_compound_index")
+                .expect("count");
+            assert_eq!(n, 2);
+        }
+
+        #[test]
+        fn backfill_compound_via_put_schema_hook() {
+            // Registering a schema declaring a compound index backfills rows.
+            let mut store = store();
+            let col = tasks();
+            store
+                .put(ctask("t-001", json!({"status": "pending", "priority": 1})))
+                .expect("put");
+            store
+                .put(ctask("t-002", json!({"status": "pending", "priority": 2})))
+                .expect("put");
+
+            let mut schema = CollectionSchema::new(col.clone());
+            schema.compound_indexes = vec![status_priority_index(false)];
+            store.put_schema(&schema).expect("put_schema");
+
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            let mut results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix");
+            results.sort();
+            assert_eq!(
+                results,
+                vec![EntityId::new("t-001"), EntityId::new("t-002")]
+            );
         }
     }
 }
