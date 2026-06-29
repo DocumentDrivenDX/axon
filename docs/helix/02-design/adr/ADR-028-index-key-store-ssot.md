@@ -12,6 +12,11 @@ ddx:
 |------|--------|----------|---------|------------|
 | 2026-06-28 | Accepted | Erik LaBianca | FEAT-013, axon-esf::index_key, axon-7fbe288e | High |
 
+> **Amendment 2026-06-29** — a review of the byte-key migration (`axon-302fe6be`)
+> surfaced a real `index_key` order-contract defect and a separate `index_range`
+> bug, both now fixed, and **reaffirmed the deferral** of the store migration. See
+> [§ Amendment (2026-06-29)](#amendment-2026-06-29-byte-key-migration-review).
+
 ## Context
 
 `axon-esf::index_key` is declared the **single source of truth** for Axon's
@@ -199,6 +204,38 @@ migration remains available behind documented conditions.
 | `index_key_conformance` keeps the typed `Ord` and SSOT bytes in agreement for all covered scalar types | Any new index type or coercion-rule change → extend the conformance test |
 | Datetime indexes order by true instant across UTC offsets (after the targeted fix) | A reported mis-ordering on a datetime index, or mixed-offset datetimes observed in an indexed field |
 | The byte-key migration is opened only when a revisit condition fires | An external byte-identical-key consumer or a natively byte-keyed backend is introduced |
+
+## Amendment (2026-06-29): byte-key migration review
+
+The full byte-key store migration (`axon-302fe6be`) was taken up for planning and
+subjected to adversarial review. The review **reaffirmed this ADR's deferral** and
+narrowed the work to a proportionate set of fixes. Findings and outcome:
+
+1. **`index_key` order-contract defect (fixed in place).** The `axon-esf::index_key`
+   *framed* output (the `u32` length-prefix composite from `IndexDef::index_key` /
+   `CompoundIndexDef::index_key`) is **not** order-preserving under `memcmp` for
+   variable-length `String` values — the length prefix dominates, so `"z"` sorts
+   before `"aa"`. The module doc claimed otherwise. This was a **documentation /
+   contract defect with no behavioral impact**: the framed output is consumed only
+   by tests (which strip the frame), and the store keys on the typed `IndexValue`
+   (immune). Fixed by adding a public **unframed** `encode_index_value` (the genuine
+   order-preserving primitive), correcting the module doc to scope the framed key to
+   equality + leftmost-prefix matching, and extending the conformance tests to pin
+   both the unframed ordering and the framed limitation (`axon-c1f190ec`).
+2. **`index_range` unbounded-lower bug (fixed).** Independent of the encoder, the
+   in-memory `index_range` used `IndexValue::Boolean(false)` as the unbounded-lower
+   sentinel; since `Boolean` is not the minimum variant, unbounded-lower range
+   queries over String/Integer/Float fields dropped results. Fixed to use the true
+   minimum (empty `String`) with regression tests (`axon-64e9649f`).
+3. **The store migration stays deferred.** None of this ADR's revisit triggers fired:
+   the encoder defect is a composite-framing/contract issue, **not** a typed-`Ord`-vs-
+   SSOT-bytes divergence on a scalar (those remain test-verified equal); no external
+   byte-identical-key consumer and no natively byte-keyed backend exists. Migrating an
+   in-memory, ephemeral index to byte keys would be net-negative churn against a
+   test-green baseline. `axon-302fe6be` remains open, deferred-with-conditions, at low
+   priority. This amendment supersedes the original "targeted datetime fix needs a
+   data migration" framing only insofar as the datetime fix already shipped
+   (`axon-075dd131`) with no migration (indexes are in-memory/ephemeral).
 
 ## References
 
