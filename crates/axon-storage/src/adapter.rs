@@ -17,6 +17,22 @@ use uuid::Uuid;
 ///
 /// Values are stored in EAV index tables, one variant per [`IndexType`].
 /// The `Ord` implementation provides the sort order used for range scans.
+///
+/// # Canonical ordering (Store SSOT)
+///
+/// `axon-esf::index_key` is the **single source of truth** for Axon's
+/// index-key ordering; this typed `Ord` is the storage layer's equivalent
+/// encoding of that same canonical order, verified by the `index_key_conformance`
+/// tests below. Two residual divergences from the SSOT encoder are intentional
+/// and pinned by those tests:
+///
+/// 1. **Datetime representation** — this layer indexes `Datetime` as a raw
+///    string (lexicographic order); the SSOT canonicalizes to epoch nanoseconds
+///    (instant-correct across timezone offsets). They agree for Z-normalized
+///    RFC 3339 but diverge across offsets.
+/// 2. **Type mismatch** — a present-but-wrong-typed value is "not indexed"
+///    (`None`) here per FEAT-013, whereas the SSOT encoder returns `Err`
+///    (fail-closed).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IndexValue {
     /// UTF-8 string value.
@@ -1929,6 +1945,166 @@ mod structural_version_tests {
             structural_version_by_scan(&s, &col()).expect("sig"),
             membership_before,
             "membership signature is unchanged by the update (the gap strict closes)"
+        );
+    }
+}
+
+/// Cross-crate conformance: the storage layer's typed [`IndexValue`] ordering
+/// against `axon-esf`'s canonical [`index_key`](axon_esf::index_key) byte
+/// encoding (the Store-SSOT reference).
+///
+/// `axon-storage` maintains ordered *typed* structures (`IndexValue` /
+/// `CompoundKey` with `Ord`, backed by `BTreeMap` and EAV tables), whereas
+/// `axon-esf::index_key` produces order-preserving *bytes*. They are two
+/// encodings of the **same canonical ordering**; these tests pin that
+/// equivalence so the two cannot silently drift, and they pin the two
+/// intentional residual divergences (datetime representation; type-mismatch
+/// handling) with executable evidence. See the "Store SSOT" note in
+/// `axon-esf::index_key`.
+#[cfg(test)]
+mod index_key_conformance {
+    use super::{extract_index_value, IndexValue};
+    use axon_schema::schema::{IndexDef, IndexType};
+    use serde_json::{json, Value};
+
+    /// Canonical byte key for a single scalar via the esf SSOT encoder, with the
+    /// 4-byte length frame stripped for direct ordering comparison.
+    fn esf_bytes(ty: IndexType, value: &Value) -> Vec<u8> {
+        let def = IndexDef {
+            field: "v".to_string(),
+            index_type: ty,
+            unique: false,
+        };
+        let framed = def
+            .index_key(&json!({ "v": value }))
+            .expect("encodable")
+            .expect("present");
+        framed[4..].to_vec()
+    }
+
+    /// Storage-layer typed value for the same scalar.
+    fn storage_value(ty: &IndexType, value: &Value) -> IndexValue {
+        extract_index_value(value, ty).expect("indexable")
+    }
+
+    /// Assert that an ascending sequence is sorted identically by the storage
+    /// `IndexValue` `Ord` and by the esf canonical byte encoding.
+    fn assert_orderings_agree(ty: IndexType, ascending: &[Value]) {
+        let values: Vec<IndexValue> = ascending.iter().map(|v| storage_value(&ty, v)).collect();
+        let bytes: Vec<Vec<u8>> = ascending.iter().map(|v| esf_bytes(ty.clone(), v)).collect();
+        for i in 1..ascending.len() {
+            assert!(
+                values[i - 1] < values[i],
+                "storage IndexValue order broke at {i} for {ty}: {:?} !< {:?}",
+                values[i - 1],
+                values[i]
+            );
+            assert!(
+                bytes[i - 1] < bytes[i],
+                "esf byte order broke at {i} for {ty}: {:?} !< {:?}",
+                bytes[i - 1],
+                bytes[i]
+            );
+        }
+    }
+
+    #[test]
+    fn string_ordering_conforms() {
+        assert_orderings_agree(
+            IndexType::String,
+            &[json!(""), json!("a"), json!("ab"), json!("b"), json!("z")],
+        );
+    }
+
+    #[test]
+    fn integer_ordering_conforms_including_negatives() {
+        assert_orderings_agree(
+            IndexType::Integer,
+            &[
+                json!(i64::MIN),
+                json!(-1000),
+                json!(-1),
+                json!(0),
+                json!(1),
+                json!(1000),
+                json!(i64::MAX),
+            ],
+        );
+    }
+
+    #[test]
+    fn float_ordering_conforms() {
+        assert_orderings_agree(
+            IndexType::Float,
+            &[
+                json!(-1e10),
+                json!(-1.5),
+                json!(-0.0),
+                json!(0.0),
+                json!(1.5),
+                json!(1e10),
+            ],
+        );
+    }
+
+    #[test]
+    fn boolean_ordering_conforms() {
+        assert_orderings_agree(IndexType::Boolean, &[json!(false), json!(true)]);
+    }
+
+    #[test]
+    fn residual_datetime_representation_diverges() {
+        // RESIDUAL #1 (documented): the storage layer indexes Datetime as a raw
+        // *string* (lexicographic order), while the esf SSOT canonicalizes to
+        // epoch nanoseconds. For Z-normalized RFC 3339 the two agree (fixed-width
+        // UTC ISO strings sort chronologically):
+        assert_orderings_agree(
+            IndexType::Datetime,
+            &[
+                json!("1970-01-01T00:00:00Z"),
+                json!("2026-06-28T10:00:00Z"),
+                json!("2026-06-28T12:00:00Z"),
+            ],
+        );
+
+        // But across timezone offsets they DIVERGE — this is the residual the
+        // Store-SSOT migration would close. `12:00:00+05:00` is `07:00:00Z`,
+        // chronologically *before* `10:00:00Z`, but lexicographically *after* it.
+        let earlier_instant = json!("2026-06-28T12:00:00+05:00"); // 07:00Z
+        let later_instant = json!("2026-06-28T10:00:00Z"); // 10:00Z
+
+        // esf (canonical, instant-correct): earlier instant sorts first.
+        assert!(
+            esf_bytes(IndexType::Datetime, &earlier_instant)
+                < esf_bytes(IndexType::Datetime, &later_instant),
+            "esf orders by true instant"
+        );
+        // storage (string): the offset form sorts AFTER, i.e. the opposite order.
+        assert!(
+            storage_value(&IndexType::Datetime, &earlier_instant)
+                > storage_value(&IndexType::Datetime, &later_instant),
+            "storage orders datetimes lexicographically by string (the residual)"
+        );
+    }
+
+    #[test]
+    fn residual_type_mismatch_handling_diverges() {
+        // RESIDUAL #2 (documented, FEAT-013): a present-but-wrong-typed value is
+        // "not indexed" (`None`) in the storage layer, whereas the esf SSOT
+        // returns `Err` so callers may fail closed.
+        let mismatch = json!("not-an-int");
+        assert!(
+            extract_index_value(&mismatch, &IndexType::Integer).is_none(),
+            "storage drops a type mismatch (FEAT-013: not indexed)"
+        );
+        let def = IndexDef {
+            field: "v".to_string(),
+            index_type: IndexType::Integer,
+            unique: false,
+        };
+        assert!(
+            def.index_key(&json!({ "v": mismatch })).is_err(),
+            "esf SSOT rejects a type mismatch (fail-closed)"
         );
     }
 }

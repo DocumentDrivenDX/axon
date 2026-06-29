@@ -77,14 +77,28 @@
 //! # Store SSOT
 //!
 //! This module is the **single source of truth** for Axon's canonical index-key
-//! encoding. `axon-storage` currently maintains its own ordered structures
-//! (`IndexValue`, `OrderedFloat`, `CompoundKey`) whose `Ord` implementations
-//! conform to the ordering defined here (negatives-first integers, total-order
-//! floats, byte-ordered strings, `false < true`). One behavioral divergence is
-//! intentional and documented: the storage layer treats a type mismatch as
-//! "not indexed" (`None`) per FEAT-013, whereas this canonical encoder returns
-//! `Err(IndexKeyError::TypeMismatch)` so callers can choose to fail closed.
-//! Migrating the store to call this encoder directly is tracked as a follow-up.
+//! encoding. `axon-storage` maintains its own ordered structures (`IndexValue`,
+//! `OrderedFloat`, `CompoundKey`) whose `Ord` implementations conform to the
+//! ordering defined here (negatives-first integers, total-order floats,
+//! byte-ordered strings, `false < true`). That conformance is **test-verified**
+//! by the `index_key_conformance` module in `axon-storage`'s `adapter.rs`, which
+//! cross-checks the two encodings on the same inputs so they cannot silently
+//! drift.
+//!
+//! Two behavioral divergences remain intentional and pinned by those tests:
+//!
+//! 1. **Type mismatch** — the storage layer treats a present-but-wrong-typed
+//!    value as "not indexed" (`None`) per FEAT-013, whereas this canonical
+//!    encoder returns `Err(IndexKeyError::TypeMismatch)` so callers can fail
+//!    closed.
+//! 2. **Datetime representation** — the storage layer indexes `Datetime` as a
+//!    raw string (lexicographic order), whereas this encoder canonicalizes to
+//!    epoch nanoseconds (instant-correct across timezone offsets). The two agree
+//!    for Z-normalized RFC 3339 but diverge across offsets.
+//!
+//! Migrating the store to a byte-key model that calls this encoder directly
+//! (closing both residuals) is a larger, representation-changing refactor than a
+//! drop-in and is tracked as a follow-up rather than attempted piecemeal.
 
 use std::error::Error;
 use std::fmt;
