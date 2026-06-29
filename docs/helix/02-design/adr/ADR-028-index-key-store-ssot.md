@@ -184,9 +184,15 @@ migration remains available behind documented conditions.
 ## Supersession
 
 - **Supersedes**: None.
-- **Superseded by**: None. Re-scopes the implementation bead `axon-302fe6be`
-  (full byte-key migration → deferred-with-conditions) and is the decision of
-  record for the Store-SSOT follow-up from `axon-7fbe288e`.
+- **Superseded by**: [ADR-029](./ADR-029-persisted-sql-secondary-indexes.md) —
+  reverses this ADR's *deferral*. ADR-029 mandates persisted byte-keyed secondary
+  indexes across all backends for parity + query performance (the objective this
+  ADR mis-scoped to in-memory aesthetics). The technical findings here (the
+  `index_key` framed-string order-contract defect, the in-memory-only index
+  reality, the no-migration datetime fix) remain valid. This ADR originally
+  re-scoped bead `axon-302fe6be` (now the parity umbrella implemented under
+  ADR-029) and remains the decision of record for the Store-SSOT follow-up from
+  `axon-7fbe288e`.
 
 ## Concern Impact
 
