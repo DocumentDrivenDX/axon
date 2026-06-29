@@ -227,7 +227,10 @@ table-granular). Invariants needing *minimal* aborts still want full SSI.
   pivot detection) for *precise* serializability with minimal aborts. The
   structural-version guard is intentionally coarser (collection-granular,
   over-aborts) and remains the V1 stance; SSI is the long-term path if abort
-  rates under real predicate-heavy workloads prove unacceptable.
+  rates under real predicate-heavy workloads prove unacceptable. The SSI design,
+  its mapping onto axon's commit-time OCC, and the decision to defer it (favouring
+  PostgreSQL-native SSI delegation over a uniform axon-level build) are analysed in
+  [ADR-027](./ADR-027-serializable-snapshot-isolation.md).
 
 ## Consequences
 
@@ -257,4 +260,5 @@ table-granular). Invariants needing *minimal* aborts still want full SSI.
 - [FEAT-008: ACID Transactions](../../01-frame/features/FEAT-008-acid-transactions.md) (TXN-05)
 - [ADR-004: Transaction Model — OCC](./ADR-004-transaction-model.md)
 - [Transaction implementation](../../../crates/axon-api/src/transaction.rs)
+- [ADR-027: Serializable Snapshot Isolation (SSI)](./ADR-027-serializable-snapshot-isolation.md) — analysis of the precise-serializability future deferred here.
 - Cahill, Röhm, Fekete, "Serializable Isolation for Snapshot Databases" (SIGMOD 2008) — the SSI design deferred as future work.
