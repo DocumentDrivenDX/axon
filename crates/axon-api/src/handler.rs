@@ -4147,7 +4147,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         attribution: Option<AuditAttribution>,
     ) -> Result<QueryEntitiesResponse, AxonError> {
         let collection = req.collection.clone();
-        let observed = self.storage.structural_version(&collection)?;
+        let observed = self.scan_signature(tx, &collection)?;
         let resp = self.query_entities_with_read_context(req, caller, attribution.as_ref())?;
         tx.record_scan_read(collection, observed)?;
         Ok(resp)
@@ -4164,7 +4164,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: AggregateRequest,
     ) -> Result<AggregateResponse, AxonError> {
         let collection = req.collection.clone();
-        let observed = self.storage.structural_version(&collection)?;
+        let observed = self.scan_signature(tx, &collection)?;
         let resp = self.aggregate(req)?;
         tx.record_scan_read(collection, observed)?;
         Ok(resp)
@@ -4213,7 +4213,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .map(|e| e.version)
             .unwrap_or(0);
         let links_collection = Link::links_collection();
-        let links_version = self.storage.structural_version(&links_collection)?;
+        let links_version = self.scan_signature(tx, &links_collection)?;
 
         let resp = self.traverse_with_read_context(req, caller, attribution.as_ref())?;
 
@@ -4230,13 +4230,30 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// building block for auto-capturing a query whose collection footprint is
     /// already known — e.g. a GraphQL named query whose aliased labels were
     /// resolved to collections by the caller.
+    /// The scan-read signature appropriate to `tx`'s isolation level: the
+    /// membership `structural_version` under Serializable, or the
+    /// `content_version` (`(id, version)` hash) under SerializableStrict so
+    /// update-driven predicate skew is caught. Captured at read time; commit
+    /// re-checks with the matching signature.
+    fn scan_signature(
+        &self,
+        tx: &crate::transaction::Transaction,
+        collection: &CollectionId,
+    ) -> Result<u64, AxonError> {
+        if tx.isolation_level() == crate::transaction::IsolationLevel::SerializableStrict {
+            self.storage.content_version(collection)
+        } else {
+            self.storage.structural_version(collection)
+        }
+    }
+
     pub fn tx_record_scan_collections(
         &self,
         tx: &mut crate::transaction::Transaction,
         collections: &[CollectionId],
     ) -> Result<(), AxonError> {
         for collection in collections {
-            let observed = self.storage.structural_version(collection)?;
+            let observed = self.scan_signature(tx, collection)?;
             tx.record_scan_read(collection.clone(), observed)?;
         }
         Ok(())

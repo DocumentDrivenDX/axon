@@ -231,6 +231,47 @@ pub fn hash_id_set(ids: &[String]) -> u64 {
     hasher.finish()
 }
 
+/// Backend-agnostic **content** signature for the strict predicate guard
+/// (FEAT-008 TXN-05 `SerializableStrict`): a stable hash of a collection's
+/// `(id, version)` pairs.
+///
+/// Unlike [`structural_version_by_scan`] (membership only), this changes on any
+/// committed create, delete, **or in-place update** to the collection (an update
+/// bumps an entity's `version`). It is the default [`StorageAdapter::content_version`]
+/// implementation — sound on any adapter via [`range_scan`](StorageAdapter::range_scan),
+/// at O(n) read cost and zero write-path cost. It is intentionally more
+/// conservative than the membership signature: a Serializable-strict scan read
+/// aborts on *any* concurrent write to a scanned collection, catching
+/// update-driven predicate skew the membership guard misses.
+pub fn content_version_by_scan<S: StorageAdapter + ?Sized>(
+    storage: &S,
+    collection: &CollectionId,
+) -> Result<u64, AxonError> {
+    let pairs: Vec<(String, u64)> = storage
+        .range_scan(collection, None, None, None)?
+        .into_iter()
+        .map(|e| (e.id.to_string(), e.version))
+        .collect();
+    Ok(hash_id_version_set(&pairs))
+}
+
+/// Stable order-independent hash of a collection's `(id, version)` set.
+///
+/// Used by [`content_version_by_scan`]. Sorts by id internally; fixed-seed
+/// [`DefaultHasher`](std::collections::hash_map::DefaultHasher) → deterministic.
+pub fn hash_id_version_set(pairs: &[(String, u64)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut sorted: Vec<&(String, u64)> = pairs.iter().collect();
+    sorted.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    sorted.len().hash(&mut hasher);
+    for (id, version) in sorted {
+        id.hash(&mut hasher);
+        version.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Abstraction over Axon's backing storage.
 ///
 /// Implementations wrap specific databases (SQLite, PostgreSQL, FoundationDB).
@@ -285,6 +326,23 @@ pub trait StorageAdapter: Send + Sync {
     /// (see ADR-026 for scope and limits).
     fn structural_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
         structural_version_by_scan(self, collection)
+    }
+
+    /// Content signature of a collection for the **strict** predicate guard
+    /// (FEAT-008 TXN-05 `SerializableStrict`): a value that changes on any
+    /// committed create, delete, **or in-place update** — unlike
+    /// [`structural_version`](StorageAdapter::structural_version), which is
+    /// membership-only. A Serializable-strict scan read records and re-checks
+    /// this, so it also catches *update-driven* predicate skew (e.g. a concurrent
+    /// `status: open → closed` that flips a `WHERE status = open` result without
+    /// changing the id-set).
+    ///
+    /// Backend-agnostic default: hashes `(id, version)` pairs via
+    /// [`content_version_by_scan`] (O(n) read, zero write-path cost). Strict is an
+    /// opt-in, so the O(n) default is acceptable; adapters MAY override with a
+    /// cheaper computation.
+    fn content_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+        content_version_by_scan(self, collection)
     }
 
     /// Returns entities in a collection ordered by entity ID.
@@ -1334,6 +1392,9 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
     fn structural_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
         (**self).structural_version(collection)
     }
+    fn content_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+        (**self).content_version(collection)
+    }
     fn range_scan(
         &self,
         collection: &CollectionId,
@@ -1844,6 +1905,30 @@ mod structural_version_tests {
             structural_version_by_scan(&s, &col()).expect("scan sig"),
             v0,
             "delete returns to the empty signature"
+        );
+    }
+
+    #[test]
+    fn content_version_tracks_updates_unlike_membership() {
+        // The strict guard's content signature changes on create, delete, AND
+        // in-place update — the key difference from the membership signature.
+        let mut s = MemoryStorageAdapter::default();
+        let c0 = content_version_by_scan(&s, &col()).expect("content sig");
+
+        s.put(ent("a")).expect("put");
+        let c1 = content_version_by_scan(&s, &col()).expect("content sig");
+        assert_ne!(c1, c0, "create changes the content signature");
+
+        // In-place update bumps version → content signature changes (whereas the
+        // membership signature would not).
+        let membership_before = structural_version_by_scan(&s, &col()).expect("sig");
+        s.compare_and_swap(ent("a"), 1).expect("cas"); // a -> v2
+        let c2 = content_version_by_scan(&s, &col()).expect("content sig");
+        assert_ne!(c2, c1, "in-place update MUST change the content signature");
+        assert_eq!(
+            structural_version_by_scan(&s, &col()).expect("sig"),
+            membership_before,
+            "membership signature is unchanged by the update (the gap strict closes)"
         );
     }
 }

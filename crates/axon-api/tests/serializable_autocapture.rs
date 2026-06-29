@@ -352,3 +352,97 @@ fn cypher_scan_rejects_invalid_query() {
         axon_core::error::AxonError::InvalidArgument(_)
     ));
 }
+
+/// SerializableStrict catches update-driven predicate skew that plain
+/// Serializable tolerates. Two strict txns scan `guards`; T1 updates a row
+/// (membership unchanged, content changed); T2's commit aborts because the
+/// collection's content signature changed.
+#[test]
+fn strict_serializable_aborts_on_concurrent_update() {
+    let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+    create(&mut h, "a", 1);
+    create(&mut h, "b", 1);
+
+    let query = || QueryEntitiesRequest {
+        collection: guards(),
+        filter: None,
+        sort: Vec::new(),
+        limit: None,
+        after_id: None,
+        count_only: false,
+    };
+
+    let mut t1 = Transaction::with_isolation(IsolationLevel::SerializableStrict);
+    let mut t2 = Transaction::with_isolation(IsolationLevel::SerializableStrict);
+    h.tx_query_entities(&mut t1, query()).expect("t1 scans");
+    h.tx_query_entities(&mut t2, query()).expect("t2 scans");
+
+    // T1: in-place update of `a` — no membership change, but content changes.
+    t1.update(
+        Entity::new(guards(), EntityId::new("a"), json!({ "flag": 9 })),
+        1,
+        None,
+    )
+    .expect("stage a update");
+    h.commit_transaction(t1, Some("t1".into()), None)
+        .expect("T1 commits (a -> v2)");
+
+    // T2 stages an unrelated write; its content-signature scan read of `guards`
+    // is now stale because `a` changed.
+    t2.update(
+        Entity::new(guards(), EntityId::new("b"), json!({ "flag": 7 })),
+        1,
+        None,
+    )
+    .expect("stage b update");
+    let err = h
+        .commit_transaction(t2, Some("t2".into()), None)
+        .expect_err("strict must abort: a scanned row was updated");
+    assert!(
+        matches!(err, axon_core::error::AxonError::ConflictingVersion { .. }),
+        "expected content serialization conflict, got: {err}"
+    );
+}
+
+/// Contrast: plain Serializable (membership-only) TOLERATES the same concurrent
+/// update — proving the gap that SerializableStrict closes, and that the cheaper
+/// default tier is unchanged.
+#[test]
+fn plain_serializable_tolerates_concurrent_update() {
+    let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+    create(&mut h, "a", 1);
+    create(&mut h, "b", 1);
+
+    let query = || QueryEntitiesRequest {
+        collection: guards(),
+        filter: None,
+        sort: Vec::new(),
+        limit: None,
+        after_id: None,
+        count_only: false,
+    };
+
+    let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
+    let mut t2 = Transaction::with_isolation(IsolationLevel::Serializable);
+    h.tx_query_entities(&mut t1, query()).expect("t1 scans");
+    h.tx_query_entities(&mut t2, query()).expect("t2 scans");
+
+    t1.update(
+        Entity::new(guards(), EntityId::new("a"), json!({ "flag": 9 })),
+        1,
+        None,
+    )
+    .expect("stage a update");
+    h.commit_transaction(t1, Some("t1".into()), None)
+        .expect("T1 commits");
+
+    t2.update(
+        Entity::new(guards(), EntityId::new("b"), json!({ "flag": 7 })),
+        1,
+        None,
+    )
+    .expect("stage b update");
+    // Membership unchanged → plain Serializable does not abort (documented gap).
+    h.commit_transaction(t2, Some("t2".into()), None)
+        .expect("plain serializable tolerates a concurrent update (membership-only)");
+}
