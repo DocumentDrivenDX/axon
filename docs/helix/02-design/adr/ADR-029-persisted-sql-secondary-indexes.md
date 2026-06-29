@@ -135,7 +135,12 @@ realistic divergence; the rare transient-error residual is documented.
   remain valid; only its decision to defer the SQL-backend index work is
   reversed, because it was scoped to the wrong objective (in-memory aesthetics
   rather than backend parity + query performance).
-- **Superseded by**: None.
+- **Superseded by**: [ADR-030](./ADR-030-storage-owns-index-maintenance.md) — but
+  only its **single-mutation consistency stance** (this ADR's caller-driven
+  maintenance + uniqueness pre-validation + documented per-write residual). The
+  persisted-index design here (EAV byte-key tables, canonical encoding, backfill)
+  stands; ADR-030 changes *who maintains and how atomically* (the storage write
+  primitives, atomically) — not the index format.
 
 ## Concern Impact
 
