@@ -708,32 +708,11 @@ impl Transaction {
             match op {
                 StagedOp::Entity(op) => match op.mutation {
                     MutationType::EntityCreate => {
+                        // Secondary-index maintenance and unique-constraint
+                        // enforcement (FEAT-013) are performed atomically by the
+                        // `put` primitive itself, inside the surrounding
+                        // `begin_tx`/`commit_tx`.
                         storage.put(op.entity.clone())?;
-                        // Secondary-index maintenance (FEAT-013). This runs
-                        // inside the surrounding `begin_tx`/`commit_tx`, so a
-                        // maintenance failure propagates and aborts the whole
-                        // transaction via the caller's `abort_tx` path —
-                        // mirroring `handler.rs::create_entity_inner`.
-                        if let Some(schema) = storage.get_schema(&op.entity.collection)? {
-                            if !schema.indexes.is_empty() {
-                                storage.update_indexes(
-                                    &op.entity.collection,
-                                    &op.entity.id,
-                                    None,
-                                    &op.entity.data,
-                                    &schema.indexes,
-                                )?;
-                            }
-                            if !schema.compound_indexes.is_empty() {
-                                storage.update_compound_indexes(
-                                    &op.entity.collection,
-                                    &op.entity.id,
-                                    None,
-                                    &op.entity.data,
-                                    &schema.compound_indexes,
-                                )?;
-                            }
-                        }
                         let after = op.entity.data.clone();
                         let mut entry = AuditEntry::new(
                             op.entity.collection.clone(),
@@ -754,38 +733,12 @@ impl Transaction {
                         written.push(op.entity);
                     }
                     MutationType::EntityUpdate => {
-                        // Capture the authoritative pre-image from storage BEFORE
-                        // the swap for secondary-index maintenance (FEAT-013).
-                        // Relying on storage state (not the caller-supplied audit
-                        // `op.data_before`, which may be absent) ensures the
-                        // in-memory adapter removes the stale index entry for the
-                        // old value — it only does so when given `old_data`.
-                        let prior_data = storage
-                            .get(&op.entity.collection, &op.entity.id)?
-                            .map(|e| e.data);
+                        // Secondary-index maintenance and unique-constraint
+                        // enforcement (FEAT-013) are performed atomically by the
+                        // `compare_and_swap` primitive itself, inside the
+                        // surrounding `begin_tx`/`commit_tx`.
                         let updated =
                             storage.compare_and_swap(op.entity.clone(), op.expected_version)?;
-                        let old_index_data = prior_data.as_ref().or(op.data_before.as_ref());
-                        if let Some(schema) = storage.get_schema(&updated.collection)? {
-                            if !schema.indexes.is_empty() {
-                                storage.update_indexes(
-                                    &updated.collection,
-                                    &updated.id,
-                                    old_index_data,
-                                    &updated.data,
-                                    &schema.indexes,
-                                )?;
-                            }
-                            if !schema.compound_indexes.is_empty() {
-                                storage.update_compound_indexes(
-                                    &updated.collection,
-                                    &updated.id,
-                                    old_index_data,
-                                    &updated.data,
-                                    &schema.compound_indexes,
-                                )?;
-                            }
-                        }
                         let after = updated.data.clone();
                         let mut entry = AuditEntry::new(
                             updated.collection.clone(),
@@ -806,34 +759,9 @@ impl Transaction {
                         written.push(updated);
                     }
                     MutationType::EntityDelete => {
-                        // Secondary-index maintenance (FEAT-013). Index entries
-                        // are keyed by the entity's field values, so we need its
-                        // data to remove them. Prefer the live pre-image; fall
-                        // back to the staged audit `before` snapshot.
-                        let pre_image = match storage.get(&op.entity.collection, &op.entity.id)? {
-                            Some(e) => Some(e.data),
-                            None => op.data_before.clone(),
-                        };
-                        if let Some(data) = pre_image.as_ref() {
-                            if let Some(schema) = storage.get_schema(&op.entity.collection)? {
-                                if !schema.indexes.is_empty() {
-                                    storage.remove_index_entries(
-                                        &op.entity.collection,
-                                        &op.entity.id,
-                                        data,
-                                        &schema.indexes,
-                                    )?;
-                                }
-                                if !schema.compound_indexes.is_empty() {
-                                    storage.remove_compound_index_entries(
-                                        &op.entity.collection,
-                                        &op.entity.id,
-                                        data,
-                                        &schema.compound_indexes,
-                                    )?;
-                                }
-                            }
-                        }
+                        // Secondary-index removal (FEAT-013) is performed
+                        // atomically by the `delete` primitive itself, inside the
+                        // surrounding `begin_tx`/`commit_tx`.
                         storage.delete(&op.entity.collection, &op.entity.id)?;
                         let mut entry = AuditEntry::new(
                             op.entity.collection.clone(),

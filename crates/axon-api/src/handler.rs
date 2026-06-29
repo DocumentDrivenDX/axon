@@ -72,10 +72,7 @@ use axon_schema::{
     AccessControlIdentity, AccessControlPolicy, FieldAccessPolicy, IdentityAttributeSource,
     LinkDirection, OperationPolicy, PolicyDecision, PolicyOperation, PolicyPlan, PolicyPredicate,
 };
-use axon_storage::adapter::{
-    extract_compound_key, extract_index_value, extract_index_values, resolve_field_path,
-    StorageAdapter,
-};
+use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdapter};
 
 use crate::intent::{
     MutationIntent, MutationOperationKind, MutationReviewSummary, PreImageBinding,
@@ -3969,11 +3966,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None
         };
 
-        // Unique index constraint check (FEAT-013, US-032).
-        if let Some(ref s) = schema {
-            check_unique_constraints(&self.storage, &req.collection, &req.id, &req.data, s)?;
-        }
-
         let now = now_ns();
         let mut entity = Entity::new(req.collection, req.id, req.data);
         entity.created_at_ns = Some(now);
@@ -3986,29 +3978,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(eval) = gate_eval.as_ref() {
             entity.gate_results = eval.gate_results.clone();
         }
+        // Secondary-index maintenance and unique-constraint enforcement
+        // (FEAT-013) are performed atomically by the storage primitive itself.
         self.storage.put(entity.clone())?;
-
-        // Index maintenance (FEAT-013).
-        if let Some(ref s) = schema {
-            if !s.indexes.is_empty() {
-                self.storage.update_indexes(
-                    &entity.collection,
-                    &entity.id,
-                    None,
-                    &entity.data,
-                    &s.indexes,
-                )?;
-            }
-            if !s.compound_indexes.is_empty() {
-                self.storage.update_compound_indexes(
-                    &entity.collection,
-                    &entity.id,
-                    None,
-                    &entity.data,
-                    &s.compound_indexes,
-                )?;
-            }
-        }
 
         // Audit.
         let mut audit_entry = AuditEntry::new(
@@ -4452,11 +4424,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None
         };
 
-        // Unique index constraint check (FEAT-013, US-032).
-        if let Some(ref s) = schema {
-            check_unique_constraints(&self.storage, &req.collection, &req.id, &req.data, s)?;
-        }
-
         // Read current state for the audit `before` snapshot and metadata preservation.
         let existing = self.storage.get(&req.collection, &req.id)?;
         let before = existing.as_ref().map(|e| e.data.clone());
@@ -4494,31 +4461,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             schema_version: schema.as_ref().map(|s| s.version),
             gate_results: materialized_gates,
         };
+        // Secondary-index maintenance and unique-constraint enforcement
+        // (FEAT-013) are performed atomically by the storage primitive itself.
         let stored = self
             .storage
             .compare_and_swap(candidate, req.expected_version)?;
-
-        // Index maintenance (FEAT-013).
-        if let Some(ref s) = schema {
-            if !s.indexes.is_empty() {
-                self.storage.update_indexes(
-                    &req.collection,
-                    &stored.id,
-                    before.as_ref(),
-                    &stored.data,
-                    &s.indexes,
-                )?;
-            }
-            if !s.compound_indexes.is_empty() {
-                self.storage.update_compound_indexes(
-                    &req.collection,
-                    &stored.id,
-                    before.as_ref(),
-                    &stored.data,
-                    &s.compound_indexes,
-                )?;
-            }
-        }
 
         let updated = Self::present_entity(&req.collection, stored);
 
@@ -4626,11 +4573,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None
         };
 
-        // Unique index constraint check (FEAT-013, US-032).
-        if let Some(ref s) = schema {
-            check_unique_constraints(&self.storage, &req.collection, &req.id, &merged, s)?;
-        }
-
         self.enforce_write_policy(
             schema.as_ref(),
             policy_snapshot.as_ref(),
@@ -4666,31 +4608,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             schema_version: schema.as_ref().map(|s| s.version),
             gate_results: materialized_gates,
         };
+        // Secondary-index maintenance and unique-constraint enforcement
+        // (FEAT-013) are performed atomically by the storage primitive itself.
         let stored = self
             .storage
             .compare_and_swap(candidate, req.expected_version)?;
-
-        // Index maintenance (FEAT-013).
-        if let Some(ref s) = schema {
-            if !s.indexes.is_empty() {
-                self.storage.update_indexes(
-                    &req.collection,
-                    &stored.id,
-                    before.as_ref(),
-                    &stored.data,
-                    &s.indexes,
-                )?;
-            }
-            if !s.compound_indexes.is_empty() {
-                self.storage.update_compound_indexes(
-                    &req.collection,
-                    &stored.id,
-                    before.as_ref(),
-                    &stored.data,
-                    &s.compound_indexes,
-                )?;
-            }
-        }
 
         let updated = Self::present_entity(&req.collection, stored);
 
@@ -4791,28 +4713,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )?;
         }
 
-        // Remove index entries before deleting (FEAT-013).
-        if let Some(ref data) = before {
-            if let Some(schema) = &schema {
-                if !schema.indexes.is_empty() {
-                    self.storage.remove_index_entries(
-                        &req.collection,
-                        &req.id,
-                        data,
-                        &schema.indexes,
-                    )?;
-                }
-                if !schema.compound_indexes.is_empty() {
-                    self.storage.remove_compound_index_entries(
-                        &req.collection,
-                        &req.id,
-                        data,
-                        &schema.compound_indexes,
-                    )?;
-                }
-            }
-        }
-
+        // Secondary-index removal (FEAT-013) is performed atomically by the
+        // storage `delete` primitive itself.
         self.storage.delete(&req.collection, &req.id)?;
         // Gate results live on the entity blob (FEAT-019); deleting the
         // entity removes them implicitly.
@@ -6055,10 +5957,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
             Default::default()
         };
 
-        if let Some(ref s) = schema {
-            check_unique_constraints(&self.storage, &req.collection, &req.id, &target_data, s)?;
-        }
-
         let target = Entity {
             collection: req.collection.clone(),
             id: req.id.clone(),
@@ -6145,26 +6043,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
             self.storage.create_if_absent(recreated, expected_version)?
         };
 
-        if let Some(ref s) = schema {
-            if !s.indexes.is_empty() {
-                self.storage.update_indexes(
-                    &req.collection,
-                    &stored.id,
-                    current.as_ref().map(|entity| &entity.data),
-                    &stored.data,
-                    &s.indexes,
-                )?;
-            }
-            if !s.compound_indexes.is_empty() {
-                self.storage.update_compound_indexes(
-                    &req.collection,
-                    &stored.id,
-                    current.as_ref().map(|entity| &entity.data),
-                    &stored.data,
-                    &s.compound_indexes,
-                )?;
-            }
-        }
+        // Secondary-index maintenance and unique-constraint enforcement
+        // (FEAT-013) are performed atomically by the storage primitive itself
+        // (`compare_and_swap` / `create_if_absent`).
 
         // Gate results were materialized onto the entity blob above
         // (FEAT-019); no separate side-table write is needed.
@@ -8931,67 +8812,6 @@ fn is_known_lifecycle_state(lifecycle: &axon_schema::schema::LifecycleDef, state
         .transitions
         .values()
         .any(|targets| targets.iter().any(|t| t == state))
-}
-
-/// Check unique index constraints for an entity's data before write.
-///
-/// Iterates over all unique single-field and compound indexes in the schema
-/// and checks whether any *other* entity in the collection already has the same
-/// indexed value(s). This is a PRE-VALIDATION gate: callers invoke it *before*
-/// `storage.put`, so a unique conflict is reported before anything is written
-/// (FEAT-013, US-032/US-033). The post-put `update_indexes` /
-/// `update_compound_indexes` calls remain the authoritative maintenance step
-/// and the same conflict is re-detected there for the transaction path's
-/// adapters; this gate just ensures the failure happens before the put.
-///
-/// Per design (axon-d249a48f) single-entity mutations are intentionally NOT
-/// wrapped in `begin_tx`/`commit_tx` (the in-memory adapter clones the entire
-/// store per `begin_tx`, a per-write perf regression). The pre-check is sound
-/// because the adapter is held `&mut self` (exclusive) and SQL uses a single
-/// connection, so there is no concurrency between this check and the
-/// subsequent `put`. RESIDUAL WINDOW (accepted): a rare *transient* storage
-/// error occurring strictly between `put` and the post-put `update_indexes`
-/// would leave the entity written but unindexed; this is not rolled back, as
-/// full transactional wrapping was rejected to preserve in-memory performance.
-fn check_unique_constraints<S: StorageAdapter>(
-    storage: &S,
-    collection: &CollectionId,
-    entity_id: &EntityId,
-    data: &serde_json::Value,
-    schema: &CollectionSchema,
-) -> Result<(), AxonError> {
-    for idx in &schema.indexes {
-        if !idx.unique {
-            continue;
-        }
-        for val in extract_index_values(data, &idx.field, &idx.index_type) {
-            if storage.index_unique_conflict(collection, &idx.field, &val, entity_id)? {
-                return Err(AxonError::UniqueViolation {
-                    field: idx.field.clone(),
-                    value: val.to_string(),
-                });
-            }
-        }
-    }
-    // Compound unique indexes: a conflict exists if the exact compound key is
-    // already held by a *different* entity. Mirrors the post-put violation
-    // surfaced by `update_compound_indexes` (same `field`/`value` formatting).
-    for (idx_pos, idx) in schema.compound_indexes.iter().enumerate() {
-        if !idx.unique {
-            continue;
-        }
-        if let Some(key) = extract_compound_key(data, &idx.fields) {
-            let holders = storage.compound_index_lookup(collection, idx_pos, &key)?;
-            if holders.iter().any(|eid| eid != entity_id) {
-                let field_names: Vec<&str> = idx.fields.iter().map(|f| f.field.as_str()).collect();
-                return Err(AxonError::UniqueViolation {
-                    field: field_names.join(", "),
-                    value: format!("{key:?}"),
-                });
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Build the synthetic caller used by the `putSchema` dry-run fixture path.
@@ -23341,9 +23161,9 @@ ORDER BY b.priority DESC, b.updated_at DESC
     //    reflected in an index-accelerated query. (Fails before the fix: the
     //    transaction path never called `update_indexes`, so the indexed query
     //    returned the wrong rows.)
-    // 2. Single-entity create pre-validates unique constraints BEFORE the put
-    //    (Gap 2): a duplicate unique value returns `UniqueViolation` and the new
-    //    entity is NOT persisted.
+    // 2. Single-entity create enforces unique constraints atomically inside the
+    //    `put` primitive (Gap 2): a duplicate unique value returns
+    //    `UniqueViolation` and the new entity is NOT persisted.
     // 3. A failed/aborted transaction leaves indexes unchanged (rollback).
     #[allow(clippy::unwrap_used)]
     mod index_consistency {
@@ -23551,14 +23371,15 @@ ORDER BY b.priority DESC, b.updated_at DESC
                 "expected UniqueViolation, got {err:?}"
             );
 
-            // The conflicting entity must NOT have been persisted (pre-validation
-            // happens before the put).
+            // The conflicting entity must NOT have been persisted: the storage
+            // `put` primitive enforces uniqueness atomically and rejects the
+            // write before it commits.
             assert!(
                 h.storage_ref()
                     .get(&col, &EntityId::new("u-2"))
                     .unwrap()
                     .is_none(),
-                "entity must not be written when the unique pre-check fails"
+                "entity must not be written when the unique constraint is violated"
             );
         }
 
@@ -23661,6 +23482,96 @@ ORDER BY b.priority DESC, b.updated_at DESC
                 query_by_email(&h, &col, "new@x.io").is_empty(),
                 "aborted transaction must not leave a secondary-index entry"
             );
+        }
+
+        /// A `rollback_entity` that changes an indexed field must MOVE the index
+        /// entry, so an index-accelerated query reflects the rolled-back value.
+        ///
+        /// This is regression coverage for a latent bug that the
+        /// double-maintenance removal fixed: `rollback_entity` writes through
+        /// `compare_and_swap`, and the secondary index is now maintained
+        /// atomically by that primitive (previously the caller-side maintenance
+        /// in the rollback path could leave the index stale). After the rollback
+        /// to v1, an indexed query on the OLD email must find the entity and a
+        /// query on the post-update email must return nothing.
+        fn rollback_reindexes<S: StorageAdapter>(mut h: AxonHandler<S>) {
+            let col = CollectionId::new("rollback_idx_users");
+            h.put_schema(indexed_schema(col.as_str(), false))
+                .expect("schema");
+
+            // v1: email = a@x.io
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("u-1"),
+                data: json!({"email": "a@x.io"}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("create v1");
+
+            // v2: email = b@x.io (moves the index entry to b@x.io)
+            let current = h
+                .storage_ref()
+                .get(&col, &EntityId::new("u-1"))
+                .unwrap()
+                .unwrap();
+            h.update_entity(UpdateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("u-1"),
+                data: json!({"email": "b@x.io"}),
+                expected_version: current.version,
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("update v2");
+
+            assert_eq!(
+                query_by_email(&h, &col, "b@x.io"),
+                vec![EntityId::new("u-1")],
+                "index reflects the updated value before rollback"
+            );
+
+            // Roll the entity back to v1 (email = a@x.io).
+            let resp = h
+                .rollback_entity(RollbackEntityRequest {
+                    collection: col.clone(),
+                    id: EntityId::new("u-1"),
+                    target: RollbackEntityTarget::Version(1),
+                    expected_version: None,
+                    actor: Some("tester".into()),
+                    dry_run: false,
+                })
+                .expect("rollback to v1");
+            let RollbackEntityResponse::Applied { entity, .. } = resp else {
+                panic!("expected Applied rollback, got {resp:?}");
+            };
+            assert_eq!(entity.data["email"], json!("a@x.io"));
+
+            // The index must have MOVED back: querying the post-update value
+            // returns nothing, and the rolled-back value finds the entity.
+            assert!(
+                query_by_email(&h, &col, "b@x.io").is_empty(),
+                "post-update index entry must be removed after rollback (no stale index)"
+            );
+            assert_eq!(
+                query_by_email(&h, &col, "a@x.io"),
+                vec![EntityId::new("u-1")],
+                "rolled-back indexed value must be queryable via the secondary index"
+            );
+        }
+
+        #[test]
+        fn rollback_reindexes_memory() {
+            rollback_reindexes(AxonHandler::new(MemoryStorageAdapter::default()));
+        }
+
+        #[test]
+        fn rollback_reindexes_sqlite() {
+            rollback_reindexes(AxonHandler::new(
+                SqliteStorageAdapter::open_in_memory().expect("sqlite"),
+            ));
         }
     }
 }

@@ -1152,6 +1152,251 @@ impl SqliteStorageAdapter {
         Ok(())
     }
 
+    // ── Shared index-maintenance helpers (Approach C) ────────────────────
+    //
+    // These operate on an already-resolved `QualifiedCollectionId` and issue
+    // the same DELETE-by-(field/ordinal, entity_id) + INSERT-new statements the
+    // public `update_indexes` / `update_compound_indexes` trait methods use.
+    // Both those trait methods AND the write primitives
+    // (`put`/`compare_and_swap`/`delete`/`create_if_absent`) route through them,
+    // so maintenance logic lives in exactly one place. Because deletion is by
+    // entity_id (not by recomputed old value), `put`/`cas` never need to read
+    // the prior entity for index purposes — delete-by-entity + insert-from-new
+    // is sufficient (this is why the SQLite primitives, unlike the in-memory
+    // ones, do not capture a prior image).
+
+    /// Whether a unique value already exists for a *different* entity in the
+    /// single-field index, against an already-resolved key.
+    fn single_unique_conflict_at(
+        &self,
+        key: &QualifiedCollectionId,
+        field: &str,
+        value: &IndexValue,
+        exclude_entity: &EntityId,
+    ) -> Result<bool, AxonError> {
+        let Ok(bytes) = value.encode_key() else {
+            return Ok(false);
+        };
+        let found: Option<i64> = self.block_on(
+            sqlx::query_scalar(
+                "SELECT 1 FROM entity_index
+                 WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3
+                   AND field = ?4 AND key = ?5 AND entity_id <> ?6
+                 LIMIT 1",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .bind(field)
+            .bind(bytes.as_slice())
+            .bind(exclude_entity.as_str())
+            .fetch_optional(&self.pool),
+        )?;
+        Ok(found.is_some())
+    }
+
+    /// Maintain single-field index rows for a write, on a resolved key.
+    ///
+    /// Validate-then-mutate: unique values are checked FIRST (so a violation
+    /// returns before any DELETE/INSERT). Then this entity's prior rows are
+    /// removed by `(field, entity_id)` when `had_old` and the new byte keys are
+    /// inserted. Atomicity is the caller's responsibility (owned/joined tx).
+    fn maintain_single_indexes_at(
+        &self,
+        key: &QualifiedCollectionId,
+        entity_id: &EntityId,
+        had_old: bool,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        for idx in indexes.iter().filter(|i| i.unique) {
+            let values = crate::extract_index_values(new_data, &idx.field, &idx.index_type);
+            for val in &values {
+                if self.single_unique_conflict_at(key, &idx.field, val, entity_id)? {
+                    return Err(AxonError::UniqueViolation {
+                        field: idx.field.clone(),
+                        value: val.to_string(),
+                    });
+                }
+            }
+        }
+
+        if had_old {
+            for idx in indexes {
+                self.delete_index_field_rows(key, &idx.field, entity_id)?;
+            }
+        }
+
+        for idx in indexes {
+            let byte_keys = crate::extract_index_key_bytes(new_data, &idx.field, &idx.index_type);
+            self.insert_index_rows(key, &idx.field, entity_id, &byte_keys)?;
+        }
+        Ok(())
+    }
+
+    /// Remove all single-field index rows for an entity, on a resolved key.
+    fn remove_single_indexes_at(
+        &self,
+        key: &QualifiedCollectionId,
+        entity_id: &EntityId,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        for idx in indexes {
+            self.delete_index_field_rows(key, &idx.field, entity_id)?;
+        }
+        Ok(())
+    }
+
+    /// Maintain compound index rows for a write, on a resolved key.
+    ///
+    /// Validate-then-mutate per ordinal: a unique compound key is checked before
+    /// removing the old rows / inserting the new one. Atomicity is the caller's
+    /// responsibility (owned/joined tx).
+    fn maintain_compound_indexes_at(
+        &self,
+        key: &QualifiedCollectionId,
+        entity_id: &EntityId,
+        had_old: bool,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        // Unique pre-check across all ordinals first.
+        for (ordinal, idx) in indexes.iter().enumerate().filter(|(_, i)| i.unique) {
+            let Ok(Some(framed)) = idx.index_key(new_data) else {
+                continue;
+            };
+            let found: Option<i64> = self.block_on(
+                sqlx::query_scalar(
+                    "SELECT 1 FROM entity_compound_index
+                     WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3
+                       AND index_ordinal = ?4 AND key = ?5 AND entity_id <> ?6
+                     LIMIT 1",
+                )
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(key.collection.as_str())
+                .bind(ordinal as i64)
+                .bind(framed.as_slice())
+                .bind(entity_id.as_str())
+                .fetch_optional(&self.pool),
+            )?;
+            if found.is_some() {
+                let field_names: Vec<&str> = idx.fields.iter().map(|f| f.field.as_str()).collect();
+                let value = match crate::extract_compound_key(new_data, &idx.fields) {
+                    Some(ckey) => format!("{ckey:?}"),
+                    None => format!("{framed:?}"),
+                };
+                return Err(AxonError::UniqueViolation {
+                    field: field_names.join(", "),
+                    value,
+                });
+            }
+        }
+
+        if had_old {
+            for (ordinal, _) in indexes.iter().enumerate() {
+                self.delete_compound_index_rows(key, ordinal as i64, entity_id)?;
+            }
+        }
+
+        for (ordinal, idx) in indexes.iter().enumerate() {
+            let Ok(Some(framed)) = idx.index_key(new_data) else {
+                continue;
+            };
+            self.insert_compound_index_row(key, ordinal as i64, entity_id, &framed)?;
+        }
+        Ok(())
+    }
+
+    /// Remove all compound index rows for an entity, on a resolved key.
+    fn remove_compound_indexes_at(
+        &self,
+        key: &QualifiedCollectionId,
+        entity_id: &EntityId,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        for (ordinal, _) in indexes.iter().enumerate() {
+            self.delete_compound_index_rows(key, ordinal as i64, entity_id)?;
+        }
+        Ok(())
+    }
+
+    /// Maintain ALL secondary indexes (single + compound) for a write, looking
+    /// up the entity's index defs from its stamped schema version. Returns the
+    /// resolved defs so the caller can tell whether any maintenance ran.
+    fn maintain_indexes_for_write_at(
+        &self,
+        key: &QualifiedCollectionId,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        schema_version: Option<u32>,
+        had_old: bool,
+        new_data: &serde_json::Value,
+    ) -> Result<(), AxonError> {
+        let (single, compound) = self.index_defs_for_entity(collection, schema_version)?;
+        if single.is_empty() && compound.is_empty() {
+            return Ok(());
+        }
+        self.maintain_single_indexes_at(key, entity_id, had_old, new_data, &single)?;
+        self.maintain_compound_indexes_at(key, entity_id, had_old, new_data, &compound)
+    }
+
+    /// Issue a `BEGIN IMMEDIATE` only if we don't already own / sit inside a
+    /// transaction. Returns `true` when this call started its own transaction
+    /// (and is therefore responsible for committing / rolling it back).
+    fn begin_if_needed(&mut self) -> Result<bool, AxonError> {
+        if self.in_tx {
+            return Ok(false);
+        }
+        self.block_on(sqlx::query("BEGIN IMMEDIATE").execute(&self.pool))?;
+        self.in_tx = true;
+        Ok(true)
+    }
+
+    /// Commit an owned transaction started by [`Self::begin_if_needed`].
+    fn commit_owned(&mut self) -> Result<(), AxonError> {
+        self.block_on(sqlx::query("COMMIT").execute(&self.pool))?;
+        self.in_tx = false;
+        Ok(())
+    }
+
+    /// Roll back an owned transaction started by [`Self::begin_if_needed`].
+    /// Best-effort: clears `in_tx` even if the ROLLBACK itself errors.
+    fn rollback_owned(&mut self) {
+        let _ = self.block_on(sqlx::query("ROLLBACK").execute(&self.pool));
+        self.in_tx = false;
+    }
+
+    /// Settle a write primitive's transaction given the ownership flag from
+    /// [`Self::begin_if_needed`] and the primitive's body result.
+    ///
+    /// - `owned == true`: on `Ok` COMMIT, on `Err` ROLLBACK; either way the
+    ///   primitive's own tx is fully resolved.
+    /// - `owned == false` (joined the API multi-op transaction): NEVER touch the
+    ///   tx — on `Ok` do nothing (the outer owner commits), on `Err` just return
+    ///   it (the outer owner's `abort_tx` rolls everything back). A joined
+    ///   primitive must never commit or roll back its parent's transaction.
+    fn finish_owned_tx<T>(
+        &mut self,
+        owned: bool,
+        result: Result<T, AxonError>,
+    ) -> Result<T, AxonError> {
+        match result {
+            Ok(value) => {
+                if owned {
+                    self.commit_owned()?;
+                }
+                Ok(value)
+            }
+            Err(e) => {
+                if owned {
+                    self.rollback_owned();
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// Rebuild all `entity_index` rows for a collection from its entities.
     ///
     /// Drops the collection's existing index rows, then scans every entity
@@ -1324,36 +1569,107 @@ impl StorageAdapter for SqliteStorageAdapter {
     fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_string(&entity.data)?;
-        self.block_on(
-            sqlx::query(
-                "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )
-            .bind(key.collection.as_str())
-            .bind(key.namespace.database.as_str())
-            .bind(key.namespace.schema.as_str())
-            .bind(entity.id.as_str())
-            .bind(entity.version as i64)
-            .bind(&data_json)
-            .execute(&self.pool),
-        )?;
-        Ok(())
+
+        // Resolve the entity's index defs up front. With no indexes this is a
+        // single entity-write statement, as before — no per-write tx overhead
+        // and schemaless writes are unaffected.
+        let (single, compound) =
+            self.index_defs_for_entity(&entity.collection, entity.schema_version)?;
+        if single.is_empty() && compound.is_empty() {
+            self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .bind(key.collection.as_str())
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(entity.id.as_str())
+                .bind(entity.version as i64)
+                .bind(&data_json)
+                .execute(&self.pool),
+            )?;
+            return Ok(());
+        }
+
+        // Indexed write: the entity row + index DELETE/INSERTs + unique check
+        // must be atomic. Begin our own tx only if not already inside one (the
+        // API multi-op transaction's `begin_tx`); a joined primitive never
+        // commits or rolls back its parent's tx.
+        let owned = self.begin_if_needed()?;
+        let result = (|| {
+            // No prior-entity read needed: index maintenance deletes by
+            // entity_id, so `had_old = true` simply means "clear any prior rows
+            // first" (a no-op for a fresh id). Pass true so a replace's stale
+            // rows are removed regardless of whether the id pre-existed.
+            self.maintain_indexes_for_write_at(
+                &key,
+                &entity.collection,
+                &entity.id,
+                entity.schema_version,
+                true,
+                &entity.data,
+            )?;
+            self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .bind(key.collection.as_str())
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(entity.id.as_str())
+                .bind(entity.version as i64)
+                .bind(&data_json)
+                .execute(&self.pool),
+            )?;
+            Ok(())
+        })();
+
+        self.finish_owned_tx(owned, result)
     }
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.block_on(
-            sqlx::query(
-                "DELETE FROM entities
-                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
-            )
-            .bind(key.collection.as_str())
-            .bind(key.namespace.database.as_str())
-            .bind(key.namespace.schema.as_str())
-            .bind(id.as_str())
-            .execute(&self.pool),
-        )?;
-        Ok(())
+
+        // Resolve index defs for this collection (latest schema) so we know
+        // whether maintenance is needed. Delete removes index rows by
+        // entity_id, so the entity's stamped schema_version is not required.
+        let (single, compound) = self.index_defs_for_entity(collection, None)?;
+        if single.is_empty() && compound.is_empty() {
+            self.block_on(
+                sqlx::query(
+                    "DELETE FROM entities
+                     WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
+                )
+                .bind(key.collection.as_str())
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(id.as_str())
+                .execute(&self.pool),
+            )?;
+            return Ok(());
+        }
+
+        let owned = self.begin_if_needed()?;
+        let result = (|| {
+            self.remove_single_indexes_at(&key, id, &single)?;
+            self.remove_compound_indexes_at(&key, id, &compound)?;
+            self.block_on(
+                sqlx::query(
+                    "DELETE FROM entities
+                     WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
+                )
+                .bind(key.collection.as_str())
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(id.as_str())
+                .execute(&self.pool),
+            )?;
+            Ok(())
+        })();
+
+        self.finish_owned_tx(owned, result)
     }
 
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
@@ -1476,52 +1792,77 @@ impl StorageAdapter for SqliteStorageAdapter {
         expected_version: u64,
     ) -> Result<Entity, AxonError> {
         let key = self.resolve_catalog_key(&entity.collection)?;
-        // Check current version first.
-        let current = self.get(&entity.collection, &entity.id)?;
-        let actual_version = current.as_ref().map(|e| e.version).unwrap_or(0);
-
-        if actual_version != expected_version {
-            return Err(AxonError::ConflictingVersion {
-                expected: expected_version,
-                actual: actual_version,
-                current_entity: current.map(Box::new),
-            });
-        }
-
         let new_version = expected_version + 1;
         let data_json = serde_json::to_string(&entity.data)?;
 
-        let result = self.block_on(
-            sqlx::query(
-                "UPDATE entities SET version = ?1, data = ?2
-                 WHERE collection = ?3 AND database_name = ?4 AND schema_name = ?5 AND id = ?6 AND version = ?7",
-            )
-            .bind(new_version as i64)
-            .bind(&data_json)
-            .bind(key.collection.as_str())
-            .bind(key.namespace.database.as_str())
-            .bind(key.namespace.schema.as_str())
-            .bind(entity.id.as_str())
-            .bind(expected_version as i64)
-            .execute(&self.pool),
-        )?;
+        let (single, compound) =
+            self.index_defs_for_entity(&entity.collection, entity.schema_version)?;
+        let has_indexes = !(single.is_empty() && compound.is_empty());
 
-        if result.rows_affected() == 0 {
-            // A concurrent writer changed the version between our read and write.
-            let current_after_race = self.get(&entity.collection, &entity.id)?;
-            let actual = current_after_race.as_ref().map(|e| e.version).unwrap_or(0);
-            return Err(AxonError::ConflictingVersion {
-                expected: expected_version,
-                actual,
-                current_entity: current_after_race.map(Box::new),
-            });
-        }
+        // Begin our own tx only when index maintenance must be atomic with the
+        // entity write AND we are not already joined to an outer API tx. With no
+        // indexes the version-guarded UPDATE is already atomic on its own.
+        let owned = if has_indexes {
+            self.begin_if_needed()?
+        } else {
+            false
+        };
 
-        Ok(Entity {
-            collection: key.collection,
-            version: new_version,
-            ..entity
-        })
+        let result = (|| {
+            // Version check (inside the tx when owned/joined, so the read+write
+            // sees a consistent snapshot under the write lock).
+            let current = self.get(&entity.collection, &entity.id)?;
+            let actual_version = current.as_ref().map(|e| e.version).unwrap_or(0);
+            if actual_version != expected_version {
+                return Err(AxonError::ConflictingVersion {
+                    expected: expected_version,
+                    actual: actual_version,
+                    current_entity: current.map(Box::new),
+                });
+            }
+
+            // Maintain indexes (and unique-check) before the UPDATE so a unique
+            // violation aborts the swap with the entity unwritten. `had_old` is
+            // true: cas always replaces an existing row.
+            if has_indexes {
+                self.maintain_single_indexes_at(&key, &entity.id, true, &entity.data, &single)?;
+                self.maintain_compound_indexes_at(&key, &entity.id, true, &entity.data, &compound)?;
+            }
+
+            let res = self.block_on(
+                sqlx::query(
+                    "UPDATE entities SET version = ?1, data = ?2
+                     WHERE collection = ?3 AND database_name = ?4 AND schema_name = ?5 AND id = ?6 AND version = ?7",
+                )
+                .bind(new_version as i64)
+                .bind(&data_json)
+                .bind(key.collection.as_str())
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(entity.id.as_str())
+                .bind(expected_version as i64)
+                .execute(&self.pool),
+            )?;
+
+            if res.rows_affected() == 0 {
+                // A concurrent writer changed the version between our read and write.
+                let current_after_race = self.get(&entity.collection, &entity.id)?;
+                let actual = current_after_race.as_ref().map(|e| e.version).unwrap_or(0);
+                return Err(AxonError::ConflictingVersion {
+                    expected: expected_version,
+                    actual,
+                    current_entity: current_after_race.map(Box::new),
+                });
+            }
+
+            Ok(Entity {
+                collection: key.collection.clone(),
+                version: new_version,
+                ..entity
+            })
+        })();
+
+        self.finish_owned_tx(owned, result)
     }
 
     fn create_if_absent(
@@ -1531,38 +1872,66 @@ impl StorageAdapter for SqliteStorageAdapter {
     ) -> Result<Entity, AxonError> {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_string(&entity.data)?;
-        let result = self.block_on(
-            sqlx::query(
-                "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(database_name, schema_name, collection, id) DO NOTHING",
-            )
-            .bind(key.collection.as_str())
-            .bind(key.namespace.database.as_str())
-            .bind(key.namespace.schema.as_str())
-            .bind(entity.id.as_str())
-            .bind(entity.version as i64)
-            .bind(&data_json)
-            .execute(&self.pool),
-        )?;
 
-        if result.rows_affected() == 0 {
-            let current = self.get(&entity.collection, &entity.id)?;
-            let actual = current
-                .as_ref()
-                .map(|existing| existing.version)
-                .unwrap_or(0);
-            return Err(AxonError::ConflictingVersion {
-                expected: expected_absent_version,
-                actual,
-                current_entity: current.map(Box::new),
-            });
-        }
+        let (single, compound) =
+            self.index_defs_for_entity(&entity.collection, entity.schema_version)?;
+        let has_indexes = !(single.is_empty() && compound.is_empty());
 
-        Ok(Entity {
-            collection: key.collection,
-            ..entity
-        })
+        let owned = if has_indexes {
+            self.begin_if_needed()?
+        } else {
+            false
+        };
+
+        let result = (|| {
+            let res = self.block_on(
+                sqlx::query(
+                    "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(database_name, schema_name, collection, id) DO NOTHING",
+                )
+                .bind(key.collection.as_str())
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(entity.id.as_str())
+                .bind(entity.version as i64)
+                .bind(&data_json)
+                .execute(&self.pool),
+            )?;
+
+            if res.rows_affected() == 0 {
+                // No-op: the entity already existed → maintain nothing.
+                let current = self.get(&entity.collection, &entity.id)?;
+                let actual = current
+                    .as_ref()
+                    .map(|existing| existing.version)
+                    .unwrap_or(0);
+                return Err(AxonError::ConflictingVersion {
+                    expected: expected_absent_version,
+                    actual,
+                    current_entity: current.map(Box::new),
+                });
+            }
+
+            // Fresh insert → maintain indexes. `had_old = false` (no prior row).
+            if has_indexes {
+                self.maintain_single_indexes_at(&key, &entity.id, false, &entity.data, &single)?;
+                self.maintain_compound_indexes_at(
+                    &key,
+                    &entity.id,
+                    false,
+                    &entity.data,
+                    &compound,
+                )?;
+            }
+
+            Ok(Entity {
+                collection: key.collection.clone(),
+                ..entity
+            })
+        })();
+
+        self.finish_owned_tx(owned, result)
     }
 
     fn begin_tx(&mut self) -> Result<(), AxonError> {
@@ -2322,34 +2691,11 @@ impl StorageAdapter for SqliteStorageAdapter {
         indexes: &[axon_schema::schema::IndexDef],
     ) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        // Remove this entity's prior rows for each indexed field. We delete by
-        // (field, entity_id) rather than recomputing old byte keys, which is
-        // simpler and equivalent — the in-memory adapter removes the same set.
-        if old_data.is_some() {
-            for idx in indexes {
-                self.delete_index_field_rows(&key, &idx.field, entity_id)?;
-            }
-        }
-
-        for idx in indexes {
-            // Unique check: derive the typed values (1:1 with the byte keys) so
-            // we can both detect the conflict and format a human-readable value
-            // for the error, exactly like the in-memory adapter.
-            if idx.unique {
-                let values = crate::extract_index_values(new_data, &idx.field, &idx.index_type);
-                for val in &values {
-                    if self.index_unique_conflict(collection, &idx.field, val, entity_id)? {
-                        return Err(AxonError::UniqueViolation {
-                            field: idx.field.clone(),
-                            value: val.to_string(),
-                        });
-                    }
-                }
-            }
-            let byte_keys = crate::extract_index_key_bytes(new_data, &idx.field, &idx.index_type);
-            self.insert_index_rows(&key, &idx.field, entity_id, &byte_keys)?;
-        }
-        Ok(())
+        // Delegates to the shared helper that both this trait method and the
+        // write primitives use. Delete-by-(field, entity_id) + insert-new is
+        // equivalent to recomputing old byte keys (and to the in-memory
+        // adapter's old-entry removal).
+        self.maintain_single_indexes_at(&key, entity_id, old_data.is_some(), new_data, indexes)
     }
 
     fn remove_index_entries(
@@ -2360,10 +2706,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         indexes: &[axon_schema::schema::IndexDef],
     ) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        for idx in indexes {
-            self.delete_index_field_rows(&key, &idx.field, entity_id)?;
-        }
-        Ok(())
+        self.remove_single_indexes_at(&key, entity_id, indexes)
     }
 
     fn index_lookup(
@@ -2530,55 +2873,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         indexes: &[axon_schema::schema::CompoundIndexDef],
     ) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        // Remove this entity's prior rows for each ordinal (delete by
-        // (ordinal, entity_id) rather than recomputing the old key — equivalent
-        // to the in-memory adapter's old-entry removal).
-        if old_data.is_some() {
-            for (ordinal, _) in indexes.iter().enumerate() {
-                self.delete_compound_index_rows(&key, ordinal as i64, entity_id)?;
-            }
-        }
-
-        for (ordinal, idx) in indexes.iter().enumerate() {
-            // A type-mismatch (`Err`) is "not indexed"; a sparse `Ok(None)`
-            // produces no row.
-            let Ok(Some(framed)) = idx.index_key(new_data) else {
-                continue;
-            };
-            if idx.unique {
-                let found: Option<i64> = self.block_on(
-                    sqlx::query_scalar(
-                        "SELECT 1 FROM entity_compound_index
-                         WHERE database_name = ?1 AND schema_name = ?2 AND collection = ?3
-                           AND index_ordinal = ?4 AND key = ?5 AND entity_id <> ?6
-                         LIMIT 1",
-                    )
-                    .bind(key.namespace.database.as_str())
-                    .bind(key.namespace.schema.as_str())
-                    .bind(key.collection.as_str())
-                    .bind(ordinal as i64)
-                    .bind(framed.as_slice())
-                    .bind(entity_id.as_str())
-                    .fetch_optional(&self.pool),
-                )?;
-                if found.is_some() {
-                    // Format the typed key readably, like the single-field /
-                    // in-memory unique-violation path.
-                    let field_names: Vec<&str> =
-                        idx.fields.iter().map(|f| f.field.as_str()).collect();
-                    let value = match crate::extract_compound_key(new_data, &idx.fields) {
-                        Some(ckey) => format!("{ckey:?}"),
-                        None => format!("{framed:?}"),
-                    };
-                    return Err(AxonError::UniqueViolation {
-                        field: field_names.join(", "),
-                        value,
-                    });
-                }
-            }
-            self.insert_compound_index_row(&key, ordinal as i64, entity_id, &framed)?;
-        }
-        Ok(())
+        self.maintain_compound_indexes_at(&key, entity_id, old_data.is_some(), new_data, indexes)
     }
 
     fn remove_compound_index_entries(
@@ -2589,10 +2884,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         indexes: &[axon_schema::schema::CompoundIndexDef],
     ) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        for (ordinal, _) in indexes.iter().enumerate() {
-            self.delete_compound_index_rows(&key, ordinal as i64, entity_id)?;
-        }
-        Ok(())
+        self.remove_compound_indexes_at(&key, entity_id, indexes)
     }
 
     fn compound_index_lookup(
@@ -5591,6 +5883,306 @@ mod tests {
                 results,
                 vec![EntityId::new("t-001"), EntityId::new("t-002")]
             );
+        }
+    }
+
+    /// Approach C: write primitives (`put` / `compare_and_swap` / `delete` /
+    /// `create_if_absent`) maintain single + compound indexes internally and
+    /// atomically, looking up the collection's index defs from its schema. These
+    /// tests drive maintenance THROUGH the primitives and assert via the read
+    /// methods (`index_lookup` / `compound_index_lookup`), never calling
+    /// `update_indexes` directly.
+    mod primitive_maintenance_tests {
+        use super::*;
+        use crate::adapter::{CompoundKey, IndexValue};
+        use axon_schema::schema::{
+            CollectionSchema, CompoundIndexDef, CompoundIndexField, IndexDef, IndexType,
+        };
+
+        fn people() -> CollectionId {
+            CollectionId::new("people")
+        }
+
+        fn person(id: &str, data: serde_json::Value) -> Entity {
+            Entity::new(people(), EntityId::new(id), data)
+        }
+
+        fn status_index() -> IndexDef {
+            IndexDef {
+                field: "status".into(),
+                index_type: IndexType::String,
+                unique: false,
+            }
+        }
+
+        fn unique_email_index() -> IndexDef {
+            IndexDef {
+                field: "email".into(),
+                index_type: IndexType::String,
+                unique: true,
+            }
+        }
+
+        fn status_priority_compound() -> CompoundIndexDef {
+            CompoundIndexDef {
+                fields: vec![
+                    CompoundIndexField {
+                        field: "status".into(),
+                        index_type: IndexType::String,
+                    },
+                    CompoundIndexField {
+                        field: "priority".into(),
+                        index_type: IndexType::Integer,
+                    },
+                ],
+                unique: false,
+            }
+        }
+
+        /// Register a schema declaring the given single + compound indexes.
+        fn store_with_indexes(
+            single: Vec<IndexDef>,
+            compound: Vec<CompoundIndexDef>,
+        ) -> SqliteStorageAdapter {
+            let mut store = store();
+            let mut schema = CollectionSchema::new(people());
+            schema.indexes = single;
+            schema.compound_indexes = compound;
+            store.put_schema(&schema).expect("put_schema");
+            store
+        }
+
+        fn lookup_status(store: &SqliteStorageAdapter, status: &str) -> Vec<EntityId> {
+            let mut ids = store
+                .index_lookup(&people(), "status", &IndexValue::String(status.into()))
+                .expect("index_lookup");
+            ids.sort();
+            ids
+        }
+
+        #[test]
+        fn put_new_entity_is_indexed() {
+            let mut store = store_with_indexes(vec![status_index()], vec![]);
+            store
+                .put(person("p-1", json!({"status": "active"})))
+                .expect("put");
+            assert_eq!(lookup_status(&store, "active"), vec![EntityId::new("p-1")]);
+        }
+
+        #[test]
+        fn put_replace_moves_index_entry() {
+            let mut store = store_with_indexes(vec![status_index()], vec![]);
+            store
+                .put(person("p-1", json!({"status": "active"})))
+                .expect("put");
+            // Replace, changing the indexed field.
+            store
+                .put(person("p-1", json!({"status": "archived"})))
+                .expect("put replace");
+            assert!(lookup_status(&store, "active").is_empty(), "old key gone");
+            assert_eq!(
+                lookup_status(&store, "archived"),
+                vec![EntityId::new("p-1")],
+                "new key present"
+            );
+        }
+
+        #[test]
+        fn cas_moves_index_entry() {
+            let mut store = store_with_indexes(vec![status_index()], vec![]);
+            store
+                .put(person("p-1", json!({"status": "active"})))
+                .expect("put");
+            store
+                .compare_and_swap(person("p-1", json!({"status": "archived"})), 1)
+                .expect("cas");
+            assert!(lookup_status(&store, "active").is_empty());
+            assert_eq!(
+                lookup_status(&store, "archived"),
+                vec![EntityId::new("p-1")]
+            );
+        }
+
+        #[test]
+        fn delete_removes_index_entries() {
+            let mut store = store_with_indexes(vec![status_index()], vec![]);
+            store
+                .put(person("p-1", json!({"status": "active"})))
+                .expect("put");
+            store
+                .delete(&people(), &EntityId::new("p-1"))
+                .expect("delete");
+            assert!(lookup_status(&store, "active").is_empty());
+        }
+
+        #[test]
+        fn create_if_absent_maintains_and_noop_does_not_duplicate() {
+            let mut store = store_with_indexes(vec![status_index()], vec![]);
+            store
+                .create_if_absent(person("p-1", json!({"status": "active"})), 0)
+                .expect("create_if_absent");
+            assert_eq!(lookup_status(&store, "active"), vec![EntityId::new("p-1")]);
+
+            // No-op create (already present) must not duplicate the index row.
+            let err = store
+                .create_if_absent(person("p-1", json!({"status": "active"})), 0)
+                .expect_err("second create_if_absent must conflict");
+            assert!(matches!(err, AxonError::ConflictingVersion { .. }));
+            assert_eq!(
+                lookup_status(&store, "active"),
+                vec![EntityId::new("p-1")],
+                "no duplicate index row after no-op"
+            );
+        }
+
+        #[test]
+        fn compound_index_maintained_through_put() {
+            let mut store = store_with_indexes(vec![], vec![status_priority_compound()]);
+            store
+                .put(person("p-1", json!({"status": "active", "priority": 5})))
+                .expect("put");
+            let key = CompoundKey(vec![
+                IndexValue::String("active".into()),
+                IndexValue::Integer(5),
+            ]);
+            assert_eq!(
+                store
+                    .compound_index_lookup(&people(), 0, &key)
+                    .expect("compound_index_lookup"),
+                vec![EntityId::new("p-1")]
+            );
+        }
+
+        #[test]
+        fn unique_violation_on_put_does_not_persist_entity() {
+            let mut store = store_with_indexes(vec![unique_email_index()], vec![]);
+            store
+                .put(person("p-1", json!({"email": "a@x.com"})))
+                .expect("put p-1");
+            // p-2 with the same unique email must fail AND not persist.
+            let err = store
+                .put(person("p-2", json!({"email": "a@x.com"})))
+                .expect_err("duplicate unique email must fail");
+            assert!(matches!(err, AxonError::UniqueViolation { .. }));
+            assert!(
+                store
+                    .get(&people(), &EntityId::new("p-2"))
+                    .expect("get")
+                    .is_none(),
+                "entity must not be persisted after unique violation"
+            );
+            // The index must still point only at p-1.
+            assert_eq!(
+                store
+                    .index_lookup(&people(), "email", &IndexValue::String("a@x.com".into()))
+                    .expect("lookup"),
+                vec![EntityId::new("p-1")]
+            );
+        }
+
+        #[test]
+        fn unique_violation_on_cas_does_not_persist_entity() {
+            let mut store = store_with_indexes(vec![unique_email_index()], vec![]);
+            store
+                .put(person("p-1", json!({"email": "a@x.com"})))
+                .expect("put p-1");
+            store
+                .put(person("p-2", json!({"email": "b@x.com"})))
+                .expect("put p-2");
+            // CAS p-2 to collide with p-1's email → violation, and p-2 unchanged.
+            let err = store
+                .compare_and_swap(person("p-2", json!({"email": "a@x.com"})), 1)
+                .expect_err("cas to duplicate email must fail");
+            assert!(matches!(err, AxonError::UniqueViolation { .. }));
+            let stored = store
+                .get(&people(), &EntityId::new("p-2"))
+                .expect("get")
+                .expect("p-2 still present");
+            assert_eq!(stored.version, 1, "version unchanged after failed cas");
+            assert_eq!(
+                stored.data,
+                json!({"email": "b@x.com"}),
+                "data unchanged after failed cas"
+            );
+            assert_eq!(
+                store
+                    .index_lookup(&people(), "email", &IndexValue::String("b@x.com".into()))
+                    .expect("lookup"),
+                vec![EntityId::new("p-2")],
+                "p-2's original index entry intact"
+            );
+        }
+
+        #[test]
+        fn schemaless_put_writes_without_maintenance() {
+            // No schema registered → no index maintenance, but the entity persists.
+            let mut store = store();
+            let col = CollectionId::new("no_schema");
+            store
+                .put(Entity::new(
+                    col.clone(),
+                    EntityId::new("x-1"),
+                    json!({"status": "active"}),
+                ))
+                .expect("schemaless put must succeed");
+            let got = store
+                .get(&col, &EntityId::new("x-1"))
+                .expect("get")
+                .expect("entity present");
+            assert_eq!(got.data, json!({"status": "active"}));
+            // No index rows were written.
+            let n = store
+                .query_scalar_i64("SELECT COUNT(*) FROM entity_index")
+                .expect("count");
+            assert_eq!(n, 0, "schemaless write must not write index rows");
+        }
+
+        /// Joined path: a mutation inside an API-style `begin_tx` maintains
+        /// indexes, and `abort_tx` rolls back BOTH the entity and its index
+        /// entries (validates owned-vs-joined ownership — the joined primitive
+        /// must not commit/rollback its parent's tx).
+        #[test]
+        fn joined_abort_rolls_back_entity_and_index() {
+            let mut store = store_with_indexes(vec![status_index()], vec![]);
+            store
+                .put(person("p-1", json!({"status": "active"})))
+                .expect("seed put");
+
+            store.begin_tx().expect("begin_tx");
+            // This put joins the outer tx (no nested BEGIN); it maintains indexes.
+            store
+                .put(person("p-2", json!({"status": "active"})))
+                .expect("joined put");
+            // Visible within the transaction.
+            assert_eq!(
+                lookup_status(&store, "active"),
+                vec![EntityId::new("p-1"), EntityId::new("p-2")]
+            );
+            store.abort_tx().expect("abort_tx");
+
+            // After abort, p-2 and its index entry are gone; p-1 remains.
+            assert!(store
+                .get(&people(), &EntityId::new("p-2"))
+                .expect("get")
+                .is_none());
+            assert_eq!(
+                lookup_status(&store, "active"),
+                vec![EntityId::new("p-1")],
+                "aborted index entry rolled back with the entity"
+            );
+        }
+
+        /// Joined path commit: a mutation inside `begin_tx` followed by
+        /// `commit_tx` durably maintains both the entity and its index entry.
+        #[test]
+        fn joined_commit_persists_entity_and_index() {
+            let mut store = store_with_indexes(vec![status_index()], vec![]);
+            store.begin_tx().expect("begin_tx");
+            store
+                .put(person("p-1", json!({"status": "active"})))
+                .expect("joined put");
+            store.commit_tx().expect("commit_tx");
+            assert_eq!(lookup_status(&store, "active"), vec![EntityId::new("p-1")]);
         }
     }
 }

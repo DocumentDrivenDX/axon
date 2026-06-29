@@ -934,6 +934,44 @@ pub trait StorageAdapter: Send + Sync {
 
     // ── Secondary index operations (FEAT-013) ───────────────────────────
 
+    /// Resolve the single- and compound-index declarations that apply to an
+    /// entity, given the schema version that stamped it.
+    ///
+    /// This is the backend-agnostic source of index definitions used by the
+    /// write primitives to maintain secondary indexes internally (Approach C).
+    /// It prefers the **exact** stamped schema version (via
+    /// [`get_schema_version`](StorageAdapter::get_schema_version)) so that an
+    /// entity's index entries are computed against the schema that validated it.
+    /// When the entity carries no `schema_version`, or that version is no longer
+    /// retained, it falls back to the latest schema
+    /// ([`get_schema`](StorageAdapter::get_schema)). Returns empty lists when no
+    /// schema is registered (schemaless collections are unindexed) — callers then
+    /// skip index maintenance entirely.
+    #[allow(clippy::type_complexity)]
+    fn index_defs_for_entity(
+        &self,
+        collection: &CollectionId,
+        schema_version: Option<u32>,
+    ) -> Result<
+        (
+            Vec<axon_schema::schema::IndexDef>,
+            Vec<axon_schema::schema::CompoundIndexDef>,
+        ),
+        AxonError,
+    > {
+        let schema = match schema_version {
+            Some(v) => match self.get_schema_version(collection, v)? {
+                Some(schema) => Some(schema),
+                // Stamped version no longer retained → fall back to latest.
+                None => self.get_schema(collection)?,
+            },
+            None => self.get_schema(collection)?,
+        };
+        Ok(schema
+            .map(|s| (s.indexes, s.compound_indexes))
+            .unwrap_or_default())
+    }
+
     /// Update index entries for an entity.
     ///
     /// Removes any existing index entries for this entity, then inserts new

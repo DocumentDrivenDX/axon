@@ -349,6 +349,242 @@ impl MemoryStorageAdapter {
         *counter = counter.saturating_add(1);
     }
 
+    // ── Secondary-index maintenance helpers (Approach C) ────────────────
+    //
+    // These operate on already-resolved `CatalogKey`s and mutate the index
+    // maps directly. Both the public `StorageAdapter` index methods and the
+    // write primitives (`put`/`compare_and_swap`/`delete`/`create_if_absent`)
+    // route through them so maintenance logic lives in exactly one place.
+
+    /// Move single-field index entries from `old_data` (if any) to `new_data`.
+    ///
+    /// Removes the old keys by recomputing OLD field values, then inserts the
+    /// new keys, returning [`AxonError::UniqueViolation`] before any insert if a
+    /// unique index would collide with a different entity. On a unique violation
+    /// the old entries have already been removed; in-memory this only matters
+    /// inside a transaction snapshot, which the caller rolls back.
+    fn maintain_single_indexes(
+        &mut self,
+        collection_key: &CatalogKey,
+        entity_id: &EntityId,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        // Validate-then-mutate: check uniqueness of ALL new values FIRST (against
+        // the current index, excluding this entity), before removing any old keys.
+        // Otherwise a unique violation on a replace aborts AFTER the old keys were
+        // removed, and a bare (non-transaction) in-memory write has no snapshot to
+        // restore them — leaving the entity with its old value but no index entry.
+        for idx in indexes.iter().filter(|i| i.unique) {
+            for val in extract_index_values(new_data, &idx.field, &idx.index_type) {
+                let key = (collection_key.clone(), idx.field.clone(), val.clone());
+                if let Some(existing) = self.indexes.get(&key) {
+                    if existing.iter().any(|eid| eid != entity_id) {
+                        return Err(AxonError::UniqueViolation {
+                            field: idx.field.clone(),
+                            value: val.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(old) = old_data {
+            for idx in indexes {
+                for val in extract_index_values(old, &idx.field, &idx.index_type) {
+                    let key = (collection_key.clone(), idx.field.clone(), val);
+                    if let Some(set) = self.indexes.get_mut(&key) {
+                        set.remove(entity_id);
+                        if set.is_empty() {
+                            self.indexes.remove(&key);
+                        }
+                    }
+                }
+            }
+        }
+
+        for idx in indexes {
+            for val in extract_index_values(new_data, &idx.field, &idx.index_type) {
+                let key = (collection_key.clone(), idx.field.clone(), val);
+                self.indexes
+                    .entry(key)
+                    .or_default()
+                    .insert(entity_id.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove single-field index entries computed from `data`.
+    fn remove_single_indexes(
+        &mut self,
+        collection_key: &CatalogKey,
+        entity_id: &EntityId,
+        data: &serde_json::Value,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) {
+        for idx in indexes {
+            for val in extract_index_values(data, &idx.field, &idx.index_type) {
+                let key = (collection_key.clone(), idx.field.clone(), val);
+                if let Some(set) = self.indexes.get_mut(&key) {
+                    set.remove(entity_id);
+                    if set.is_empty() {
+                        self.indexes.remove(&key);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Move compound index entries from `old_data` (if any) to `new_data`.
+    fn maintain_compound_indexes(
+        &mut self,
+        collection_key: &CatalogKey,
+        entity_id: &EntityId,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        // Validate-then-mutate (see `maintain_single_indexes`): check unique
+        // compound keys FIRST, before removing the old entries.
+        for (idx_pos, idx) in indexes.iter().enumerate().filter(|(_, i)| i.unique) {
+            if let Some(key) = extract_compound_key(new_data, &idx.fields) {
+                let ckey = (collection_key.clone(), idx_pos, key.clone());
+                if let Some(existing) = self.compound_indexes.get(&ckey) {
+                    if existing.iter().any(|eid| eid != entity_id) {
+                        let field_names: Vec<&str> =
+                            idx.fields.iter().map(|f| f.field.as_str()).collect();
+                        return Err(AxonError::UniqueViolation {
+                            field: field_names.join(", "),
+                            value: format!("{key:?}"),
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(old) = old_data {
+            for (idx_pos, idx) in indexes.iter().enumerate() {
+                if let Some(key) = extract_compound_key(old, &idx.fields) {
+                    let ckey = (collection_key.clone(), idx_pos, key);
+                    if let Some(set) = self.compound_indexes.get_mut(&ckey) {
+                        set.remove(entity_id);
+                        if set.is_empty() {
+                            self.compound_indexes.remove(&ckey);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (idx_pos, idx) in indexes.iter().enumerate() {
+            if let Some(key) = extract_compound_key(new_data, &idx.fields) {
+                let ckey = (collection_key.clone(), idx_pos, key);
+                self.compound_indexes
+                    .entry(ckey)
+                    .or_default()
+                    .insert(entity_id.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove compound index entries computed from `data`.
+    fn remove_compound_indexes_for(
+        &mut self,
+        collection_key: &CatalogKey,
+        entity_id: &EntityId,
+        data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) {
+        for (idx_pos, idx) in indexes.iter().enumerate() {
+            if let Some(key) = extract_compound_key(data, &idx.fields) {
+                let ckey = (collection_key.clone(), idx_pos, key);
+                if let Some(set) = self.compound_indexes.get_mut(&ckey) {
+                    set.remove(entity_id);
+                    if set.is_empty() {
+                        self.compound_indexes.remove(&ckey);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Maintain ALL secondary indexes (single + compound) for a write, looking
+    /// up the entity's index definitions from its stamped schema version.
+    ///
+    /// Returns `Ok(())` after writing index entries; returns
+    /// [`AxonError::UniqueViolation`] (leaving the caller to abort the write)
+    /// when a unique constraint would be violated. Skips entirely (cheap) when
+    /// the collection has no registered schema or no declared indexes — so
+    /// schemaless writes are unaffected.
+    /// Resolve the index definitions for an already-resolved catalog key.
+    ///
+    /// Mirrors [`StorageAdapter::index_defs_for_entity`] but reads the schema
+    /// maps by the exact [`CatalogKey`] the primitive already resolved — avoiding
+    /// a second bare-name resolution that would be ambiguous for a collection
+    /// registered in multiple namespaces.
+    ///
+    /// Prefers the entity's stamped `schema_version`; falls back to the latest
+    /// schema when that version is absent or no longer retained. Single-instance
+    /// `&mut self` makes version skew negligible.
+    #[allow(clippy::type_complexity)]
+    fn index_defs_for_key(
+        &self,
+        collection_key: &CatalogKey,
+        schema_version: Option<u32>,
+    ) -> (
+        Vec<axon_schema::schema::IndexDef>,
+        Vec<axon_schema::schema::CompoundIndexDef>,
+    ) {
+        let versions = match self.schema_versions.get(collection_key) {
+            Some(v) => v,
+            None => return (Vec::new(), Vec::new()),
+        };
+        let schema = schema_version
+            .and_then(|v| versions.get(&v))
+            .or_else(|| versions.values().last());
+        schema
+            .map(|(s, _)| (s.indexes.clone(), s.compound_indexes.clone()))
+            .unwrap_or_default()
+    }
+
+    fn maintain_indexes_for_write(
+        &mut self,
+        collection_key: &CatalogKey,
+        entity_id: &EntityId,
+        schema_version: Option<u32>,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+    ) -> Result<(), AxonError> {
+        let (single, compound) = self.index_defs_for_key(collection_key, schema_version);
+        if single.is_empty() && compound.is_empty() {
+            return Ok(());
+        }
+        self.maintain_single_indexes(collection_key, entity_id, old_data, new_data, &single)?;
+        self.maintain_compound_indexes(collection_key, entity_id, old_data, new_data, &compound)
+    }
+
+    /// Remove ALL secondary index entries (single + compound) for a deleted
+    /// entity, using its stamped schema version to resolve index defs. Skips
+    /// when the collection has no schema or no declared indexes.
+    fn remove_indexes_for_delete(
+        &mut self,
+        collection_key: &CatalogKey,
+        entity_id: &EntityId,
+        schema_version: Option<u32>,
+        data: &serde_json::Value,
+    ) -> Result<(), AxonError> {
+        let (single, compound) = self.index_defs_for_key(collection_key, schema_version);
+        if single.is_empty() && compound.is_empty() {
+            return Ok(());
+        }
+        self.remove_single_indexes(collection_key, entity_id, data, &single);
+        self.remove_compound_indexes_for(collection_key, entity_id, data, &compound);
+        Ok(())
+    }
+
     fn remove_catalog_key(&mut self, key: &CatalogKey) {
         self.collections.remove(key);
         self.schema_versions.remove(key);
@@ -412,10 +648,31 @@ impl StorageAdapter for MemoryStorageAdapter {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let mut stored = entity;
         stored.collection = key.collection.clone();
-        let is_new = !self
+        // Read the prior entity (if any) so its data is the OLD image for index
+        // maintenance: `maintain_single_indexes`/`maintain_compound_indexes`
+        // remove stale keys by recomputing OLD field values, so a create-or-
+        // replace without the old image would leak the prior entry's keys.
+        let prior = self
             .data
             .get(&key)
-            .is_some_and(|col| col.contains_key(&stored.id));
+            .and_then(|col| col.get(&stored.id))
+            .cloned();
+        let is_new = prior.is_none();
+
+        // Maintain secondary indexes BEFORE persisting the entity so that a
+        // unique-constraint violation aborts the whole `put` without leaving the
+        // entity (or any new index entry) written. In-memory mutations are
+        // in-process and `&mut self` gives exclusive access; the only entries
+        // touched on the failure path are this entity's OLD keys, which a
+        // surrounding API transaction's snapshot rolls back.
+        self.maintain_indexes_for_write(
+            &key,
+            &stored.id,
+            stored.schema_version,
+            prior.as_ref().map(|e| &e.data),
+            &stored.data,
+        )?;
+
         self.data
             .entry(key.clone())
             .or_default()
@@ -429,13 +686,14 @@ impl StorageAdapter for MemoryStorageAdapter {
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        let removed = if let Some(col) = self.data.get_mut(&key) {
-            col.remove(id).is_some()
-        } else {
-            false
-        };
+        // Take the entity out so we have its data (the image) to remove the
+        // entity's secondary-index entries.
+        let removed_entity = self.data.get_mut(&key).and_then(|col| col.remove(id));
+        if let Some(entity) = &removed_entity {
+            self.remove_indexes_for_delete(&key, id, entity.schema_version, &entity.data)?;
+        }
         // Membership change → bump the structural-version counter (ADR-026).
-        if removed {
+        if removed_entity.is_some() {
             self.bump_structural_version(&key);
         }
         Ok(())
@@ -516,6 +774,18 @@ impl StorageAdapter for MemoryStorageAdapter {
             ..entity
         };
 
+        // Maintain secondary indexes using the just-read `current` as the OLD
+        // image, BEFORE persisting, so a unique violation aborts the swap with
+        // the entity unwritten (the version check above already guarantees
+        // `current` is Some).
+        self.maintain_indexes_for_write(
+            &key,
+            &updated.id,
+            updated.schema_version,
+            current.as_ref().map(|e| &e.data),
+            &updated.data,
+        )?;
+
         self.data
             .entry(key)
             .or_default()
@@ -548,6 +818,15 @@ impl StorageAdapter for MemoryStorageAdapter {
             collection: key.collection.clone(),
             ..entity
         };
+        // Fresh insert → no old image; maintain (and unique-check) before
+        // persisting so a violation aborts without writing the entity.
+        self.maintain_indexes_for_write(
+            &key,
+            &inserted.id,
+            inserted.schema_version,
+            None,
+            &inserted.data,
+        )?;
         self.data
             .entry(key.clone())
             .or_default()
@@ -984,43 +1263,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         indexes: &[axon_schema::schema::IndexDef],
     ) -> Result<(), AxonError> {
         let collection_key = self.resolve_catalog_key(collection)?;
-        // Remove old entries.
-        if let Some(old) = old_data {
-            for idx in indexes {
-                for val in extract_index_values(old, &idx.field, &idx.index_type) {
-                    let key = (collection_key.clone(), idx.field.clone(), val);
-                    if let Some(set) = self.indexes.get_mut(&key) {
-                        set.remove(entity_id);
-                        if set.is_empty() {
-                            self.indexes.remove(&key);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Insert new entries (and check unique constraints).
-        for idx in indexes {
-            for val in extract_index_values(new_data, &idx.field, &idx.index_type) {
-                if idx.unique {
-                    let key = (collection_key.clone(), idx.field.clone(), val.clone());
-                    if let Some(existing) = self.indexes.get(&key) {
-                        if existing.iter().any(|eid| eid != entity_id) {
-                            return Err(AxonError::UniqueViolation {
-                                field: idx.field.clone(),
-                                value: val.to_string(),
-                            });
-                        }
-                    }
-                }
-                let key = (collection_key.clone(), idx.field.clone(), val);
-                self.indexes
-                    .entry(key)
-                    .or_default()
-                    .insert(entity_id.clone());
-            }
-        }
-        Ok(())
+        self.maintain_single_indexes(&collection_key, entity_id, old_data, new_data, indexes)
     }
 
     fn remove_index_entries(
@@ -1031,17 +1274,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         indexes: &[axon_schema::schema::IndexDef],
     ) -> Result<(), AxonError> {
         let collection_key = self.resolve_catalog_key(collection)?;
-        for idx in indexes {
-            for val in extract_index_values(data, &idx.field, &idx.index_type) {
-                let key = (collection_key.clone(), idx.field.clone(), val);
-                if let Some(set) = self.indexes.get_mut(&key) {
-                    set.remove(entity_id);
-                    if set.is_empty() {
-                        self.indexes.remove(&key);
-                    }
-                }
-            }
-        }
+        self.remove_single_indexes(&collection_key, entity_id, data, indexes);
         Ok(())
     }
 
@@ -1150,45 +1383,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         indexes: &[axon_schema::schema::CompoundIndexDef],
     ) -> Result<(), AxonError> {
         let collection_key = self.resolve_catalog_key(collection)?;
-        // Remove old entries.
-        if let Some(old) = old_data {
-            for (idx_pos, idx) in indexes.iter().enumerate() {
-                if let Some(key) = extract_compound_key(old, &idx.fields) {
-                    let ckey = (collection_key.clone(), idx_pos, key);
-                    if let Some(set) = self.compound_indexes.get_mut(&ckey) {
-                        set.remove(entity_id);
-                        if set.is_empty() {
-                            self.compound_indexes.remove(&ckey);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Insert new entries.
-        for (idx_pos, idx) in indexes.iter().enumerate() {
-            if let Some(key) = extract_compound_key(new_data, &idx.fields) {
-                if idx.unique {
-                    let ckey = (collection_key.clone(), idx_pos, key.clone());
-                    if let Some(existing) = self.compound_indexes.get(&ckey) {
-                        if existing.iter().any(|eid| eid != entity_id) {
-                            let field_names: Vec<&str> =
-                                idx.fields.iter().map(|f| f.field.as_str()).collect();
-                            return Err(AxonError::UniqueViolation {
-                                field: field_names.join(", "),
-                                value: format!("{key:?}"),
-                            });
-                        }
-                    }
-                }
-                let ckey = (collection_key.clone(), idx_pos, key);
-                self.compound_indexes
-                    .entry(ckey)
-                    .or_default()
-                    .insert(entity_id.clone());
-            }
-        }
-        Ok(())
+        self.maintain_compound_indexes(&collection_key, entity_id, old_data, new_data, indexes)
     }
 
     fn remove_compound_index_entries(
@@ -1199,17 +1394,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         indexes: &[axon_schema::schema::CompoundIndexDef],
     ) -> Result<(), AxonError> {
         let collection_key = self.resolve_catalog_key(collection)?;
-        for (idx_pos, idx) in indexes.iter().enumerate() {
-            if let Some(key) = extract_compound_key(data, &idx.fields) {
-                let ckey = (collection_key.clone(), idx_pos, key);
-                if let Some(set) = self.compound_indexes.get_mut(&ckey) {
-                    set.remove(entity_id);
-                    if set.is_empty() {
-                        self.compound_indexes.remove(&ckey);
-                    }
-                }
-            }
-        }
+        self.remove_compound_indexes_for(&collection_key, entity_id, data, indexes);
         Ok(())
     }
 
@@ -2779,6 +2964,364 @@ mod tests {
                 .compound_index_prefix(&col, 0, &prefix)
                 .expect("test operation should succeed");
             assert!(results.is_empty());
+        }
+    }
+
+    // ── Write-primitive index maintenance tests (Approach C) ────────────
+    //
+    // These drive index maintenance THROUGH the write primitives (`put`,
+    // `compare_and_swap`, `delete`, `create_if_absent`) after registering a
+    // schema with indexes via `put_schema`, and assert via the read methods —
+    // proving the primitives own index maintenance internally.
+
+    mod primitive_index_maintenance_tests {
+        use super::*;
+        use crate::adapter::{CompoundKey, IndexValue};
+        use axon_schema::schema::{
+            CollectionSchema, CompoundIndexDef, CompoundIndexField, IndexDef, IndexType,
+        };
+
+        fn indexed_schema() -> CollectionSchema {
+            CollectionSchema {
+                indexes: vec![IndexDef {
+                    field: "status".into(),
+                    index_type: IndexType::String,
+                    unique: false,
+                }],
+                compound_indexes: vec![CompoundIndexDef {
+                    fields: vec![
+                        CompoundIndexField {
+                            field: "status".into(),
+                            index_type: IndexType::String,
+                        },
+                        CompoundIndexField {
+                            field: "priority".into(),
+                            index_type: IndexType::Integer,
+                        },
+                    ],
+                    unique: false,
+                }],
+                ..CollectionSchema::new(tasks())
+            }
+        }
+
+        fn unique_email_schema() -> CollectionSchema {
+            CollectionSchema {
+                indexes: vec![IndexDef {
+                    field: "email".into(),
+                    index_type: IndexType::String,
+                    unique: true,
+                }],
+                ..CollectionSchema::new(tasks())
+            }
+        }
+
+        fn task(id: &str, status: &str, priority: i64) -> Entity {
+            Entity::new(
+                tasks(),
+                EntityId::new(id),
+                json!({"status": status, "priority": priority}),
+            )
+        }
+
+        #[test]
+        fn put_new_entity_maintains_single_and_compound_indexes() {
+            let mut store = MemoryStorageAdapter::default();
+            store.put_schema(&indexed_schema()).expect("put_schema");
+
+            store.put(task("t-001", "open", 5)).expect("put");
+
+            let single = store
+                .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
+                .expect("lookup");
+            assert_eq!(single, vec![EntityId::new("t-001")]);
+
+            let ckey = CompoundKey(vec![
+                IndexValue::String("open".into()),
+                IndexValue::Integer(5),
+            ]);
+            let compound = store
+                .compound_index_lookup(&tasks(), 0, &ckey)
+                .expect("compound lookup");
+            assert_eq!(compound, vec![EntityId::new("t-001")]);
+        }
+
+        #[test]
+        fn put_replace_changing_indexed_field_drops_old_key() {
+            // The key correctness regression: a create-or-replace `put` must use
+            // the prior entity as the old image so stale index keys are removed.
+            let mut store = MemoryStorageAdapter::default();
+            store.put_schema(&indexed_schema()).expect("put_schema");
+
+            store.put(task("t-001", "open", 5)).expect("put initial");
+            // Replace, changing the indexed `status` and compound `priority`.
+            store.put(task("t-001", "closed", 9)).expect("put replace");
+
+            // Old single-field key gone, new present.
+            assert!(store
+                .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
+                .expect("lookup old")
+                .is_empty());
+            assert_eq!(
+                store
+                    .index_lookup(&tasks(), "status", &IndexValue::String("closed".into()))
+                    .expect("lookup new"),
+                vec![EntityId::new("t-001")]
+            );
+
+            // Old compound key gone, new present.
+            let old_ckey = CompoundKey(vec![
+                IndexValue::String("open".into()),
+                IndexValue::Integer(5),
+            ]);
+            assert!(store
+                .compound_index_lookup(&tasks(), 0, &old_ckey)
+                .expect("compound old")
+                .is_empty());
+            let new_ckey = CompoundKey(vec![
+                IndexValue::String("closed".into()),
+                IndexValue::Integer(9),
+            ]);
+            assert_eq!(
+                store
+                    .compound_index_lookup(&tasks(), 0, &new_ckey)
+                    .expect("compound new"),
+                vec![EntityId::new("t-001")]
+            );
+        }
+
+        #[test]
+        fn compare_and_swap_moves_index_entry() {
+            let mut store = MemoryStorageAdapter::default();
+            store.put_schema(&indexed_schema()).expect("put_schema");
+            store.put(task("t-001", "open", 1)).expect("put");
+
+            // put leaves version at 1; CAS expects current version 1.
+            store
+                .compare_and_swap(task("t-001", "done", 1), 1)
+                .expect("cas");
+
+            assert!(store
+                .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
+                .expect("lookup old")
+                .is_empty());
+            assert_eq!(
+                store
+                    .index_lookup(&tasks(), "status", &IndexValue::String("done".into()))
+                    .expect("lookup new"),
+                vec![EntityId::new("t-001")]
+            );
+        }
+
+        #[test]
+        fn delete_removes_index_entries() {
+            let mut store = MemoryStorageAdapter::default();
+            store.put_schema(&indexed_schema()).expect("put_schema");
+            store.put(task("t-001", "open", 3)).expect("put");
+
+            store
+                .delete(&tasks(), &EntityId::new("t-001"))
+                .expect("delete");
+
+            assert!(store
+                .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
+                .expect("lookup")
+                .is_empty());
+            let ckey = CompoundKey(vec![
+                IndexValue::String("open".into()),
+                IndexValue::Integer(3),
+            ]);
+            assert!(store
+                .compound_index_lookup(&tasks(), 0, &ckey)
+                .expect("compound lookup")
+                .is_empty());
+        }
+
+        #[test]
+        fn create_if_absent_maintains_and_no_op_does_not_duplicate() {
+            let mut store = MemoryStorageAdapter::default();
+            store.put_schema(&indexed_schema()).expect("put_schema");
+
+            store
+                .create_if_absent(task("t-001", "open", 2), 0)
+                .expect("first insert");
+            assert_eq!(
+                store
+                    .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
+                    .expect("lookup"),
+                vec![EntityId::new("t-001")]
+            );
+
+            // A no-op (already-present) insert must fail and not duplicate the
+            // index entry.
+            let err = store
+                .create_if_absent(task("t-001", "open", 2), 0)
+                .expect_err("second insert conflicts");
+            assert!(matches!(err, AxonError::ConflictingVersion { .. }));
+            assert_eq!(
+                store
+                    .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
+                    .expect("lookup after no-op"),
+                vec![EntityId::new("t-001")],
+                "no-op insert must not duplicate the index entry"
+            );
+        }
+
+        #[test]
+        fn put_unique_violation_does_not_persist_entity() {
+            let mut store = MemoryStorageAdapter::default();
+            store
+                .put_schema(&unique_email_schema())
+                .expect("put_schema");
+
+            store
+                .put(Entity::new(
+                    tasks(),
+                    EntityId::new("u-001"),
+                    json!({"email": "a@example.com"}),
+                ))
+                .expect("first put");
+
+            let err = store
+                .put(Entity::new(
+                    tasks(),
+                    EntityId::new("u-002"),
+                    json!({"email": "a@example.com"}),
+                ))
+                .expect_err("duplicate email rejected");
+            assert!(matches!(err, AxonError::UniqueViolation { .. }));
+
+            // The violating entity must NOT be left in storage.
+            assert!(store
+                .get(&tasks(), &EntityId::new("u-002"))
+                .expect("get")
+                .is_none());
+            // The unique index still points only at the original owner.
+            assert_eq!(
+                store
+                    .index_lookup(
+                        &tasks(),
+                        "email",
+                        &IndexValue::String("a@example.com".into())
+                    )
+                    .expect("lookup"),
+                vec![EntityId::new("u-001")]
+            );
+        }
+
+        #[test]
+        fn put_replace_unique_violation_does_not_drop_old_key() {
+            // Regression (validate-then-mutate): a bare in-memory `put` that
+            // REPLACES an entity's unique value with one already held by another
+            // entity must abort WITHOUT removing the entity's existing index key.
+            // The old (remove-then-check) order left u-001 with its old value but
+            // no index entry — a divergence with no snapshot to repair (no txn).
+            let mut store = MemoryStorageAdapter::default();
+            store
+                .put_schema(&unique_email_schema())
+                .expect("put_schema");
+            store
+                .put(Entity::new(
+                    tasks(),
+                    EntityId::new("u-001"),
+                    json!({"email": "a@example.com"}),
+                ))
+                .expect("put u-001");
+            store
+                .put(Entity::new(
+                    tasks(),
+                    EntityId::new("u-002"),
+                    json!({"email": "b@example.com"}),
+                ))
+                .expect("put u-002");
+
+            // Replace u-001's email with u-002's value → unique violation.
+            let err = store
+                .put(Entity::new(
+                    tasks(),
+                    EntityId::new("u-001"),
+                    json!({"email": "b@example.com"}),
+                ))
+                .expect_err("replace to a taken unique value rejected");
+            assert!(matches!(err, AxonError::UniqueViolation { .. }));
+
+            // u-001 keeps its old value AND its old index key (no divergence).
+            assert_eq!(
+                store
+                    .get(&tasks(), &EntityId::new("u-001"))
+                    .expect("get")
+                    .expect("present")
+                    .data["email"],
+                json!("a@example.com")
+            );
+            assert_eq!(
+                store
+                    .index_lookup(
+                        &tasks(),
+                        "email",
+                        &IndexValue::String("a@example.com".into())
+                    )
+                    .expect("lookup"),
+                vec![EntityId::new("u-001")],
+                "the old unique key must still resolve to u-001"
+            );
+        }
+
+        #[test]
+        fn cas_unique_violation_does_not_persist_entity() {
+            let mut store = MemoryStorageAdapter::default();
+            store
+                .put_schema(&unique_email_schema())
+                .expect("put_schema");
+            store
+                .put(Entity::new(
+                    tasks(),
+                    EntityId::new("u-001"),
+                    json!({"email": "a@example.com"}),
+                ))
+                .expect("put u-001");
+            store
+                .put(Entity::new(
+                    tasks(),
+                    EntityId::new("u-002"),
+                    json!({"email": "b@example.com"}),
+                ))
+                .expect("put u-002");
+
+            // CAS u-002 to collide with u-001's email.
+            let err = store
+                .compare_and_swap(
+                    Entity::new(
+                        tasks(),
+                        EntityId::new("u-002"),
+                        json!({"email": "a@example.com"}),
+                    ),
+                    1,
+                )
+                .expect_err("cas duplicate rejected");
+            assert!(matches!(err, AxonError::UniqueViolation { .. }));
+
+            // u-002 keeps its original value and version (not persisted).
+            let stored = store
+                .get(&tasks(), &EntityId::new("u-002"))
+                .expect("get")
+                .expect("u-002 present");
+            assert_eq!(stored.data["email"], "b@example.com");
+            assert_eq!(stored.version, 1);
+        }
+
+        #[test]
+        fn schemaless_put_skips_maintenance_and_writes() {
+            // No schema registered for this collection → maintenance is skipped
+            // and the write still succeeds.
+            let mut store = MemoryStorageAdapter::default();
+            store
+                .put(task("t-001", "open", 1))
+                .expect("schemaless put should succeed");
+            assert!(store
+                .get(&tasks(), &EntityId::new("t-001"))
+                .expect("get")
+                .is_some());
         }
     }
 
