@@ -53,6 +53,49 @@ pub enum IndexValue {
     Datetime(i64),
 }
 
+impl IndexValue {
+    /// The declared [`IndexType`](axon_schema::schema::IndexType) this typed
+    /// value belongs to.
+    pub fn index_type(&self) -> axon_schema::schema::IndexType {
+        use axon_schema::schema::IndexType;
+        match self {
+            IndexValue::String(_) => IndexType::String,
+            IndexValue::Integer(_) => IndexType::Integer,
+            IndexValue::Float(_) => IndexType::Float,
+            IndexValue::Boolean(_) => IndexType::Boolean,
+            IndexValue::Datetime(_) => IndexType::Datetime,
+        }
+    }
+
+    /// Render this value as the JSON form that the SSOT encoder accepts for its
+    /// own [`IndexType`](axon_schema::schema::IndexType).
+    ///
+    /// For `Datetime` this is the epoch-nanos integer (the canonical form
+    /// [`axon_esf::coerce_datetime_nanos`] round-trips), so re-encoding it
+    /// reproduces the same bytes that were stored for the original RFC 3339 /
+    /// nanos value.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            IndexValue::String(s) => serde_json::Value::String(s.clone()),
+            IndexValue::Integer(n) => serde_json::Value::from(*n),
+            IndexValue::Float(of) => serde_json::Number::from_f64(of.value())
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            IndexValue::Boolean(b) => serde_json::Value::Bool(*b),
+            IndexValue::Datetime(nanos) => serde_json::Value::from(*nanos),
+        }
+    }
+
+    /// Encode this value to its canonical order-preserving byte key — the same
+    /// bytes [`extract_index_key_bytes`] persists for the equivalent JSON value.
+    ///
+    /// Returns `Err` only for an unencodable value (e.g. a non-finite float),
+    /// which callers map to "no match".
+    pub fn encode_key(&self) -> Result<Vec<u8>, axon_esf::IndexKeyError> {
+        axon_esf::encode_index_value(&self.to_json(), &self.index_type())
+    }
+}
+
 impl std::fmt::Display for IndexValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -177,6 +220,44 @@ fn collect_index_json_values<'a>(
     } else if let Some(next) = value.get(*segment) {
         collect_index_json_values(next, rest, output);
     }
+}
+
+/// Extract the canonical order-preserving **byte keys** for a single-field
+/// index from entity data.
+///
+/// This is the byte-level counterpart of [`extract_index_values`], shared by
+/// the persisted SQL backends (SQLite, Postgres) so their index keys sort under
+/// `memcmp` exactly as the in-memory adapter's typed [`IndexValue`] `Ord` does.
+///
+/// Navigation reuses the same `[]`-aware dotted-path logic as
+/// [`extract_index_values`] (via [`collect_index_json_values`]), so an array
+/// (`field[]`) index yields one byte key per scalar item. For each present,
+/// non-null JSON value the [`axon_esf::encode_index_value`] SSOT encoder is
+/// called; `Ok` bytes are kept and `Err` (type mismatch / unencodable) is
+/// silently skipped — matching FEAT-013's "not indexed, not an error" rule and
+/// keeping the returned byte keys in 1:1 correspondence with the typed
+/// [`IndexValue`]s that [`extract_index_values`] would produce for the same
+/// data.
+pub fn extract_index_key_bytes(
+    data: &serde_json::Value,
+    field: &str,
+    index_type: &axon_schema::schema::IndexType,
+) -> Vec<Vec<u8>> {
+    let segments: Vec<&str> = field.split('.').collect();
+    let mut json_values = Vec::new();
+    collect_index_json_values(data, &segments, &mut json_values);
+    json_values
+        .into_iter()
+        .filter_map(|value| {
+            // Skip JSON null explicitly so it lines up with `extract_index_value`
+            // (which returns `None` for null/missing); the encoder also rejects
+            // null, but filtering here keeps the intent obvious.
+            if value.is_null() {
+                return None;
+            }
+            axon_esf::encode_index_value(value, index_type).ok()
+        })
+        .collect()
 }
 
 /// A compound index key: ordered list of field values for multi-field indexes.

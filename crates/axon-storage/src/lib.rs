@@ -18,9 +18,9 @@ pub mod sqlite;
 mod proptest_storage;
 
 pub use adapter::{
-    content_version_by_scan, extract_compound_key, extract_index_value, extract_index_values,
-    hash_id_set, hash_id_version_set, resolve_field_path, structural_version_by_scan, CompoundKey,
-    IndexValue, OrderedFloat, StorageAdapter,
+    content_version_by_scan, extract_compound_key, extract_index_key_bytes, extract_index_value,
+    extract_index_values, hash_id_set, hash_id_version_set, resolve_field_path,
+    structural_version_by_scan, CompoundKey, IndexValue, OrderedFloat, StorageAdapter,
 };
 pub use auth_schema::{apply_auth_migrations_postgres, apply_auth_migrations_sqlite};
 pub use axon_esf::{coerce_datetime_nanos, encode_index_value};
