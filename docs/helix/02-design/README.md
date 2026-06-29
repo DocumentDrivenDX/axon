@@ -39,6 +39,7 @@ contracts, and technical spikes.
 - [ADR-025: Client-Projection Cursor API — Opaque, Restart/Schema-Stable Resume Tokens](adr/ADR-025-client-projection-cursor-api.md) (refines ADR-014's projection model for the client local replica, FEAT-032)
 - [ADR-026: Predicate-Read Serializability — Per-Collection Structural-Version Phantom Guard](adr/ADR-026-predicate-read-serializability.md) (extends ADR-004 Serializable to collection-granular predicate/phantom reads, FEAT-008 TXN-05)
 - [ADR-027: Serializable Snapshot Isolation (SSI) — Precise, Minimal-Abort Serializability](adr/ADR-027-serializable-snapshot-isolation.md) (analyses full Cahill SSI as the precise-serializability future for ADR-026's conservative guard, FEAT-008 TXN-05)
+- [ADR-028: Index-Key Store SSOT — Typed `IndexValue` vs. Canonical `index_key` Bytes](adr/ADR-028-index-key-store-ssot.md) (keeps the verified-equivalent typed store, fixes the datetime ordering residual, defers the full byte-key migration with conditions; FEAT-013)
 
 ### Contracts
 

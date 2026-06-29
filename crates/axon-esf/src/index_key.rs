@@ -96,9 +96,11 @@
 //!    epoch nanoseconds (instant-correct across timezone offsets). The two agree
 //!    for Z-normalized RFC 3339 but diverge across offsets.
 //!
-//! Migrating the store to a byte-key model that calls this encoder directly
-//! (closing both residuals) is a larger, representation-changing refactor than a
-//! drop-in and is tracked as a follow-up rather than attempted piecemeal.
+//! Migrating the store to a byte-key model that calls this encoder directly is a
+//! larger, representation-changing refactor than a drop-in. ADR-028 decides
+//! against doing it now (the typed store's ordering equivalence is test-verified)
+//! in favour of a targeted fix for the datetime residual, deferring the full
+//! byte-key migration behind explicit conditions.
 
 use std::error::Error;
 use std::fmt;
