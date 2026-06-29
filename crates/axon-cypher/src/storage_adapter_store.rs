@@ -162,26 +162,42 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
 
         let entities: Vec<Result<QueryEntity, CypherError>> = if let Some(filter) = eq_filter {
             let property = filter.path.join(".");
-            match json_to_index_value(&filter.value) {
-                Some(index_val) => {
+            let candidates = json_to_index_values(&filter.value);
+            if candidates.is_empty() {
+                // Non-indexable value type — fall through to range scan.
+                self.range_scan_collection(&collection_id, &scan)
+            } else {
+                // The cypher store does not know the declared index type, so a
+                // string may key a `String` index or (post ADR-028) a
+                // `Datetime` index whose keys are epoch nanos. Try every
+                // plausible typed key and union the matches; `data_matches_filters`
+                // is the correctness backstop on the raw JSON.
+                let mut lookup_err = false;
+                let mut ids: Vec<EntityId> = Vec::new();
+                for index_val in &candidates {
                     match self
                         .storage
-                        .index_lookup(&collection_id, &property, &index_val)
+                        .index_lookup(&collection_id, &property, index_val)
                     {
-                        Ok(ids) => ids
-                            .into_iter()
-                            .filter_map(|eid| self.storage.get(&collection_id, &eid).ok().flatten())
-                            .filter(|entity| {
-                                data_matches_filters(&entity.data, &scan.property_filters)
-                            })
-                            .map(|entity| Ok(self.build_query_entity(&entity)))
-                            .collect(),
+                        Ok(found) => ids.extend(found),
                         // index_lookup not supported by this adapter — fall through.
-                        Err(_) => self.range_scan_collection(&collection_id, &scan),
+                        Err(_) => {
+                            lookup_err = true;
+                            break;
+                        }
                     }
                 }
-                // Non-indexable value type — fall through to range scan.
-                None => self.range_scan_collection(&collection_id, &scan),
+                if lookup_err {
+                    self.range_scan_collection(&collection_id, &scan)
+                } else {
+                    ids.sort();
+                    ids.dedup();
+                    ids.into_iter()
+                        .filter_map(|eid| self.storage.get(&collection_id, &eid).ok().flatten())
+                        .filter(|entity| data_matches_filters(&entity.data, &scan.property_filters))
+                        .map(|entity| Ok(self.build_query_entity(&entity)))
+                        .collect()
+                }
             }
         } else {
             self.range_scan_collection(&collection_id, &scan)
@@ -297,19 +313,40 @@ fn build_query_link(link: &Link) -> QueryLink {
     }
 }
 
-/// Convert a JSON value to an [`IndexValue`] for `index_lookup` calls.
+/// Convert a JSON value to the candidate [`IndexValue`]s to try for an
+/// `index_lookup`.
 ///
-/// Returns `None` for non-scalar types (objects, arrays, null) that cannot
-/// be used as index keys.
-fn json_to_index_value(value: &Value) -> Option<IndexValue> {
+/// The cypher store does not know the field's declared index type, so a single
+/// JSON value can map to more than one plausible typed key. A string keys a
+/// `String` index, but (post ADR-028) may also key a `Datetime` index whose
+/// stored keys are epoch nanoseconds; both candidates are returned so the union
+/// of lookups finds the entity regardless of the declared type. `index_lookup`
+/// on a non-matching variant simply returns no ids.
+///
+/// Returns an empty `Vec` for non-scalar types (objects, arrays, null) that
+/// cannot be used as index keys.
+fn json_to_index_values(value: &Value) -> Vec<IndexValue> {
     match value {
-        Value::String(s) => Some(IndexValue::String(s.clone())),
-        Value::Number(n) => n
-            .as_i64()
-            .map(IndexValue::Integer)
-            .or_else(|| n.as_f64().map(|f| IndexValue::Float(OrderedFloat::new(f)))),
-        Value::Bool(b) => Some(IndexValue::Boolean(*b)),
-        _ => None,
+        Value::String(s) => {
+            let mut out = vec![IndexValue::String(s.clone())];
+            // A string that parses as RFC 3339 may key a Datetime index.
+            if let Ok(nanos) = axon_storage::coerce_datetime_nanos(value) {
+                out.push(IndexValue::Datetime(nanos));
+            }
+            out
+        }
+        Value::Number(n) => {
+            let mut out = Vec::new();
+            if let Some(i) = n.as_i64() {
+                out.push(IndexValue::Integer(i));
+            }
+            if let Some(f) = n.as_f64() {
+                out.push(IndexValue::Float(OrderedFloat::new(f)));
+            }
+            out
+        }
+        Value::Bool(b) => vec![IndexValue::Boolean(*b)],
+        _ => Vec::new(),
     }
 }
 

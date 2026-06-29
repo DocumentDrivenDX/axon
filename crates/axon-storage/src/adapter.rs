@@ -25,16 +25,17 @@ use uuid::Uuid;
 /// `axon-esf::index_key` is the **single source of truth** for Axon's
 /// index-key ordering; this typed `Ord` is the storage layer's equivalent
 /// encoding of that same canonical order, verified by the `index_key_conformance`
-/// tests below. Two residual divergences from the SSOT encoder are intentional
+/// tests below. One residual divergence from the SSOT encoder is intentional
 /// and pinned by those tests:
 ///
-/// 1. **Datetime representation** — this layer indexes `Datetime` as a raw
-///    string (lexicographic order); the SSOT canonicalizes to epoch nanoseconds
-///    (instant-correct across timezone offsets). They agree for Z-normalized
-///    RFC 3339 but diverge across offsets.
-/// 2. **Type mismatch** — a present-but-wrong-typed value is "not indexed"
-///    (`None`) here per FEAT-013, whereas the SSOT encoder returns `Err`
-///    (fail-closed).
+/// * **Type mismatch** — a present-but-wrong-typed value is "not indexed"
+///   (`None`) here per FEAT-013, whereas the SSOT encoder returns `Err`
+///   (fail-closed).
+///
+/// Datetime ordering is **canonical** in both representations: `Datetime` fields
+/// are coerced to epoch nanoseconds (via `axon_esf::coerce_datetime_nanos`) and
+/// stored in [`IndexValue::Datetime`], so the typed `Ord` and the SSOT bytes
+/// order datetimes by their true instant across UTC offsets (ADR-028).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IndexValue {
     /// UTF-8 string value.
@@ -45,6 +46,11 @@ pub enum IndexValue {
     Float(OrderedFloat),
     /// Boolean value (false < true).
     Boolean(bool),
+    /// Datetime as epoch **nanoseconds** (`i64`), canonicalized from RFC 3339
+    /// strings or epoch-nanos numbers so ordering is instant-correct across UTC
+    /// offsets. A dedicated lane (not overloaded onto `Integer`); each index
+    /// field uses a single variant, so cross-variant ordering is irrelevant.
+    Datetime(i64),
 }
 
 impl std::fmt::Display for IndexValue {
@@ -56,6 +62,7 @@ impl std::fmt::Display for IndexValue {
                 write!(f, "{}", f64::from_bits(*bits))
             }
             IndexValue::Boolean(b) => write!(f, "{b}"),
+            IndexValue::Datetime(nanos) => write!(f, "{nanos}"),
         }
     }
 }
@@ -121,8 +128,13 @@ pub fn extract_index_value(
             .map(|f| IndexValue::Float(OrderedFloat::new(f))),
         IndexType::Boolean => json_val.as_bool().map(IndexValue::Boolean),
         IndexType::Datetime => {
-            // Datetimes are stored as strings for ordering purposes.
-            json_val.as_str().map(|s| IndexValue::String(s.to_string()))
+            // Canonicalize to epoch nanoseconds via the SSOT coercion so
+            // ordering is instant-correct across UTC offsets (ADR-028). An
+            // unparseable / wrong-typed datetime yields `Err`, which we map to
+            // `None` per FEAT-013 (type mismatch = not indexed, not an error).
+            axon_esf::coerce_datetime_nanos(json_val)
+                .ok()
+                .map(IndexValue::Datetime)
         }
     }
 }
@@ -1958,11 +1970,11 @@ mod structural_version_tests {
 /// `axon-storage` maintains ordered *typed* structures (`IndexValue` /
 /// `CompoundKey` with `Ord`, backed by `BTreeMap` and EAV tables), whereas
 /// `axon-esf::index_key` produces order-preserving *bytes*. They are two
-/// encodings of the **same canonical ordering**; these tests pin that
-/// equivalence so the two cannot silently drift, and they pin the two
-/// intentional residual divergences (datetime representation; type-mismatch
-/// handling) with executable evidence. See the "Store SSOT" note in
-/// `axon-esf::index_key`.
+/// encodings of the **same canonical ordering** (including datetime, now that
+/// both coerce to epoch nanoseconds per ADR-028); these tests pin that
+/// equivalence so the two cannot silently drift, and they pin the one remaining
+/// intentional residual divergence (type-mismatch handling: `None` vs `Err`)
+/// with executable evidence. See the "Store SSOT" note in `axon-esf::index_key`.
 #[cfg(test)]
 mod index_key_conformance {
     use super::{extract_index_value, IndexValue};
@@ -2055,11 +2067,11 @@ mod index_key_conformance {
     }
 
     #[test]
-    fn residual_datetime_representation_diverges() {
-        // RESIDUAL #1 (documented): the storage layer indexes Datetime as a raw
-        // *string* (lexicographic order), while the esf SSOT canonicalizes to
-        // epoch nanoseconds. For Z-normalized RFC 3339 the two agree (fixed-width
-        // UTC ISO strings sort chronologically):
+    fn datetime_ordering_conforms_across_utc_offsets() {
+        // ADR-028 closed the former datetime residual: the storage layer now
+        // coerces Datetime to epoch nanoseconds (via `coerce_datetime_nanos`),
+        // the same canonicalization the esf SSOT uses. For Z-normalized RFC 3339
+        // the two agree (as before):
         assert_orderings_agree(
             IndexType::Datetime,
             &[
@@ -2069,9 +2081,10 @@ mod index_key_conformance {
             ],
         );
 
-        // But across timezone offsets they DIVERGE — this is the residual the
-        // Store-SSOT migration would close. `12:00:00+05:00` is `07:00:00Z`,
-        // chronologically *before* `10:00:00Z`, but lexicographically *after* it.
+        // And they now ALSO agree across timezone offsets — the residual is
+        // closed. `12:00:00+05:00` is `07:00:00Z`, chronologically *before*
+        // `10:00:00Z`. Both encodings order by the true instant, even though the
+        // raw strings sort the other way lexicographically.
         let earlier_instant = json!("2026-06-28T12:00:00+05:00"); // 07:00Z
         let later_instant = json!("2026-06-28T10:00:00Z"); // 10:00Z
 
@@ -2081,11 +2094,21 @@ mod index_key_conformance {
                 < esf_bytes(IndexType::Datetime, &later_instant),
             "esf orders by true instant"
         );
-        // storage (string): the offset form sorts AFTER, i.e. the opposite order.
+        // storage now AGREES: the offset form (earlier instant) sorts first too.
         assert!(
             storage_value(&IndexType::Datetime, &earlier_instant)
-                > storage_value(&IndexType::Datetime, &later_instant),
-            "storage orders datetimes lexicographically by string (the residual)"
+                < storage_value(&IndexType::Datetime, &later_instant),
+            "storage now orders datetimes by true instant (residual closed)"
+        );
+
+        // The mixed-offset sequence sorts identically under both encodings.
+        assert_orderings_agree(
+            IndexType::Datetime,
+            &[
+                json!("2026-06-28T12:00:00+05:00"), // 07:00Z
+                json!("2026-06-28T10:00:00Z"),      // 10:00Z
+                json!("2026-06-28T15:00:00+02:00"), // 13:00Z
+            ],
         );
     }
 

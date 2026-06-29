@@ -85,22 +85,23 @@
 //! cross-checks the two encodings on the same inputs so they cannot silently
 //! drift.
 //!
-//! Two behavioral divergences remain intentional and pinned by those tests:
+//! Datetime ordering is now **canonical in both** representations: the storage
+//! layer's `IndexValue::Datetime(i64)` extraction calls
+//! [`coerce_datetime_nanos`] (the same coercion this encoder uses), so both
+//! order datetimes by their true instant across UTC offsets (ADR-028's targeted
+//! datetime fix). A single behavioral divergence remains intentional and pinned
+//! by those tests:
 //!
-//! 1. **Type mismatch** — the storage layer treats a present-but-wrong-typed
-//!    value as "not indexed" (`None`) per FEAT-013, whereas this canonical
-//!    encoder returns `Err(IndexKeyError::TypeMismatch)` so callers can fail
-//!    closed.
-//! 2. **Datetime representation** — the storage layer indexes `Datetime` as a
-//!    raw string (lexicographic order), whereas this encoder canonicalizes to
-//!    epoch nanoseconds (instant-correct across timezone offsets). The two agree
-//!    for Z-normalized RFC 3339 but diverge across offsets.
+//! * **Type mismatch** — the storage layer treats a present-but-wrong-typed
+//!   value as "not indexed" (`None`) per FEAT-013, whereas this canonical
+//!   encoder returns `Err(IndexKeyError::TypeMismatch)` so callers can fail
+//!   closed. (The store discards the coercion error and indexes nothing; the
+//!   encoder propagates it.)
 //!
 //! Migrating the store to a byte-key model that calls this encoder directly is a
 //! larger, representation-changing refactor than a drop-in. ADR-028 decides
 //! against doing it now (the typed store's ordering equivalence is test-verified)
-//! in favour of a targeted fix for the datetime residual, deferring the full
-//! byte-key migration behind explicit conditions.
+//! and defers the full byte-key migration behind explicit conditions.
 
 use std::error::Error;
 use std::fmt;
@@ -249,17 +250,47 @@ fn encode_f64(v: f64) -> Vec<u8> {
 
 /// Encode a datetime value (RFC 3339 string OR epoch-nanos number) as `Integer`.
 fn encode_datetime(field: &str, value: &Value) -> Result<Vec<u8>, IndexKeyError> {
+    Ok(encode_i64(coerce_datetime_nanos_with_field(field, value)?))
+}
+
+/// Coerce a present, non-null JSON datetime to `i64` epoch **nanoseconds**.
+///
+/// This is the canonical datetime coercion shared by the SSOT byte encoder
+/// ([`encode_datetime`]) and by `axon-storage`'s typed `IndexValue::Datetime`
+/// extraction, so the two representations order datetimes by the same true
+/// instant (see ADR-028).
+///
+/// Accepts **either**:
+/// * an RFC 3339 / ISO 8601 string (e.g. `"2026-06-28T12:00:00Z"`,
+///   `"2026-06-28T12:00:00.123456789+02:00"`), parsed to epoch nanoseconds; or
+/// * a JSON number interpreted as epoch nanoseconds (an integer, or a float
+///   with no fractional part; a fractional float is rejected since
+///   sub-nanosecond precision is not representable).
+///
+/// Returns:
+/// * `Err(IndexKeyError::TypeMismatch)` if `value` is neither a string nor a
+///   number (e.g. a boolean/array/object).
+/// * `Err(IndexKeyError::Unencodable)` if the string is not valid RFC 3339, or
+///   the number is fractional or outside `i64` nanosecond range.
+///
+/// The reported `field` in errors is `"datetime"`; callers that need a specific
+/// dotted path map the error to their own policy (e.g. `axon-storage` discards
+/// the error and treats it as not-indexed per FEAT-013).
+pub fn coerce_datetime_nanos(value: &Value) -> Result<i64, IndexKeyError> {
+    coerce_datetime_nanos_with_field("datetime", value)
+}
+
+/// Field-aware variant of [`coerce_datetime_nanos`] used by the byte encoder so
+/// its errors carry the declared dotted field path.
+fn coerce_datetime_nanos_with_field(field: &str, value: &Value) -> Result<i64, IndexKeyError> {
     match value {
-        Value::String(s) => {
-            let nanos = parse_rfc3339_nanos(s).ok_or_else(|| IndexKeyError::Unencodable {
-                field: field.to_string(),
-                reason: format!("'{s}' is not a valid RFC 3339 datetime"),
-            })?;
-            Ok(encode_i64(nanos))
-        }
+        Value::String(s) => parse_rfc3339_nanos(s).ok_or_else(|| IndexKeyError::Unencodable {
+            field: field.to_string(),
+            reason: format!("'{s}' is not a valid RFC 3339 datetime"),
+        }),
         Value::Number(n) => {
             if let Some(v) = n.as_i64() {
-                Ok(encode_i64(v))
+                Ok(v)
             } else if let Some(f) = n.as_f64() {
                 // Accept an integral float; reject fractional (sub-ns) precision.
                 // Bounds use 2^63 (the first f64 above i64::MAX) and -2^63
@@ -269,7 +300,7 @@ fn encode_datetime(field: &str, value: &Value) -> Result<Vec<u8>, IndexKeyError>
                 const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0; // 2^63 > i64::MAX
                 if f.fract() == 0.0 && (I64_MIN_F..TWO_POW_63).contains(&f) {
                     #[allow(clippy::cast_possible_truncation)]
-                    Ok(encode_i64(f as i64))
+                    Ok(f as i64)
                 } else {
                     Err(IndexKeyError::Unencodable {
                         field: field.to_string(),

@@ -23,6 +23,7 @@ pub use adapter::{
     IndexValue, OrderedFloat, StorageAdapter,
 };
 pub use auth_schema::{apply_auth_migrations_postgres, apply_auth_migrations_sqlite};
+pub use axon_esf::coerce_datetime_nanos;
 pub use cursor_store::{StorageCursorStore, CDC_CURSORS_COLLECTION};
 pub use memory::MemoryStorageAdapter;
 pub use postgres::{
