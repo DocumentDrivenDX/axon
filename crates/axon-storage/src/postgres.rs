@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::ops::Bound;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,7 +14,7 @@ use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use sqlx::postgres::PgConnectOptions;
 
-use crate::adapter::StorageAdapter;
+use crate::adapter::{prefix_successor, CompoundKey, IndexValue, StorageAdapter};
 
 fn pg_connect_options(params: &str) -> Result<PgConnectOptions, AxonError> {
     if params.starts_with("postgres://") || params.starts_with("postgresql://") {
@@ -113,6 +114,7 @@ impl PostgresStorageAdapter {
             in_tx: false,
         };
         adapter.init_schema()?;
+        adapter.backfill_indexes_on_open()?;
         Ok(adapter)
     }
 
@@ -272,6 +274,38 @@ impl PostgresStorageAdapter {
                  CREATE INDEX IF NOT EXISTS idx_mutation_intents_expired
                      ON mutation_intents
                         (tenant_id, database_id, expires_at_ns, approval_state, intent_id);",
+            )
+            .execute(&self.pool),
+        )?;
+        // Persisted single-field secondary index (FEAT-013). `key` holds the
+        // canonical order-preserving bytes from `axon_esf::encode_index_value`.
+        // Postgres compares `BYTEA` bytewise (no text collation involvement), so
+        // range scans over `key` honour the same ordering the in-memory adapter's
+        // typed `IndexValue` `Ord` produces — identical to SQLite's BLOB memcmp.
+        self.block_on(
+            sqlx::raw_sql(
+                "CREATE TABLE IF NOT EXISTS entity_index (
+                    database_name TEXT NOT NULL,
+                    schema_name   TEXT NOT NULL,
+                    collection    TEXT NOT NULL,
+                    field         TEXT NOT NULL,
+                    key           BYTEA NOT NULL,
+                    entity_id     TEXT NOT NULL,
+                    PRIMARY KEY (database_name, schema_name, collection, field, key, entity_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_entity_index_range
+                    ON entity_index (database_name, schema_name, collection, field, key);
+                CREATE TABLE IF NOT EXISTS entity_compound_index (
+                    database_name TEXT NOT NULL,
+                    schema_name   TEXT NOT NULL,
+                    collection    TEXT NOT NULL,
+                    index_ordinal INTEGER NOT NULL,
+                    key           BYTEA NOT NULL,
+                    entity_id     TEXT NOT NULL,
+                    PRIMARY KEY (database_name, schema_name, collection, index_ordinal, key, entity_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_entity_compound_index_range
+                    ON entity_compound_index (database_name, schema_name, collection, index_ordinal, key);",
             )
             .execute(&self.pool),
         )?;
@@ -620,6 +654,241 @@ impl PostgresStorageAdapter {
         use sqlx::Row;
         let intent_json: serde_json::Value = row.get("intent_json");
         serde_json::from_value(intent_json).map_err(AxonError::Serialization)
+    }
+
+    // ── Persisted secondary index helpers (FEAT-013) ────────────────────
+    //
+    // These mirror the SQLite adapter's private index helpers 1:1 over Postgres
+    // types: `BYTEA` keys (compared bytewise, matching the canonical
+    // order-preserving encoding), `$N` placeholders, and `ON CONFLICT DO NOTHING`
+    // in place of SQLite's `INSERT OR REPLACE`. The key bytes themselves come
+    // from the shared encoders, so all three backends store identical bytes.
+
+    /// Delete this entity's `entity_index` rows for a single field.
+    fn delete_index_field_rows(
+        &self,
+        key: &QualifiedCollectionId,
+        field: &str,
+        entity_id: &EntityId,
+    ) -> Result<(), AxonError> {
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entity_index
+                 WHERE database_name = $1 AND schema_name = $2 AND collection = $3
+                   AND field = $4 AND entity_id = $5",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .bind(field)
+            .bind(entity_id.as_str())
+            .execute(&self.pool),
+        )?;
+        Ok(())
+    }
+
+    /// Insert one `entity_index` row per byte key for a field.
+    fn insert_index_rows(
+        &self,
+        key: &QualifiedCollectionId,
+        field: &str,
+        entity_id: &EntityId,
+        byte_keys: &[Vec<u8>],
+    ) -> Result<(), AxonError> {
+        for bytes in byte_keys {
+            self.block_on(
+                sqlx::query(
+                    "INSERT INTO entity_index
+                        (database_name, schema_name, collection, field, key, entity_id)
+                     VALUES ($1, $2, $3, $4, $5, $6)
+                     ON CONFLICT DO NOTHING",
+                )
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(key.collection.as_str())
+                .bind(field)
+                .bind(bytes.as_slice())
+                .bind(entity_id.as_str())
+                .execute(&self.pool),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Delete this entity's `entity_compound_index` rows for one ordinal.
+    fn delete_compound_index_rows(
+        &self,
+        key: &QualifiedCollectionId,
+        index_ordinal: i32,
+        entity_id: &EntityId,
+    ) -> Result<(), AxonError> {
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entity_compound_index
+                 WHERE database_name = $1 AND schema_name = $2 AND collection = $3
+                   AND index_ordinal = $4 AND entity_id = $5",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .bind(index_ordinal)
+            .bind(entity_id.as_str())
+            .execute(&self.pool),
+        )?;
+        Ok(())
+    }
+
+    /// Insert one `entity_compound_index` row for a framed composite key.
+    fn insert_compound_index_row(
+        &self,
+        key: &QualifiedCollectionId,
+        index_ordinal: i32,
+        entity_id: &EntityId,
+        framed: &[u8],
+    ) -> Result<(), AxonError> {
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO entity_compound_index
+                    (database_name, schema_name, collection, index_ordinal, key, entity_id)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .bind(index_ordinal)
+            .bind(framed)
+            .bind(entity_id.as_str())
+            .execute(&self.pool),
+        )?;
+        Ok(())
+    }
+
+    /// Rebuild all `entity_index` rows for a collection from its entities.
+    ///
+    /// Drops the collection's existing index rows, then scans every entity
+    /// (`range_scan`) and re-derives the byte keys for each declared index via
+    /// [`crate::extract_index_key_bytes`]. Correct over an empty collection and
+    /// idempotent (the leading delete clears any prior rows). Used both when a
+    /// schema is (re)registered with indexes and for the open-time backfill of
+    /// pre-existing entities. Mirrors `SqliteStorageAdapter::reindex_collection`.
+    pub fn reindex_collection(
+        &mut self,
+        collection: &CollectionId,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entity_index
+                 WHERE database_name = $1 AND schema_name = $2 AND collection = $3",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .execute(&self.pool),
+        )?;
+        if indexes.is_empty() {
+            return Ok(());
+        }
+        let entities = self.range_scan(collection, None, None, None)?;
+        for entity in &entities {
+            for idx in indexes {
+                let byte_keys =
+                    crate::extract_index_key_bytes(&entity.data, &idx.field, &idx.index_type);
+                self.insert_index_rows(&key, &idx.field, &entity.id, &byte_keys)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Rebuild all `entity_compound_index` rows for a collection from its
+    /// entities (the compound sibling of [`Self::reindex_collection`]).
+    ///
+    /// Clears the collection's existing compound rows, then for each entity
+    /// computes the framed composite key for each compound def (by ordinal) via
+    /// [`axon_schema::schema::CompoundIndexDef::index_key`], inserting one row per
+    /// entity whose key is non-sparse. A type-mismatch is treated as not-indexed.
+    /// Mirrors `SqliteStorageAdapter::reindex_compound_collection`.
+    pub fn reindex_compound_collection(
+        &mut self,
+        collection: &CollectionId,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entity_compound_index
+                 WHERE database_name = $1 AND schema_name = $2 AND collection = $3",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .execute(&self.pool),
+        )?;
+        if indexes.is_empty() {
+            return Ok(());
+        }
+        let entities = self.range_scan(collection, None, None, None)?;
+        for entity in &entities {
+            for (ordinal, idx) in indexes.iter().enumerate() {
+                if let Ok(Some(framed)) = idx.index_key(&entity.data) {
+                    self.insert_compound_index_row(&key, ordinal as i32, &entity.id, &framed)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One-time open-time backfill: for every collection whose latest schema
+    /// declares single-field and/or compound indexes but which has no index rows
+    /// yet, rebuild its index. Independently guarded per index kind so it never
+    /// redoes work for collections that already have rows. Correct (and a no-op)
+    /// over an empty database. Mirrors
+    /// `SqliteStorageAdapter::backfill_indexes_on_open`.
+    fn backfill_indexes_on_open(&mut self) -> Result<(), AxonError> {
+        let collections = self.list_collections()?;
+        for collection in collections {
+            let Some(schema) = self.get_schema(&collection)? else {
+                continue;
+            };
+            let key = self.resolve_catalog_key(&collection)?;
+
+            if !schema.indexes.is_empty() {
+                let existing: i64 = self.block_on(
+                    sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM entity_index
+                         WHERE database_name = $1 AND schema_name = $2 AND collection = $3",
+                    )
+                    .bind(key.namespace.database.as_str())
+                    .bind(key.namespace.schema.as_str())
+                    .bind(key.collection.as_str())
+                    .fetch_one(&self.pool),
+                )?;
+                if existing == 0 {
+                    let indexes = schema.indexes.clone();
+                    self.reindex_collection(&collection, &indexes)?;
+                }
+            }
+
+            if !schema.compound_indexes.is_empty() {
+                let existing: i64 = self.block_on(
+                    sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM entity_compound_index
+                         WHERE database_name = $1 AND schema_name = $2 AND collection = $3",
+                    )
+                    .bind(key.namespace.database.as_str())
+                    .bind(key.namespace.schema.as_str())
+                    .bind(key.collection.as_str())
+                    .fetch_one(&self.pool),
+                )?;
+                if existing == 0 {
+                    let compound_indexes = schema.compound_indexes.clone();
+                    self.reindex_compound_collection(&collection, &compound_indexes)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1308,6 +1577,358 @@ impl StorageAdapter for PostgresStorageAdapter {
         Ok(entry)
     }
 
+    // ── Persisted secondary index operations (FEAT-013) ─────────────────
+    //
+    // Direct mirrors of the SQLite trait-method implementations over Postgres
+    // types. `BYTEA` is compared bytewise by Postgres, so range and prefix
+    // scans over `key` honour the canonical order-preserving encoding without
+    // any text-collation involvement — identical results to SQLite and memory.
+
+    fn update_indexes(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        // Remove this entity's prior rows for each indexed field (delete by
+        // (field, entity_id) rather than recomputing old byte keys).
+        if old_data.is_some() {
+            for idx in indexes {
+                self.delete_index_field_rows(&key, &idx.field, entity_id)?;
+            }
+        }
+
+        for idx in indexes {
+            if idx.unique {
+                let values = crate::extract_index_values(new_data, &idx.field, &idx.index_type);
+                for val in &values {
+                    if self.index_unique_conflict(collection, &idx.field, val, entity_id)? {
+                        return Err(AxonError::UniqueViolation {
+                            field: idx.field.clone(),
+                            value: val.to_string(),
+                        });
+                    }
+                }
+            }
+            let byte_keys = crate::extract_index_key_bytes(new_data, &idx.field, &idx.index_type);
+            self.insert_index_rows(&key, &idx.field, entity_id, &byte_keys)?;
+        }
+        Ok(())
+    }
+
+    fn remove_index_entries(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        _data: &serde_json::Value,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        for idx in indexes {
+            self.delete_index_field_rows(&key, &idx.field, entity_id)?;
+        }
+        Ok(())
+    }
+
+    fn index_lookup(
+        &self,
+        collection: &CollectionId,
+        field: &str,
+        value: &IndexValue,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        // An unencodable lookup value cannot match any stored key.
+        let Ok(bytes) = value.encode_key() else {
+            return Ok(vec![]);
+        };
+        let ids: Vec<String> = self.block_on(
+            sqlx::query_scalar(
+                "SELECT entity_id FROM entity_index
+                 WHERE database_name = $1 AND schema_name = $2 AND collection = $3
+                   AND field = $4 AND key = $5
+                 ORDER BY entity_id ASC",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .bind(field)
+            .bind(bytes.as_slice())
+            .fetch_all(&self.pool),
+        )?;
+        Ok(ids.into_iter().map(EntityId::new).collect())
+    }
+
+    fn index_range(
+        &self,
+        collection: &CollectionId,
+        field: &str,
+        lower: Bound<&IndexValue>,
+        upper: Bound<&IndexValue>,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        use sqlx::Row;
+        let key = self.resolve_catalog_key(collection)?;
+
+        // Build the bound clauses dynamically, omitting unbounded sides. BYTEA
+        // comparison in Postgres is bytewise, matching the canonical
+        // order-preserving key encoding. Placeholders are assigned in bind order.
+        let mut sql = String::from(
+            "SELECT entity_id, key FROM entity_index
+             WHERE database_name = $1 AND schema_name = $2 AND collection = $3 AND field = $4",
+        );
+        // An unencodable bound value carries no usable ordering, so we treat that
+        // side as unbounded (`None`) rather than erroring.
+        let lower_bytes: Option<Vec<u8>> = match lower {
+            Bound::Included(v) | Bound::Excluded(v) => v.encode_key().ok(),
+            Bound::Unbounded => None,
+        };
+        let upper_bytes: Option<Vec<u8>> = match upper {
+            Bound::Included(v) | Bound::Excluded(v) => v.encode_key().ok(),
+            Bound::Unbounded => None,
+        };
+        if lower_bytes.is_some() {
+            match lower {
+                Bound::Excluded(_) => sql.push_str(" AND key > $5"),
+                _ => sql.push_str(" AND key >= $5"),
+            }
+        }
+        if upper_bytes.is_some() {
+            // Upper placeholder index depends on whether lower was bound.
+            let ph = if lower_bytes.is_some() { "$6" } else { "$5" };
+            match upper {
+                Bound::Excluded(_) => {
+                    sql.push_str(" AND key < ");
+                    sql.push_str(ph);
+                }
+                _ => {
+                    sql.push_str(" AND key <= ");
+                    sql.push_str(ph);
+                }
+            }
+        }
+        sql.push_str(" ORDER BY key ASC, entity_id ASC");
+
+        let mut query = sqlx::query(&sql)
+            .bind(key.namespace.database.as_str().to_owned())
+            .bind(key.namespace.schema.as_str().to_owned())
+            .bind(key.collection.as_str().to_owned())
+            .bind(field.to_owned());
+        if let Some(lb) = lower_bytes {
+            query = query.bind(lb);
+        }
+        if let Some(ub) = upper_bytes {
+            query = query.bind(ub);
+        }
+        let rows = self.block_on(query.fetch_all(&self.pool))?;
+        let ids = rows
+            .iter()
+            .map(|row| {
+                let id: String = row.get("entity_id");
+                EntityId::new(id)
+            })
+            .collect();
+        Ok(ids)
+    }
+
+    fn index_unique_conflict(
+        &self,
+        collection: &CollectionId,
+        field: &str,
+        value: &IndexValue,
+        exclude_entity: &EntityId,
+    ) -> Result<bool, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        let Ok(bytes) = value.encode_key() else {
+            return Ok(false);
+        };
+        let found: Option<i32> = self.block_on(
+            sqlx::query_scalar(
+                "SELECT 1 FROM entity_index
+                 WHERE database_name = $1 AND schema_name = $2 AND collection = $3
+                   AND field = $4 AND key = $5 AND entity_id <> $6
+                 LIMIT 1",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .bind(field)
+            .bind(bytes.as_slice())
+            .bind(exclude_entity.as_str())
+            .fetch_optional(&self.pool),
+        )?;
+        Ok(found.is_some())
+    }
+
+    fn drop_indexes(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entity_index
+                 WHERE database_name = $1 AND schema_name = $2 AND collection = $3",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entity_compound_index
+                 WHERE database_name = $1 AND schema_name = $2 AND collection = $3",
+            )
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(key.collection.as_str())
+            .execute(&self.pool),
+        )?;
+        Ok(())
+    }
+
+    // ── Compound index operations (FEAT-013, US-033) ────────────────────
+
+    fn update_compound_indexes(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        if old_data.is_some() {
+            for (ordinal, _) in indexes.iter().enumerate() {
+                self.delete_compound_index_rows(&key, ordinal as i32, entity_id)?;
+            }
+        }
+
+        for (ordinal, idx) in indexes.iter().enumerate() {
+            // A type-mismatch (`Err`) is "not indexed"; a sparse `Ok(None)`
+            // produces no row.
+            let Ok(Some(framed)) = idx.index_key(new_data) else {
+                continue;
+            };
+            if idx.unique {
+                let found: Option<i32> = self.block_on(
+                    sqlx::query_scalar(
+                        "SELECT 1 FROM entity_compound_index
+                         WHERE database_name = $1 AND schema_name = $2 AND collection = $3
+                           AND index_ordinal = $4 AND key = $5 AND entity_id <> $6
+                         LIMIT 1",
+                    )
+                    .bind(key.namespace.database.as_str())
+                    .bind(key.namespace.schema.as_str())
+                    .bind(key.collection.as_str())
+                    .bind(ordinal as i32)
+                    .bind(framed.as_slice())
+                    .bind(entity_id.as_str())
+                    .fetch_optional(&self.pool),
+                )?;
+                if found.is_some() {
+                    let field_names: Vec<&str> =
+                        idx.fields.iter().map(|f| f.field.as_str()).collect();
+                    let value = match crate::extract_compound_key(new_data, &idx.fields) {
+                        Some(ckey) => format!("{ckey:?}"),
+                        None => format!("{framed:?}"),
+                    };
+                    return Err(AxonError::UniqueViolation {
+                        field: field_names.join(", "),
+                        value,
+                    });
+                }
+            }
+            self.insert_compound_index_row(&key, ordinal as i32, entity_id, &framed)?;
+        }
+        Ok(())
+    }
+
+    fn remove_compound_index_entries(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        _data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        for (ordinal, _) in indexes.iter().enumerate() {
+            self.delete_compound_index_rows(&key, ordinal as i32, entity_id)?;
+        }
+        Ok(())
+    }
+
+    fn compound_index_lookup(
+        &self,
+        collection: &CollectionId,
+        index_idx: usize,
+        key: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        let cat = self.resolve_catalog_key(collection)?;
+        let Ok(Some(framed)) = key.encode_framed() else {
+            return Ok(vec![]);
+        };
+        let ids: Vec<String> = self.block_on(
+            sqlx::query_scalar(
+                "SELECT entity_id FROM entity_compound_index
+                 WHERE database_name = $1 AND schema_name = $2 AND collection = $3
+                   AND index_ordinal = $4 AND key = $5
+                 ORDER BY entity_id ASC",
+            )
+            .bind(cat.namespace.database.as_str())
+            .bind(cat.namespace.schema.as_str())
+            .bind(cat.collection.as_str())
+            .bind(index_idx as i32)
+            .bind(framed.as_slice())
+            .fetch_all(&self.pool),
+        )?;
+        Ok(ids.into_iter().map(EntityId::new).collect())
+    }
+
+    fn compound_index_prefix(
+        &self,
+        collection: &CollectionId,
+        index_idx: usize,
+        prefix: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        use sqlx::Row;
+        let cat = self.resolve_catalog_key(collection)?;
+        let Ok(Some(framed)) = prefix.encode_framed() else {
+            return Ok(vec![]);
+        };
+        // Byte-prefix range: key >= P AND key < successor(P). When there is no
+        // finite successor (P empty / all 0xFF), omit the upper bound and scan
+        // to the end of the ordinal partition.
+        let upper = prefix_successor(&framed);
+        let mut sql = String::from(
+            "SELECT entity_id, key FROM entity_compound_index
+             WHERE database_name = $1 AND schema_name = $2 AND collection = $3
+               AND index_ordinal = $4 AND key >= $5",
+        );
+        if upper.is_some() {
+            sql.push_str(" AND key < $6");
+        }
+        sql.push_str(" ORDER BY key ASC, entity_id ASC");
+
+        let mut query = sqlx::query(&sql)
+            .bind(cat.namespace.database.as_str().to_owned())
+            .bind(cat.namespace.schema.as_str().to_owned())
+            .bind(cat.collection.as_str().to_owned())
+            .bind(index_idx as i32)
+            .bind(framed.clone());
+        if let Some(ub) = upper {
+            query = query.bind(ub);
+        }
+        let rows = self.block_on(query.fetch_all(&self.pool))?;
+        let ids = rows
+            .iter()
+            .map(|row| {
+                let id: String = row.get("entity_id");
+                EntityId::new(id)
+            })
+            .collect();
+        Ok(ids)
+    }
+
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
         use sqlx::Row;
         let key = self.resolve_catalog_key(&schema.collection)?;
@@ -1345,6 +1966,14 @@ impl StorageAdapter for PostgresStorageAdapter {
             .bind(created_at_ns)
             .execute(&self.pool),
         )?;
+        // Rebuild persisted secondary indexes from the now-current schema so a
+        // newly declared (or changed) index covers entities that predate it
+        // (FEAT-013 backfill). `reindex_collection` clears stale rows first, so
+        // dropping all indexes from a schema correctly empties the index too.
+        let indexes = versioned.indexes.clone();
+        self.reindex_collection(&schema.collection, &indexes)?;
+        let compound_indexes = versioned.compound_indexes.clone();
+        self.reindex_compound_collection(&schema.collection, &compound_indexes)?;
         Ok(())
     }
 
@@ -2691,7 +3320,7 @@ mod tests {
         adapter
             .block_on(
                 sqlx::raw_sql(
-                    "TRUNCATE entities, schemas, collection_views, collections, namespaces, databases, audit_log, mutation_intents RESTART IDENTITY CASCADE",
+                    "TRUNCATE entities, schemas, collection_views, collections, namespaces, databases, audit_log, mutation_intents, entity_index, entity_compound_index RESTART IDENTITY CASCADE",
                 )
                 .execute(&adapter.pool),
             )
@@ -3910,6 +4539,883 @@ mod tests {
             remaining_metadata_rows, 0,
             "qualified unregister must remove normalized and default-namespaced legacy metadata"
         );
+    }
+
+    // ── Persisted secondary index tests (FEAT-013) ───────────────────────
+    //
+    // Mirror the SQLite `index_tests` + `compound_index_tests` so all three
+    // backends share equality/range/unique/array/null/compound/backfill
+    // semantics. Each test runs against a real Postgres (testcontainers or
+    // AXON_TEST_POSTGRES) and skips cleanly when none is reachable. The shared
+    // serialization guard plus the per-`store()` TRUNCATE keep them isolated.
+    mod index_tests {
+        use super::*;
+        use crate::adapter::IndexValue;
+        use axon_schema::schema::{CollectionSchema, IndexDef, IndexType};
+        use serde_json::json;
+        use std::ops::Bound;
+
+        fn tasks() -> CollectionId {
+            CollectionId::new("tasks")
+        }
+
+        fn status_index() -> IndexDef {
+            IndexDef {
+                field: "status".into(),
+                index_type: IndexType::String,
+                unique: false,
+            }
+        }
+
+        fn priority_index() -> IndexDef {
+            IndexDef {
+                field: "priority".into(),
+                index_type: IndexType::Integer,
+                unique: false,
+            }
+        }
+
+        fn unique_email_index() -> IndexDef {
+            IndexDef {
+                field: "email".into(),
+                index_type: IndexType::String,
+                unique: true,
+            }
+        }
+
+        fn task(id: &str, data: serde_json::Value) -> Entity {
+            Entity::new(tasks(), EntityId::new(id), data)
+        }
+
+        /// Count rows in a table for the current connection (test helper).
+        fn count_rows(store: &TestStore, table: &str) -> i64 {
+            store
+                .block_on(
+                    sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                        .fetch_one(&store.pool),
+                )
+                .expect("count query should succeed")
+        }
+
+        #[test]
+        fn update_indexes_populates_equality_lookup() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("update_indexes_populates_equality_lookup") else {
+                return;
+            };
+            let col = tasks();
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending"});
+            store
+                .update_indexes(&col, &eid, None, &data, &[status_index()])
+                .expect("update_indexes");
+
+            let results = store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .expect("lookup");
+            assert_eq!(results, vec![EntityId::new("t-001")]);
+        }
+
+        #[test]
+        fn update_indexes_removes_old_entries() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("update_indexes_removes_old_entries") else {
+                return;
+            };
+            let col = tasks();
+            let eid = EntityId::new("t-001");
+            let old_data = json!({"status": "pending"});
+            let new_data = json!({"status": "done"});
+            store
+                .update_indexes(&col, &eid, None, &old_data, &[status_index()])
+                .expect("update");
+            store
+                .update_indexes(&col, &eid, Some(&old_data), &new_data, &[status_index()])
+                .expect("update");
+
+            assert!(store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .expect("lookup")
+                .is_empty());
+            assert_eq!(
+                store
+                    .index_lookup(&col, "status", &IndexValue::String("done".into()))
+                    .expect("lookup"),
+                vec![EntityId::new("t-001")]
+            );
+        }
+
+        #[test]
+        fn remove_index_entries_cleans_up() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("remove_index_entries_cleans_up") else {
+                return;
+            };
+            let col = tasks();
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending"});
+            store
+                .update_indexes(&col, &eid, None, &data, &[status_index()])
+                .expect("update");
+            store
+                .remove_index_entries(&col, &eid, &data, &[status_index()])
+                .expect("remove");
+
+            assert!(store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .expect("lookup")
+                .is_empty());
+        }
+
+        #[test]
+        fn index_range_returns_matching_entities() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("index_range_returns_matching_entities") else {
+                return;
+            };
+            let col = tasks();
+            for i in 1..=5 {
+                let eid = EntityId::new(format!("t-{i:03}"));
+                store
+                    .update_indexes(
+                        &col,
+                        &eid,
+                        None,
+                        &json!({"priority": i}),
+                        &[priority_index()],
+                    )
+                    .expect("update");
+            }
+            // priority > 2 → {3,4,5}
+            let results = store
+                .index_range(
+                    &col,
+                    "priority",
+                    Bound::Excluded(&IndexValue::Integer(2)),
+                    Bound::Unbounded,
+                )
+                .expect("range");
+            assert_eq!(results.len(), 3);
+        }
+
+        #[test]
+        fn index_range_unbounded_lower_includes_integer_entries() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) =
+                store_or_skip("index_range_unbounded_lower_includes_integer_entries")
+            else {
+                return;
+            };
+            let col = tasks();
+            for i in 1..=5 {
+                let eid = EntityId::new(format!("t-{i:03}"));
+                store
+                    .update_indexes(
+                        &col,
+                        &eid,
+                        None,
+                        &json!({"priority": i}),
+                        &[priority_index()],
+                    )
+                    .expect("update");
+            }
+            // priority <= 3 with unbounded lower → {1,2,3}
+            let results = store
+                .index_range(
+                    &col,
+                    "priority",
+                    Bound::Unbounded,
+                    Bound::Included(&IndexValue::Integer(3)),
+                )
+                .expect("range");
+            assert_eq!(results.len(), 3, "unbounded-lower must include 1,2,3");
+
+            let all = store
+                .index_range(&col, "priority", Bound::Unbounded, Bound::Unbounded)
+                .expect("range");
+            assert_eq!(all.len(), 5, "fully-unbounded must include every entry");
+        }
+
+        #[test]
+        fn index_range_orders_by_value_then_id() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("index_range_orders_by_value_then_id") else {
+                return;
+            };
+            let col = tasks();
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("t-b"),
+                    None,
+                    &json!({"priority": 1}),
+                    &[priority_index()],
+                )
+                .expect("update");
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("t-a"),
+                    None,
+                    &json!({"priority": 1}),
+                    &[priority_index()],
+                )
+                .expect("update");
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("t-c"),
+                    None,
+                    &json!({"priority": 2}),
+                    &[priority_index()],
+                )
+                .expect("update");
+            let results = store
+                .index_range(&col, "priority", Bound::Unbounded, Bound::Unbounded)
+                .expect("range");
+            assert_eq!(
+                results,
+                vec![
+                    EntityId::new("t-a"),
+                    EntityId::new("t-b"),
+                    EntityId::new("t-c"),
+                ]
+            );
+        }
+
+        #[test]
+        fn unique_index_rejects_duplicate() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("unique_index_rejects_duplicate") else {
+                return;
+            };
+            let col = tasks();
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("u-001"),
+                    None,
+                    &json!({"email": "alice@example.com"}),
+                    &[unique_email_index()],
+                )
+                .expect("update");
+            let err = store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("u-002"),
+                    None,
+                    &json!({"email": "alice@example.com"}),
+                    &[unique_email_index()],
+                )
+                .expect_err("must reject duplicate");
+            match err {
+                AxonError::UniqueViolation { field, value } => {
+                    assert_eq!(field, "email");
+                    // Human-readable value (not raw bytes), matching memory.
+                    assert_eq!(value, "\"alice@example.com\"");
+                }
+                other => panic!("expected UniqueViolation, got {other}"),
+            }
+        }
+
+        #[test]
+        fn unique_index_allows_same_entity_update() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("unique_index_allows_same_entity_update") else {
+                return;
+            };
+            let col = tasks();
+            let eid = EntityId::new("u-001");
+            let data = json!({"email": "alice@example.com"});
+            store
+                .update_indexes(&col, &eid, None, &data, &[unique_email_index()])
+                .expect("update");
+            let new_data = json!({"email": "alice@example.com", "name": "Alice"});
+            store
+                .update_indexes(&col, &eid, Some(&data), &new_data, &[unique_email_index()])
+                .expect("same entity keeping its value must succeed");
+        }
+
+        #[test]
+        fn null_and_type_mismatch_values_are_not_indexed() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("null_and_type_mismatch_values_are_not_indexed")
+            else {
+                return;
+            };
+            let col = tasks();
+            // Missing field.
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("t-001"),
+                    None,
+                    &json!({"title": "no status"}),
+                    &[status_index()],
+                )
+                .expect("update");
+            // Type mismatch: integer for a string index → skipped.
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("t-002"),
+                    None,
+                    &json!({"status": 42}),
+                    &[status_index()],
+                )
+                .expect("update");
+            assert!(store
+                .index_lookup(&col, "status", &IndexValue::String(String::new()))
+                .expect("lookup")
+                .is_empty());
+            assert_eq!(
+                count_rows(&store, "entity_index"),
+                0,
+                "null/missing/type-mismatch must not be indexed"
+            );
+        }
+
+        #[test]
+        fn array_index_produces_multiple_entries() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("array_index_produces_multiple_entries") else {
+                return;
+            };
+            let col = tasks();
+            let idx = IndexDef {
+                field: "tags[]".into(),
+                index_type: IndexType::String,
+                unique: false,
+            };
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("t-001"),
+                    None,
+                    &json!({"tags": ["red", "blue"]}),
+                    &[idx.clone()],
+                )
+                .expect("update");
+            assert_eq!(
+                store
+                    .index_lookup(&col, "tags[]", &IndexValue::String("red".into()))
+                    .expect("lookup"),
+                vec![EntityId::new("t-001")]
+            );
+            assert_eq!(
+                store
+                    .index_lookup(&col, "tags[]", &IndexValue::String("blue".into()))
+                    .expect("lookup"),
+                vec![EntityId::new("t-001")]
+            );
+        }
+
+        #[test]
+        fn nested_field_path_indexing() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("nested_field_path_indexing") else {
+                return;
+            };
+            let col = tasks();
+            let idx = IndexDef {
+                field: "address.city".into(),
+                index_type: IndexType::String,
+                unique: false,
+            };
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("t-001"),
+                    None,
+                    &json!({"address": {"city": "NYC"}}),
+                    &[idx],
+                )
+                .expect("update");
+            assert_eq!(
+                store
+                    .index_lookup(&col, "address.city", &IndexValue::String("NYC".into()))
+                    .expect("lookup"),
+                vec![EntityId::new("t-001")]
+            );
+        }
+
+        #[test]
+        fn drop_indexes_removes_all_entries() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("drop_indexes_removes_all_entries") else {
+                return;
+            };
+            let col = tasks();
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("t-001"),
+                    None,
+                    &json!({"status": "pending"}),
+                    &[status_index()],
+                )
+                .expect("update");
+            store.drop_indexes(&col).expect("drop");
+            assert!(store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .expect("lookup")
+                .is_empty());
+        }
+
+        #[test]
+        fn index_unique_conflict_check() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("index_unique_conflict_check") else {
+                return;
+            };
+            let col = tasks();
+            store
+                .update_indexes(
+                    &col,
+                    &EntityId::new("u-001"),
+                    None,
+                    &json!({"email": "alice@example.com"}),
+                    &[unique_email_index()],
+                )
+                .expect("update");
+            assert!(store
+                .index_unique_conflict(
+                    &col,
+                    "email",
+                    &IndexValue::String("alice@example.com".into()),
+                    &EntityId::new("u-002"),
+                )
+                .expect("conflict check"));
+            assert!(!store
+                .index_unique_conflict(
+                    &col,
+                    "email",
+                    &IndexValue::String("alice@example.com".into()),
+                    &EntityId::new("u-001"),
+                )
+                .expect("conflict check"));
+        }
+
+        #[test]
+        fn abort_tx_rolls_back_index_changes() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("abort_tx_rolls_back_index_changes") else {
+                return;
+            };
+            let col = tasks();
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending"});
+            store
+                .update_indexes(&col, &eid, None, &data, &[status_index()])
+                .expect("update");
+
+            store.begin_tx().expect("begin");
+            store
+                .update_indexes(
+                    &col,
+                    &eid,
+                    Some(&data),
+                    &json!({"status": "done"}),
+                    &[status_index()],
+                )
+                .expect("update in tx");
+            store.abort_tx().expect("abort");
+
+            assert_eq!(
+                store
+                    .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                    .expect("lookup"),
+                vec![EntityId::new("t-001")]
+            );
+            assert!(store
+                .index_lookup(&col, "status", &IndexValue::String("done".into()))
+                .expect("lookup")
+                .is_empty());
+        }
+
+        #[test]
+        fn backfill_via_reindex_collection_covers_preexisting_entities() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) =
+                store_or_skip("backfill_via_reindex_collection_covers_preexisting_entities")
+            else {
+                return;
+            };
+            let col = tasks();
+            store
+                .put(task("t-001", json!({"status": "pending"})))
+                .expect("put");
+            store
+                .put(task("t-002", json!({"status": "done"})))
+                .expect("put");
+            store
+                .put(task("t-003", json!({"priority": 5})))
+                .expect("put");
+
+            // No index rows yet.
+            assert!(store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .expect("lookup")
+                .is_empty());
+
+            store
+                .reindex_collection(&col, &[status_index(), priority_index()])
+                .expect("reindex");
+
+            assert_eq!(
+                store
+                    .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                    .expect("lookup"),
+                vec![EntityId::new("t-001")]
+            );
+            let by_priority = store
+                .index_range(&col, "priority", Bound::Unbounded, Bound::Unbounded)
+                .expect("range");
+            assert_eq!(by_priority, vec![EntityId::new("t-003")]);
+        }
+
+        #[test]
+        fn backfill_via_put_schema_hook() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("backfill_via_put_schema_hook") else {
+                return;
+            };
+            let col = tasks();
+            store
+                .put(task("t-001", json!({"status": "pending"})))
+                .expect("put");
+            store
+                .put(task("t-002", json!({"status": "pending"})))
+                .expect("put");
+
+            let mut schema = CollectionSchema::new(col.clone());
+            schema.indexes = vec![status_index()];
+            store.put_schema(&schema).expect("put_schema");
+
+            let mut results = store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .expect("lookup");
+            results.sort();
+            assert_eq!(
+                results,
+                vec![EntityId::new("t-001"), EntityId::new("t-002")]
+            );
+        }
+
+        #[test]
+        fn reindex_empty_collection_is_noop() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("reindex_empty_collection_is_noop") else {
+                return;
+            };
+            store
+                .reindex_collection(&tasks(), &[status_index()])
+                .expect("reindex over empty collection must succeed");
+            assert_eq!(count_rows(&store, "entity_index"), 0);
+        }
+    }
+
+    // ── Compound persisted index tests (FEAT-013 / US-033) ───────────────
+    mod compound_index_tests {
+        use super::*;
+        use crate::adapter::{CompoundKey, IndexValue};
+        use axon_schema::schema::{
+            CollectionSchema, CompoundIndexDef, CompoundIndexField, IndexType,
+        };
+        use serde_json::json;
+
+        fn tasks() -> CollectionId {
+            CollectionId::new("tasks")
+        }
+
+        fn count_rows(store: &TestStore, table: &str) -> i64 {
+            store
+                .block_on(
+                    sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                        .fetch_one(&store.pool),
+                )
+                .expect("count query should succeed")
+        }
+
+        fn status_priority_index(unique: bool) -> CompoundIndexDef {
+            CompoundIndexDef {
+                fields: vec![
+                    CompoundIndexField {
+                        field: "status".into(),
+                        index_type: IndexType::String,
+                    },
+                    CompoundIndexField {
+                        field: "priority".into(),
+                        index_type: IndexType::Integer,
+                    },
+                ],
+                unique,
+            }
+        }
+
+        fn ctask(id: &str, data: serde_json::Value) -> Entity {
+            Entity::new(tasks(), EntityId::new(id), data)
+        }
+
+        #[test]
+        fn compound_index_lookup_exact_match() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("compound_index_lookup_exact_match") else {
+                return;
+            };
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .expect("update");
+
+            let key = CompoundKey(vec![
+                IndexValue::String("pending".into()),
+                IndexValue::Integer(1),
+            ]);
+            let results = store.compound_index_lookup(&col, 0, &key).expect("lookup");
+            assert_eq!(results, vec![EntityId::new("t-001")]);
+        }
+
+        #[test]
+        fn compound_index_prefix_match() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("compound_index_prefix_match") else {
+                return;
+            };
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            for (id, status, priority) in &[
+                ("t-001", "pending", 1),
+                ("t-002", "pending", 2),
+                ("t-003", "done", 1),
+            ] {
+                let eid = EntityId::new(*id);
+                let data = json!({"status": status, "priority": priority});
+                store
+                    .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                    .expect("update");
+            }
+
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            let mut results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix");
+            results.sort();
+            assert_eq!(
+                results,
+                vec![EntityId::new("t-001"), EntityId::new("t-002")]
+            );
+        }
+
+        #[test]
+        fn compound_index_missing_field_is_sparse() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("compound_index_missing_field_is_sparse") else {
+                return;
+            };
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            // Missing `priority` → no compound entry.
+            let data = json!({"status": "pending"});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .expect("update");
+
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            let results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix");
+            assert!(results.is_empty());
+            assert_eq!(count_rows(&store, "entity_compound_index"), 0);
+        }
+
+        #[test]
+        fn compound_index_removes_old_entries_on_update() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("compound_index_removes_old_entries_on_update")
+            else {
+                return;
+            };
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            let old_data = json!({"status": "pending", "priority": 1});
+            let new_data = json!({"status": "done", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid, None, &old_data, &indexes)
+                .expect("update");
+            store
+                .update_compound_indexes(&col, &eid, Some(&old_data), &new_data, &indexes)
+                .expect("update");
+
+            let old_key = CompoundKey(vec![
+                IndexValue::String("pending".into()),
+                IndexValue::Integer(1),
+            ]);
+            assert!(store
+                .compound_index_lookup(&col, 0, &old_key)
+                .expect("lookup")
+                .is_empty());
+
+            let new_key = CompoundKey(vec![
+                IndexValue::String("done".into()),
+                IndexValue::Integer(1),
+            ]);
+            assert_eq!(
+                store
+                    .compound_index_lookup(&col, 0, &new_key)
+                    .expect("lookup"),
+                vec![EntityId::new("t-001")]
+            );
+        }
+
+        #[test]
+        fn compound_unique_index_rejects_duplicate_and_allows_same_entity() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) =
+                store_or_skip("compound_unique_index_rejects_duplicate_and_allows_same_entity")
+            else {
+                return;
+            };
+            let col = tasks();
+            let indexes = vec![status_priority_index(true)];
+
+            let eid1 = EntityId::new("t-001");
+            let data1 = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid1, None, &data1, &indexes)
+                .expect("first insert");
+
+            let eid2 = EntityId::new("t-002");
+            let data2 = json!({"status": "pending", "priority": 1});
+            let err = store
+                .update_compound_indexes(&col, &eid2, None, &data2, &indexes)
+                .expect_err("duplicate must fail");
+            assert!(matches!(err, AxonError::UniqueViolation { .. }));
+
+            store
+                .update_compound_indexes(&col, &eid1, Some(&data1), &data1, &indexes)
+                .expect("same-entity rewrite must succeed");
+        }
+
+        #[test]
+        fn drop_indexes_clears_compound_rows() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("drop_indexes_clears_compound_rows") else {
+                return;
+            };
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .expect("update");
+            store.drop_indexes(&col).expect("drop");
+
+            assert_eq!(count_rows(&store, "entity_compound_index"), 0);
+        }
+
+        #[test]
+        fn remove_compound_index_entries_cleans_up() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("remove_compound_index_entries_cleans_up") else {
+                return;
+            };
+            let col = tasks();
+            let indexes = vec![status_priority_index(false)];
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .expect("update");
+            store
+                .remove_compound_index_entries(&col, &eid, &data, &indexes)
+                .expect("remove");
+
+            let key = CompoundKey(vec![
+                IndexValue::String("pending".into()),
+                IndexValue::Integer(1),
+            ]);
+            assert!(store
+                .compound_index_lookup(&col, 0, &key)
+                .expect("lookup")
+                .is_empty());
+        }
+
+        #[test]
+        fn backfill_compound_via_reindex_covers_preexisting_entities() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) =
+                store_or_skip("backfill_compound_via_reindex_covers_preexisting_entities")
+            else {
+                return;
+            };
+            let col = tasks();
+            store
+                .put(ctask("t-001", json!({"status": "pending", "priority": 1})))
+                .expect("put");
+            store
+                .put(ctask("t-002", json!({"status": "pending", "priority": 2})))
+                .expect("put");
+            // Sparse entity (missing priority) must not produce a row.
+            store
+                .put(ctask("t-003", json!({"status": "done"})))
+                .expect("put");
+
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            assert!(store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix")
+                .is_empty());
+
+            store
+                .reindex_compound_collection(&col, &[status_priority_index(false)])
+                .expect("reindex compound");
+
+            let mut results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix");
+            results.sort();
+            assert_eq!(
+                results,
+                vec![EntityId::new("t-001"), EntityId::new("t-002")]
+            );
+            assert_eq!(count_rows(&store, "entity_compound_index"), 2);
+        }
+
+        #[test]
+        fn backfill_compound_via_put_schema_hook() {
+            let _guard = postgres_test_guard();
+            let Some(mut store) = store_or_skip("backfill_compound_via_put_schema_hook") else {
+                return;
+            };
+            let col = tasks();
+            store
+                .put(ctask("t-001", json!({"status": "pending", "priority": 1})))
+                .expect("put");
+            store
+                .put(ctask("t-002", json!({"status": "pending", "priority": 2})))
+                .expect("put");
+
+            let mut schema = CollectionSchema::new(col.clone());
+            schema.compound_indexes = vec![status_priority_index(false)];
+            store.put_schema(&schema).expect("put_schema");
+
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            let mut results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("prefix");
+            results.sort();
+            assert_eq!(
+                results,
+                vec![EntityId::new("t-001"), EntityId::new("t-002")]
+            );
+        }
     }
 }
 

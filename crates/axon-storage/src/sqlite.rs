@@ -14,25 +14,7 @@ use axon_schema::schema::{CollectionSchema, CollectionView};
 
 use crate::adapter::{CompoundKey, IndexValue, StorageAdapter};
 
-/// Compute the exclusive byte-prefix upper bound for a leftmost-prefix range
-/// scan: the smallest byte string strictly greater than every string that has
-/// `prefix` as a literal prefix.
-///
-/// Increments the last byte that is `< 0xFF`, truncating any trailing `0xFF`
-/// bytes. If `prefix` is empty or all bytes are `0xFF` there is no finite upper
-/// bound (every longer string is still prefixed), so this returns `None` and the
-/// caller omits the upper bound (scanning to the end of the ordinal partition).
-fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
-    let mut end = prefix.to_vec();
-    while let Some(last) = end.last_mut() {
-        if *last < 0xFF {
-            *last += 1;
-            return Some(end);
-        }
-        end.pop();
-    }
-    None
-}
+use crate::adapter::prefix_successor;
 
 /// SQLite-backed storage adapter using an embedded database.
 ///

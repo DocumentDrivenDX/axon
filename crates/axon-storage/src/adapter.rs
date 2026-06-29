@@ -310,6 +310,31 @@ pub fn extract_compound_key(
     Some(CompoundKey(values))
 }
 
+/// Compute the exclusive byte-prefix upper bound for a leftmost-prefix range
+/// scan: the smallest byte string strictly greater than every string that has
+/// `prefix` as a literal prefix.
+///
+/// Increments the last byte that is `< 0xFF`, truncating any trailing `0xFF`
+/// bytes. If `prefix` is empty or all bytes are `0xFF` there is no finite upper
+/// bound (every longer string is still prefixed), so this returns `None` and the
+/// caller omits the upper bound (scanning to the end of the ordinal partition).
+///
+/// Shared across persisted backends (SQLite, Postgres): the framed compound key
+/// bytes are identical, and both engines compare the key column bytewise
+/// (SQLite BLOB memcmp, Postgres BYTEA), so the same successor logic produces a
+/// correct prefix range on either.
+pub fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    while let Some(last) = end.last_mut() {
+        if *last < 0xFF {
+            *last += 1;
+            return Some(end);
+        }
+        end.pop();
+    }
+    None
+}
+
 /// Navigate a dotted field path in a JSON value.
 ///
 /// E.g., `"address.city"` resolves `{"address": {"city": "NY"}}` to `"NY"`.
