@@ -2,11 +2,22 @@
 //!
 //! This module defines the **canonical specification** for turning a JSON
 //! record plus an index declaration ([`IndexDef`] / [`CompoundIndexDef`]) into
-//! an order-preserving byte key. The encoding is deliberately store-agnostic:
-//! the same bytes can be used as a key in any ordered key-value store, a SQL
-//! `BYTEA`/`BLOB` index column, or an in-memory `BTreeMap`, and lexicographic
-//! comparison of the bytes (`memcmp`) reproduces the natural ordering of the
-//! underlying typed values.
+//! an index byte key. The encoding is deliberately store-agnostic: the same
+//! bytes can be used as a key in any key-value store, a SQL `BYTEA`/`BLOB` index
+//! column, or an in-memory `BTreeMap`.
+//!
+//! There are **two** byte forms, with different guarantees:
+//!
+//! * The **per-value unframed encoding** (public via [`encode_index_value`]) is
+//!   the **order-preserving primitive**: lexicographic comparison of the bytes
+//!   (`memcmp`) reproduces the natural ordering of the underlying typed values
+//!   for *every* type, including variable-length `String`s. Use it for
+//!   single-field index keys and range bounds.
+//! * The **framed composite key** ([`IndexDef::index_key`] /
+//!   [`CompoundIndexDef::index_key`]) prepends a `u32` length to each field's
+//!   bytes. It is for **equality and leftmost-prefix matching**, *not* total
+//!   ordering: the length prefix means a shorter `String` value sorts before a
+//!   longer one regardless of content (see "Composite framing" below).
 //!
 //! Axon's storage layer (`axon-storage`) maintains its own index structures
 //! (`IndexValue`, `OrderedFloat`, compound keys). This module is the canonical
@@ -69,10 +80,19 @@
 //!
 //! Length-prefixing makes the encoding **leftmost-prefix friendly**: the full
 //! key for fields `[a, b, c]` has the key for `[a]` (and `[a, b]`) as an exact
-//! byte prefix, so a range scan on a prefix of the leading fields is a byte
-//! range scan. Because `String` values are length-delimited by the `u32`
-//! prefix rather than a terminator, no escaping is required and per-field
-//! ordering is preserved within the composite.
+//! byte prefix, so an *equality* match on a prefix of the leading fields is a
+//! byte-prefix match. Because `String` values are length-delimited by the `u32`
+//! prefix rather than a terminator, no escaping is required.
+//!
+//! The framed composite key is for **equality and leftmost-prefix matching**,
+//! **not** for total ordering. The leading `u32` length is *not* a total order
+//! across variable-length (`String`) field values: a shorter value frames to a
+//! smaller length prefix and therefore sorts before a longer one regardless of
+//! content (e.g. `"z"` frames to `[0,0,0,1,'z']` and `"aa"` to
+//! `[0,0,0,2,'a','a']`, so `memcmp` puts `"z" < "aa"` — the reverse of true
+//! string order). For ordered scans and range bounds, encode each field with
+//! the unframed [`encode_index_value`] (the order-preserving primitive) rather
+//! than relying on the framed composite to sort.
 //!
 //! # Store SSOT
 //!
@@ -213,6 +233,37 @@ fn encode_value(
         },
         IndexType::Datetime => encode_datetime(field, value),
     }
+}
+
+/// Encode a single present, non-null JSON value to its **unframed**,
+/// order-preserving byte form for the declared [`IndexType`].
+///
+/// These bytes are the canonical ordering primitive: lexicographic comparison
+/// (`memcmp`) of the returned bytes reproduces the natural ordering of the
+/// underlying typed values for **every** index type, *including* variable-length
+/// `String` values (where `"aa"` sorts after `"z"`, byte-for-byte). See the
+/// module docs for the per-type encoding.
+///
+/// This is the function to use for **single-field index keys and range bounds**.
+/// Do **not** use [`IndexDef::index_key`] for ordering: that function frames each
+/// value with a leading `u32` big-endian length for composite / leftmost-prefix
+/// matching, and that framing is *not* a total order across variable-length
+/// values (a shorter `String` always sorts before a longer one regardless of
+/// content).
+///
+/// # Errors
+///
+/// Returns `Err(IndexKeyError::TypeMismatch)` if `value` is not coercible to the
+/// declared type, or `Err(IndexKeyError::Unencodable)` for a value of the right
+/// JSON kind that cannot be represented (e.g. an unparseable RFC 3339 datetime).
+///
+/// The caller is responsible for handling missing / `null` values (sparse) before
+/// calling this function: a `null` JSON value is *not* "present" and yields
+/// `Err(IndexKeyError::TypeMismatch)` here (it is never a sortable indexed value
+/// in Axon). The error's `field` is reported as `"value"`; callers that need a
+/// specific dotted path map the error to their own policy.
+pub fn encode_index_value(value: &Value, index_type: &IndexType) -> Result<Vec<u8>, IndexKeyError> {
+    encode_value("value", value, index_type)
 }
 
 fn type_mismatch(field: &str, expected: &IndexType, value: &Value) -> IndexKeyError {
@@ -576,6 +627,159 @@ mod tests {
         assert_sorted_encodes_sorted(
             IndexType::String,
             &[json!(""), json!("a"), json!("ab"), json!("b"), json!("z")],
+        );
+    }
+
+    /// Encode a bare scalar through the public unframed primitive.
+    fn enc_unframed(ty: IndexType, value: Value) -> Vec<u8> {
+        encode_index_value(&value, &ty).unwrap()
+    }
+
+    fn assert_unframed_sorted(ty: IndexType, ascending: &[Value]) {
+        let encoded: Vec<Vec<u8>> = ascending
+            .iter()
+            .map(|v| enc_unframed(ty.clone(), v.clone()))
+            .collect();
+        for win in encoded.windows(2) {
+            assert!(
+                win[0] < win[1],
+                "expected {:?} < {:?} for type {ty}",
+                win[0],
+                win[1]
+            );
+        }
+    }
+
+    #[test]
+    fn encode_index_value_string_order_is_byte_order() {
+        // Variable-length strings: the unframed primitive sorts these correctly
+        // (byte-for-byte), including the `"z" < "aa"` case that the *framed*
+        // composite key gets wrong. `""` < `"a"` < `"aa"` < `"ab"` < `"b"` < `"z"`.
+        assert_unframed_sorted(
+            IndexType::String,
+            &[
+                json!(""),
+                json!("a"),
+                json!("aa"),
+                json!("ab"),
+                json!("b"),
+                json!("z"),
+            ],
+        );
+    }
+
+    #[test]
+    fn encode_index_value_integer_order() {
+        assert_unframed_sorted(
+            IndexType::Integer,
+            &[
+                json!(i64::MIN),
+                json!(-1000),
+                json!(-1),
+                json!(0),
+                json!(1),
+                json!(1000),
+                json!(i64::MAX),
+            ],
+        );
+    }
+
+    #[test]
+    fn encode_index_value_float_order() {
+        assert_unframed_sorted(
+            IndexType::Float,
+            &[
+                json!(-1e10),
+                json!(-1.5),
+                json!(-0.0),
+                json!(0.0),
+                json!(1.5),
+                json!(1e10),
+            ],
+        );
+        // -0.0 sorts strictly before +0.0.
+        let neg_zero = enc_unframed(IndexType::Float, json!(-0.0));
+        let pos_zero = enc_unframed(IndexType::Float, json!(0.0));
+        assert!(neg_zero < pos_zero, "-0.0 should sort before +0.0");
+    }
+
+    #[test]
+    fn encode_index_value_boolean_order() {
+        assert_unframed_sorted(IndexType::Boolean, &[json!(false), json!(true)]);
+        assert_eq!(enc_unframed(IndexType::Boolean, json!(false)), vec![0x00]);
+        assert_eq!(enc_unframed(IndexType::Boolean, json!(true)), vec![0x01]);
+    }
+
+    #[test]
+    fn encode_index_value_datetime_string_and_numeric_agree_and_order() {
+        let from_str = enc_unframed(IndexType::Datetime, json!("1970-01-01T00:00:01Z"));
+        let from_num = enc_unframed(IndexType::Datetime, json!(1_000_000_000i64));
+        assert_eq!(from_str, from_num, "string and numeric ns must agree");
+
+        assert_unframed_sorted(
+            IndexType::Datetime,
+            &[
+                json!("1969-12-31T23:59:59Z"),
+                json!("1970-01-01T00:00:00Z"),
+                json!("2026-06-28T12:00:00Z"),
+                json!("2026-06-28T12:00:00.500Z"),
+            ],
+        );
+    }
+
+    #[test]
+    fn encode_index_value_type_mismatch_is_error() {
+        let err = encode_index_value(&json!("not-an-int"), &IndexType::Integer).unwrap_err();
+        assert!(matches!(
+            err,
+            IndexKeyError::TypeMismatch {
+                expected: IndexType::Integer,
+                found: "string",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn encode_index_value_null_is_error_not_present() {
+        // `encode_index_value` is for *present, non-null* values; the caller
+        // checks null/missing BEFORE calling. A `null` JSON value is "not
+        // present" and so is rejected here as a type mismatch (found "null").
+        let err = encode_index_value(&Value::Null, &IndexType::String).unwrap_err();
+        assert!(matches!(
+            err,
+            IndexKeyError::TypeMismatch { found: "null", .. }
+        ));
+    }
+
+    #[test]
+    fn framed_composite_is_not_total_order_across_string_lengths() {
+        // The framed single-field key prepends a `u32` BE length, so by byte
+        // compare a *shorter* string sorts before a *longer* one regardless of
+        // content: `"z"` (len 1) frames to [0,0,0,1,'z'] and `"aa"` (len 2) to
+        // [0,0,0,2,'a','a'], so framed("z") < framed("aa") — the REVERSE of true
+        // string order ("aa" < "z"). This is why `encode_index_value` (unframed)
+        // is the ordering primitive and the framed key is equality/prefix-only.
+        let framed_z = def("v", IndexType::String)
+            .index_key(&json!({"v": "z"}))
+            .unwrap()
+            .unwrap();
+        let framed_aa = def("v", IndexType::String)
+            .index_key(&json!({"v": "aa"}))
+            .unwrap()
+            .unwrap();
+        // Framed order is "wrong" (length dominates): "z" < "aa".
+        assert!(
+            framed_z < framed_aa,
+            "framed key length-prefix makes the shorter value sort first"
+        );
+
+        // The unframed primitive gets it right: "aa" < "z".
+        let unframed_z = encode_index_value(&json!("z"), &IndexType::String).unwrap();
+        let unframed_aa = encode_index_value(&json!("aa"), &IndexType::String).unwrap();
+        assert!(
+            unframed_aa < unframed_z,
+            "unframed primitive preserves true string order"
         );
     }
 

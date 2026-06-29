@@ -1981,19 +1981,10 @@ mod index_key_conformance {
     use axon_schema::schema::{IndexDef, IndexType};
     use serde_json::{json, Value};
 
-    /// Canonical byte key for a single scalar via the esf SSOT encoder, with the
-    /// 4-byte length frame stripped for direct ordering comparison.
+    /// Canonical unframed byte key for a single scalar via the esf SSOT encoder
+    /// (the order-preserving primitive) for direct ordering comparison.
     fn esf_bytes(ty: IndexType, value: &Value) -> Vec<u8> {
-        let def = IndexDef {
-            field: "v".to_string(),
-            index_type: ty,
-            unique: false,
-        };
-        let framed = def
-            .index_key(&json!({ "v": value }))
-            .expect("encodable")
-            .expect("present");
-        framed[4..].to_vec()
+        axon_esf::encode_index_value(value, &ty).expect("encodable")
     }
 
     /// Storage-layer typed value for the same scalar.
