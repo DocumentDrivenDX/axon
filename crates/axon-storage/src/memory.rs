@@ -1077,12 +1077,16 @@ impl StorageAdapter for MemoryStorageAdapter {
                 Bound::Excluded((collection_key.clone(), field.to_string(), v.clone()))
             }
             Bound::Unbounded => {
-                // Start from (collection, field, min-possible-value).
-                // We use Included with a synthetic minimum key.
+                // Start from (collection, field, global-minimum value). `IndexValue`
+                // variant order is String < Integer < Float < Boolean < Datetime, so
+                // the smallest possible value is the empty String — it sorts at or
+                // before every value of any type. (Using `Boolean(false)` here was a
+                // bug: it sorts AFTER all String/Integer/Float entries, so an
+                // unbounded-lower range over a non-Boolean field dropped them.)
                 Bound::Included((
                     collection_key.clone(),
                     field.to_string(),
-                    IndexValue::Boolean(false),
+                    IndexValue::String(String::new()),
                 ))
             }
         };
@@ -2343,6 +2347,75 @@ mod tests {
                 )
                 .expect("test operation should succeed");
             assert_eq!(results.len(), 3);
+        }
+
+        #[test]
+        fn index_range_unbounded_lower_includes_integer_entries() {
+            // Regression: an unbounded LOWER bound over an Integer field must
+            // include the smallest entries. The old synthetic minimum
+            // (`Boolean(false)`) sorted after all Integer values, so this range
+            // wrongly returned nothing.
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![priority_index()];
+            for i in 1..=5 {
+                let eid = EntityId::new(format!("t-{i:03}"));
+                store
+                    .update_indexes(&col, &eid, None, &json!({"priority": i}), &indexes)
+                    .expect("index update should succeed");
+            }
+
+            // Range: priority <= 3  (unbounded lower) → {1, 2, 3}
+            let results = store
+                .index_range(
+                    &col,
+                    "priority",
+                    std::ops::Bound::Unbounded,
+                    std::ops::Bound::Included(&IndexValue::Integer(3)),
+                )
+                .expect("range should succeed");
+            assert_eq!(results.len(), 3, "unbounded-lower must include 1,2,3");
+
+            // Fully unbounded → all 5.
+            let all = store
+                .index_range(
+                    &col,
+                    "priority",
+                    std::ops::Bound::Unbounded,
+                    std::ops::Bound::Unbounded,
+                )
+                .expect("range should succeed");
+            assert_eq!(all.len(), 5, "fully-unbounded must include every entry");
+        }
+
+        #[test]
+        fn index_range_unbounded_lower_includes_string_entries() {
+            // Same regression for a String field, including the empty string
+            // (which is the synthetic minimum itself — it must still be included).
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![status_index()];
+            for (i, s) in ["", "alpha", "mid", "zeta"].iter().enumerate() {
+                let eid = EntityId::new(format!("t-{i:03}"));
+                store
+                    .update_indexes(&col, &eid, None, &json!({"status": s}), &indexes)
+                    .expect("index update should succeed");
+            }
+
+            // Range: status <= "mid" (unbounded lower) → {"", "alpha", "mid"}
+            let results = store
+                .index_range(
+                    &col,
+                    "status",
+                    std::ops::Bound::Unbounded,
+                    std::ops::Bound::Included(&IndexValue::String("mid".into())),
+                )
+                .expect("range should succeed");
+            assert_eq!(
+                results.len(),
+                3,
+                "unbounded-lower must include the empty string and all values <= mid"
+            );
         }
 
         #[test]
