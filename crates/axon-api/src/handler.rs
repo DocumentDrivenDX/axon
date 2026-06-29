@@ -73,7 +73,8 @@ use axon_schema::{
     LinkDirection, OperationPolicy, PolicyDecision, PolicyOperation, PolicyPlan, PolicyPredicate,
 };
 use axon_storage::adapter::{
-    extract_index_value, extract_index_values, resolve_field_path, StorageAdapter,
+    extract_compound_key, extract_index_value, extract_index_values, resolve_field_path,
+    StorageAdapter,
 };
 
 use crate::intent::{
@@ -8934,8 +8935,24 @@ fn is_known_lifecycle_state(lifecycle: &axon_schema::schema::LifecycleDef, state
 
 /// Check unique index constraints for an entity's data before write.
 ///
-/// Iterates over all unique indexes in the schema and checks whether any other
-/// entity in the collection already has the same indexed value.
+/// Iterates over all unique single-field and compound indexes in the schema
+/// and checks whether any *other* entity in the collection already has the same
+/// indexed value(s). This is a PRE-VALIDATION gate: callers invoke it *before*
+/// `storage.put`, so a unique conflict is reported before anything is written
+/// (FEAT-013, US-032/US-033). The post-put `update_indexes` /
+/// `update_compound_indexes` calls remain the authoritative maintenance step
+/// and the same conflict is re-detected there for the transaction path's
+/// adapters; this gate just ensures the failure happens before the put.
+///
+/// Per design (axon-d249a48f) single-entity mutations are intentionally NOT
+/// wrapped in `begin_tx`/`commit_tx` (the in-memory adapter clones the entire
+/// store per `begin_tx`, a per-write perf regression). The pre-check is sound
+/// because the adapter is held `&mut self` (exclusive) and SQL uses a single
+/// connection, so there is no concurrency between this check and the
+/// subsequent `put`. RESIDUAL WINDOW (accepted): a rare *transient* storage
+/// error occurring strictly between `put` and the post-put `update_indexes`
+/// would leave the entity written but unindexed; this is not rolled back, as
+/// full transactional wrapping was rejected to preserve in-memory performance.
 fn check_unique_constraints<S: StorageAdapter>(
     storage: &S,
     collection: &CollectionId,
@@ -8952,6 +8969,24 @@ fn check_unique_constraints<S: StorageAdapter>(
                 return Err(AxonError::UniqueViolation {
                     field: idx.field.clone(),
                     value: val.to_string(),
+                });
+            }
+        }
+    }
+    // Compound unique indexes: a conflict exists if the exact compound key is
+    // already held by a *different* entity. Mirrors the post-put violation
+    // surfaced by `update_compound_indexes` (same `field`/`value` formatting).
+    for (idx_pos, idx) in schema.compound_indexes.iter().enumerate() {
+        if !idx.unique {
+            continue;
+        }
+        if let Some(key) = extract_compound_key(data, &idx.fields) {
+            let holders = storage.compound_index_lookup(collection, idx_pos, &key)?;
+            if holders.iter().any(|eid| eid != entity_id) {
+                let field_names: Vec<&str> = idx.fields.iter().map(|f| f.field.as_str()).collect();
+                return Err(AxonError::UniqueViolation {
+                    field: field_names.join(", "),
+                    value: format!("{key:?}"),
                 });
             }
         }
@@ -23292,5 +23327,340 @@ ORDER BY b.priority DESC, b.updated_at DESC
             }),
             "updating note",
         );
+    }
+
+    // ── Index consistency across the transaction & single-mutation paths ──────
+    //
+    // Regression coverage for axon-d249a48f. These tests run the SAME body over
+    // BOTH the in-memory and SQLite adapters so the behaviour is verified on the
+    // backend that actually persists secondary indexes (SQLite) as well as the
+    // in-memory adapter.
+    //
+    // 1. Multi-op transactions must maintain secondary indexes (Gap 1): an
+    //    entity created/updated/deleted inside a `commit_transaction` must be
+    //    reflected in an index-accelerated query. (Fails before the fix: the
+    //    transaction path never called `update_indexes`, so the indexed query
+    //    returned the wrong rows.)
+    // 2. Single-entity create pre-validates unique constraints BEFORE the put
+    //    (Gap 2): a duplicate unique value returns `UniqueViolation` and the new
+    //    entity is NOT persisted.
+    // 3. A failed/aborted transaction leaves indexes unchanged (rollback).
+    #[allow(clippy::unwrap_used)]
+    mod index_consistency {
+        use super::*;
+        use axon_storage::sqlite::SqliteStorageAdapter;
+
+        fn indexed_schema(collection: &str, unique: bool) -> CollectionSchema {
+            let mut schema = CollectionSchema::new(CollectionId::new(collection));
+            schema.indexes = vec![IndexDef {
+                field: "email".into(),
+                index_type: IndexType::String,
+                unique,
+            }];
+            schema
+        }
+
+        /// Equality query on the indexed `email` field. With an indexed eq
+        /// filter the query path uses `try_index_lookup`, so a missing/stale
+        /// index entry surfaces as a wrong result set.
+        fn query_by_email<S: StorageAdapter>(
+            h: &AxonHandler<S>,
+            collection: &CollectionId,
+            email: &str,
+        ) -> Vec<EntityId> {
+            let resp = h
+                .query_entities(QueryEntitiesRequest {
+                    collection: collection.clone(),
+                    filter: Some(FilterNode::Field(FieldFilter {
+                        field: "email".into(),
+                        op: crate::request::FilterOp::Eq,
+                        value: json!(email),
+                    })),
+                    ..Default::default()
+                })
+                .expect("indexed query");
+            resp.entities.into_iter().map(|e| e.id).collect()
+        }
+
+        fn transaction_maintains_index<S: StorageAdapter>(mut h: AxonHandler<S>) {
+            let col = CollectionId::new("tx_idx_users");
+            h.put_schema(indexed_schema(col.as_str(), false))
+                .expect("schema");
+
+            // ── CREATE inside a multi-op transaction ──────────────────────
+            let mut tx = crate::transaction::Transaction::new();
+            let mut e1 = Entity::new(
+                col.clone(),
+                EntityId::new("u-1"),
+                json!({"email": "a@x.io"}),
+            );
+            e1.version = 1;
+            let mut e2 = Entity::new(
+                col.clone(),
+                EntityId::new("u-2"),
+                json!({"email": "b@x.io"}),
+            );
+            e2.version = 1;
+            tx.create(e1).unwrap();
+            tx.create(e2).unwrap();
+            h.commit_transaction(tx, Some("tester".into()), None)
+                .expect("commit creates");
+
+            // Indexed query must find the transaction-created entity.
+            assert_eq!(
+                query_by_email(&h, &col, "a@x.io"),
+                vec![EntityId::new("u-1")],
+                "transaction-created entity must be in the secondary index"
+            );
+
+            // ── UPDATE inside a transaction moves it in the index ─────────
+            let current = h
+                .storage_ref()
+                .get(&col, &EntityId::new("u-1"))
+                .unwrap()
+                .unwrap();
+            let mut tx = crate::transaction::Transaction::new();
+            let mut updated = Entity::new(
+                col.clone(),
+                EntityId::new("u-1"),
+                json!({"email": "z@x.io"}),
+            );
+            updated.version = current.version;
+            tx.update(updated, current.version, Some(json!({"email": "a@x.io"})))
+                .unwrap();
+            h.commit_transaction(tx, Some("tester".into()), None)
+                .expect("commit update");
+
+            assert!(
+                query_by_email(&h, &col, "a@x.io").is_empty(),
+                "old index value must be removed after a transaction update"
+            );
+            assert_eq!(
+                query_by_email(&h, &col, "z@x.io"),
+                vec![EntityId::new("u-1")],
+                "new index value must be present after a transaction update"
+            );
+
+            // ── DELETE inside a transaction removes it from the index ─────
+            let current = h
+                .storage_ref()
+                .get(&col, &EntityId::new("u-1"))
+                .unwrap()
+                .unwrap();
+            let mut tx = crate::transaction::Transaction::new();
+            tx.delete(
+                col.clone(),
+                EntityId::new("u-1"),
+                current.version,
+                Some(json!({"email": "z@x.io"})),
+            )
+            .unwrap();
+            h.commit_transaction(tx, Some("tester".into()), None)
+                .expect("commit delete");
+
+            assert!(
+                query_by_email(&h, &col, "z@x.io").is_empty(),
+                "deleted entity must be removed from the secondary index"
+            );
+            // The untouched entity is still indexed.
+            assert_eq!(
+                query_by_email(&h, &col, "b@x.io"),
+                vec![EntityId::new("u-2")]
+            );
+        }
+
+        /// A transaction UPDATE whose staged op carries NO `data_before` must
+        /// still remove the stale old index key. Index maintenance reads the
+        /// authoritative pre-image from storage (not the caller-supplied audit
+        /// snapshot), so the in-memory adapter — which only removes old entries
+        /// when given `old_data` — does not leak a stale entry. Without that,
+        /// `query_by_email(.., "old@x.io")` would still return `u-1` on memory.
+        fn transaction_update_without_data_before_clears_old_key<S: StorageAdapter>(
+            mut h: AxonHandler<S>,
+        ) {
+            let col = CollectionId::new("tx_idx_nodb_users");
+            h.put_schema(indexed_schema(col.as_str(), false))
+                .expect("schema");
+
+            let mut e = Entity::new(
+                col.clone(),
+                EntityId::new("u-1"),
+                json!({"email": "old@x.io"}),
+            );
+            e.version = 1;
+            let mut tx = crate::transaction::Transaction::new();
+            tx.create(e).unwrap();
+            h.commit_transaction(tx, Some("tester".into()), None)
+                .expect("commit create");
+
+            let current = h
+                .storage_ref()
+                .get(&col, &EntityId::new("u-1"))
+                .unwrap()
+                .unwrap();
+            let mut updated = Entity::new(
+                col.clone(),
+                EntityId::new("u-1"),
+                json!({"email": "new@x.io"}),
+            );
+            updated.version = current.version;
+            // No data_before pre-image staged.
+            let mut tx = crate::transaction::Transaction::new();
+            tx.update(updated, current.version, None).unwrap();
+            h.commit_transaction(tx, Some("tester".into()), None)
+                .expect("commit update");
+
+            assert!(
+                query_by_email(&h, &col, "old@x.io").is_empty(),
+                "stale index key must be cleared even when the staged update carries no data_before"
+            );
+            assert_eq!(
+                query_by_email(&h, &col, "new@x.io"),
+                vec![EntityId::new("u-1")],
+                "new index value must be present"
+            );
+        }
+
+        fn create_pre_validates_unique<S: StorageAdapter>(mut h: AxonHandler<S>) {
+            let col = CollectionId::new("unique_users");
+            h.put_schema(indexed_schema(col.as_str(), true))
+                .expect("schema");
+
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("u-1"),
+                data: json!({"email": "dup@x.io"}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("first create");
+
+            let err = h
+                .create_entity(CreateEntityRequest {
+                    collection: col.clone(),
+                    id: EntityId::new("u-2"),
+                    data: json!({"email": "dup@x.io"}),
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect_err("duplicate unique value must be rejected");
+            assert!(
+                matches!(err, AxonError::UniqueViolation { .. }),
+                "expected UniqueViolation, got {err:?}"
+            );
+
+            // The conflicting entity must NOT have been persisted (pre-validation
+            // happens before the put).
+            assert!(
+                h.storage_ref()
+                    .get(&col, &EntityId::new("u-2"))
+                    .unwrap()
+                    .is_none(),
+                "entity must not be written when the unique pre-check fails"
+            );
+        }
+
+        #[test]
+        fn transaction_maintains_index_memory() {
+            transaction_maintains_index(AxonHandler::new(MemoryStorageAdapter::default()));
+        }
+
+        #[test]
+        fn transaction_maintains_index_sqlite() {
+            transaction_maintains_index(AxonHandler::new(
+                SqliteStorageAdapter::open_in_memory().expect("sqlite"),
+            ));
+        }
+
+        #[test]
+        fn transaction_update_without_data_before_clears_old_key_memory() {
+            transaction_update_without_data_before_clears_old_key(AxonHandler::new(
+                MemoryStorageAdapter::default(),
+            ));
+        }
+
+        #[test]
+        fn transaction_update_without_data_before_clears_old_key_sqlite() {
+            transaction_update_without_data_before_clears_old_key(AxonHandler::new(
+                SqliteStorageAdapter::open_in_memory().expect("sqlite"),
+            ));
+        }
+
+        #[test]
+        fn create_pre_validates_unique_memory() {
+            create_pre_validates_unique(AxonHandler::new(MemoryStorageAdapter::default()));
+        }
+
+        #[test]
+        fn create_pre_validates_unique_sqlite() {
+            create_pre_validates_unique(AxonHandler::new(
+                SqliteStorageAdapter::open_in_memory().expect("sqlite"),
+            ));
+        }
+
+        /// A failed transaction must leave secondary indexes unchanged
+        /// (rollback). On SQLite the maintenance runs inside the storage
+        /// transaction, so an aborted commit undoes both the entity writes and
+        /// their index entries. We force the abort with a second op that fails
+        /// the version check (`u-1` already exists at version 1, but the staged
+        /// create expects it absent), so the whole transaction aborts.
+        #[test]
+        fn failed_transaction_leaves_index_unchanged_sqlite() {
+            let mut h = AxonHandler::new(SqliteStorageAdapter::open_in_memory().expect("sqlite"));
+            let col = CollectionId::new("tx_rollback_users");
+            h.put_schema(indexed_schema(col.as_str(), false))
+                .expect("schema");
+
+            // Seed an existing entity so a staged create for the same id fails
+            // the "must not exist" version check.
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("u-1"),
+                data: json!({"email": "exists@x.io"}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("seed");
+
+            let mut tx = crate::transaction::Transaction::new();
+            // First op would create a brand-new, well-formed entity...
+            let mut good = Entity::new(
+                col.clone(),
+                EntityId::new("u-2"),
+                json!({"email": "new@x.io"}),
+            );
+            good.version = 1;
+            tx.create(good).unwrap();
+            // ...but this op collides with the existing u-1 and aborts the txn.
+            let mut dup = Entity::new(
+                col.clone(),
+                EntityId::new("u-1"),
+                json!({"email": "other@x.io"}),
+            );
+            dup.version = 1;
+            tx.create(dup).unwrap();
+
+            let err = h
+                .commit_transaction(tx, Some("tester".into()), None)
+                .expect_err("transaction must abort on the version conflict");
+            assert!(matches!(err, AxonError::ConflictingVersion { .. }));
+
+            // Neither the entity nor its index entry from the aborted txn may
+            // be observable.
+            assert!(
+                h.storage_ref()
+                    .get(&col, &EntityId::new("u-2"))
+                    .unwrap()
+                    .is_none(),
+                "aborted transaction must not persist the entity"
+            );
+            assert!(
+                query_by_email(&h, &col, "new@x.io").is_empty(),
+                "aborted transaction must not leave a secondary-index entry"
+            );
+        }
     }
 }
