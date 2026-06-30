@@ -376,7 +376,7 @@ mod tests {
 
     use super::*;
     use axon_core::types::Entity;
-    use axon_schema::schema::{IndexDef, IndexType};
+    use axon_schema::schema::{CollectionSchema, IndexDef, IndexType};
     use axon_storage::MemoryStorageAdapter;
     use serde_json::json;
 
@@ -477,7 +477,11 @@ mod tests {
         let schema = ddx_beads_schema();
         let mut storage = MemoryStorageAdapter::default();
         let col = CollectionId::new("ddx_beads");
-        let indexes = [status_index(), priority_index(), id_index()];
+        // Register the schema's indexes so `put` maintains them automatically
+        // (the storage primitives own index maintenance — ADR-030).
+        let mut col_schema = CollectionSchema::new(col.clone());
+        col_schema.indexes = vec![status_index(), priority_index(), id_index()];
+        storage.put_schema(&col_schema).unwrap();
 
         for (id, status, priority, title) in [
             ("bead-a", "open", 5_i64, "first"),
@@ -490,9 +494,6 @@ mod tests {
             });
             storage
                 .put(Entity::new(col.clone(), EntityId::new(id), data.clone()))
-                .unwrap();
-            storage
-                .update_indexes(&col, &EntityId::new(id), None, &data, &indexes)
                 .unwrap();
         }
 

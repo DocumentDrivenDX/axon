@@ -890,11 +890,13 @@ macro_rules! storage_conformance_tests {
 
             // ── Secondary indexes (FEAT-013) ─────────────────────────────
             //
-            // These run identically on every backend. The persisted SQL
-            // backends (SQLite, Postgres) enforce a foreign key from the index
-            // tables to `collections`, so every index test registers `tasks()`
-            // first. The in-memory adapter does not require registration but is
-            // unaffected by the extra call, keeping a single source of truth.
+            // These run identically on every backend. Index maintenance is now
+            // owned by the write primitives (`put` / `compare_and_swap` /
+            // `delete`): each looks up the collection's index defs from its
+            // stamped schema and maintains the index atomically. So every test
+            // here registers a schema declaring the indexes via `put_schema`,
+            // writes entities through the primitives, and asserts via the read
+            // methods (`index_lookup` / `index_range` / `compound_index_*`).
 
             // Local index-def helpers (typed at the adapter level, no axon-api).
             fn status_index() -> axon_schema::schema::IndexDef {
@@ -945,15 +947,31 @@ macro_rules! storage_conformance_tests {
                 }
             }
 
+            // Register a schema for `tasks()` declaring the given single +
+            // compound indexes, so write primitives maintain them.
+            fn put_indexed_schema(
+                s: &mut impl StorageAdapter,
+                col: &CollectionId,
+                single: Vec<axon_schema::schema::IndexDef>,
+                compound: Vec<axon_schema::schema::CompoundIndexDef>,
+            ) {
+                let mut schema = CollectionSchema::new(col.clone());
+                schema.indexes = single;
+                schema.compound_indexes = compound;
+                s.put_schema(&schema).expect("put_schema should succeed");
+            }
+
+            fn task_entity(col: &CollectionId, id: &str, data: serde_json::Value) -> Entity {
+                Entity::new(col.clone(), EntityId::new(id), data)
+            }
+
             #[test]
             fn index_equality_lookup_matches_and_misses() {
                 let Some(mut s) = maybe_store() else { return; };
-                s.register_collection(&tasks()).expect("register collection");
-                let indexes = vec![status_index()];
+                put_indexed_schema(&mut s, &tasks(), vec![status_index()], vec![]);
 
-                let eid = EntityId::new("t-001");
-                s.update_indexes(&tasks(), &eid, None, &json!({"status": "pending"}), &indexes)
-                    .expect("index update should succeed");
+                s.put(task_entity(&tasks(), "t-001", json!({"status": "pending"})))
+                    .expect("put should succeed");
 
                 let hit = s
                     .index_lookup(&tasks(), "status", &$crate::IndexValue::String("pending".into()))
@@ -969,20 +987,13 @@ macro_rules! storage_conformance_tests {
             #[test]
             fn index_range_bounds_and_ordering() {
                 let Some(mut s) = maybe_store() else { return; };
-                s.register_collection(&tasks()).expect("register collection");
-                let indexes = vec![priority_index()];
+                put_indexed_schema(&mut s, &tasks(), vec![priority_index()], vec![]);
 
                 // Insert priorities 1..=5 with ids that do NOT sort the same as
                 // the priority order, so we can prove value-then-id ordering.
                 for (id, p) in [("e", 1), ("d", 2), ("c", 3), ("b", 4), ("a", 5)] {
-                    s.update_indexes(
-                        &tasks(),
-                        &EntityId::new(id),
-                        None,
-                        &json!({"priority": p}),
-                        &indexes,
-                    )
-                    .expect("index update should succeed");
+                    s.put(task_entity(&tasks(), id, json!({"priority": p})))
+                        .expect("put should succeed");
                 }
 
                 // Unbounded-lower `<= 3` must include the smallest entries
@@ -1023,50 +1034,41 @@ macro_rules! storage_conformance_tests {
             #[test]
             fn unique_index_rejects_duplicate_but_allows_self_update() {
                 let Some(mut s) = maybe_store() else { return; };
-                s.register_collection(&tasks()).expect("register collection");
-                let indexes = vec![unique_email_index()];
+                put_indexed_schema(&mut s, &tasks(), vec![unique_email_index()], vec![]);
 
-                let owner = EntityId::new("u-001");
-                let owner_data = json!({"email": "alice@example.com"});
-                s.update_indexes(&tasks(), &owner, None, &owner_data, &indexes)
+                s.put(task_entity(&tasks(), "u-001", json!({"email": "alice@example.com"})))
                     .expect("first unique insert should succeed");
 
                 // A different entity with the same value → UniqueViolation.
-                let other = EntityId::new("u-002");
                 let err = s
-                    .update_indexes(&tasks(), &other, None, &json!({"email": "alice@example.com"}), &indexes)
+                    .put(task_entity(&tasks(), "u-002", json!({"email": "alice@example.com"})))
                     .expect_err("duplicate unique value must fail");
                 assert!(
                     matches!(err, AxonError::UniqueViolation { .. }),
                     "expected UniqueViolation, got: {err}"
                 );
 
-                // The same entity updating its own value is allowed.
-                s.update_indexes(
+                // The same entity re-writing its own value is allowed (a replace
+                // `put` that keeps the unique value must not self-conflict).
+                s.put(task_entity(
                     &tasks(),
-                    &owner,
-                    Some(&owner_data),
-                    &json!({"email": "alice@example.com"}),
-                    &indexes,
-                )
+                    "u-001",
+                    json!({"email": "alice@example.com", "name": "Alice"}),
+                ))
                 .expect("same-entity update with its own value must be allowed");
             }
 
             #[test]
             fn array_index_finds_entity_by_each_element() {
                 let Some(mut s) = maybe_store() else { return; };
-                s.register_collection(&tasks()).expect("register collection");
-                let indexes = vec![tags_index()];
+                put_indexed_schema(&mut s, &tasks(), vec![tags_index()], vec![]);
 
-                let eid = EntityId::new("t-001");
-                s.update_indexes(
+                s.put(task_entity(
                     &tasks(),
-                    &eid,
-                    None,
-                    &json!({"tags": ["red", "green", "blue"]}),
-                    &indexes,
-                )
-                .expect("array index update should succeed");
+                    "t-001",
+                    json!({"tags": ["red", "green", "blue"]}),
+                ))
+                .expect("put should succeed");
 
                 for tag in ["red", "green", "blue"] {
                     let hit = s
@@ -1089,16 +1091,15 @@ macro_rules! storage_conformance_tests {
             #[test]
             fn null_and_type_mismatch_values_are_not_indexed() {
                 let Some(mut s) = maybe_store() else { return; };
-                s.register_collection(&tasks()).expect("register collection");
-                let indexes = vec![priority_index()];
+                put_indexed_schema(&mut s, &tasks(), vec![priority_index()], vec![]);
 
                 // `priority` is declared Integer. A null and a string value are
                 // both "not indexed" — no rows, no error (FEAT-013).
-                s.update_indexes(&tasks(), &EntityId::new("t-null"), None, &json!({"priority": null}), &indexes)
+                s.put(task_entity(&tasks(), "t-null", json!({"priority": null})))
                     .expect("null value must not error");
-                s.update_indexes(&tasks(), &EntityId::new("t-str"), None, &json!({"priority": "high"}), &indexes)
+                s.put(task_entity(&tasks(), "t-str", json!({"priority": "high"})))
                     .expect("type-mismatched value must not error");
-                s.update_indexes(&tasks(), &EntityId::new("t-missing"), None, &json!({"other": 1}), &indexes)
+                s.put(task_entity(&tasks(), "t-missing", json!({"other": 1})))
                     .expect("missing field must not error");
 
                 // Nothing was indexed: a fully-unbounded range yields no ids.
@@ -1116,11 +1117,10 @@ macro_rules! storage_conformance_tests {
             #[test]
             fn drop_indexes_clears_entries() {
                 let Some(mut s) = maybe_store() else { return; };
-                s.register_collection(&tasks()).expect("register collection");
-                let indexes = vec![status_index()];
+                put_indexed_schema(&mut s, &tasks(), vec![status_index()], vec![]);
 
-                s.update_indexes(&tasks(), &EntityId::new("t-001"), None, &json!({"status": "pending"}), &indexes)
-                    .expect("index update should succeed");
+                s.put(task_entity(&tasks(), "t-001", json!({"status": "pending"})))
+                    .expect("put should succeed");
                 assert_eq!(
                     s.index_lookup(&tasks(), "status", &$crate::IndexValue::String("pending".into()))
                         .expect("lookup"),
@@ -1138,22 +1138,19 @@ macro_rules! storage_conformance_tests {
             #[test]
             fn compound_index_lookup_prefix_sparse_and_unique() {
                 let Some(mut s) = maybe_store() else { return; };
-                s.register_collection(&tasks()).expect("register collection");
-                let indexes = vec![status_priority_index()];
+                put_indexed_schema(&mut s, &tasks(), vec![], vec![status_priority_index()]);
 
                 for (id, status, priority) in [
                     ("t-001", "pending", 1),
                     ("t-002", "pending", 2),
                     ("t-003", "done", 1),
                 ] {
-                    s.update_compound_indexes(
+                    s.put(task_entity(
                         &tasks(),
-                        &EntityId::new(id),
-                        None,
-                        &json!({"status": status, "priority": priority}),
-                        &indexes,
-                    )
-                    .expect("compound index update should succeed");
+                        id,
+                        json!({"status": status, "priority": priority}),
+                    ))
+                    .expect("put should succeed");
                 }
 
                 // Exact lookup on (pending, 1).
@@ -1182,14 +1179,8 @@ macro_rules! storage_conformance_tests {
                 assert_eq!(prefix_ids, vec!["t-001".to_string(), "t-002".to_string()]);
 
                 // Sparse: an entity missing one compound field has no entry.
-                s.update_compound_indexes(
-                    &tasks(),
-                    &EntityId::new("t-sparse"),
-                    None,
-                    &json!({"status": "blocked"}),
-                    &indexes,
-                )
-                .expect("sparse compound update must not error");
+                s.put(task_entity(&tasks(), "t-sparse", json!({"status": "blocked"})))
+                    .expect("sparse compound put must not error");
                 let sparse = s
                     .compound_index_prefix(
                         &tasks(),
@@ -1205,23 +1196,19 @@ macro_rules! storage_conformance_tests {
                     unique: true,
                 }];
                 let unique_col = CollectionId::new("uniq_compound");
-                s.register_collection(&unique_col).expect("register collection");
-                s.update_compound_indexes(
+                put_indexed_schema(&mut s, &unique_col, vec![], unique);
+                s.put(task_entity(
                     &unique_col,
-                    &EntityId::new("c-001"),
-                    None,
-                    &json!({"status": "pending", "priority": 1}),
-                    &unique,
-                )
+                    "c-001",
+                    json!({"status": "pending", "priority": 1}),
+                ))
                 .expect("first unique compound insert should succeed");
                 let err = s
-                    .update_compound_indexes(
+                    .put(task_entity(
                         &unique_col,
-                        &EntityId::new("c-002"),
-                        None,
-                        &json!({"status": "pending", "priority": 1}),
-                        &unique,
-                    )
+                        "c-002",
+                        json!({"status": "pending", "priority": 1}),
+                    ))
                     .expect_err("duplicate unique compound key must fail");
                 assert!(
                     matches!(err, AxonError::UniqueViolation { .. }),

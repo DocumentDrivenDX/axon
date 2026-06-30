@@ -106,7 +106,11 @@ fn ddx_sqlite_store() -> SqliteStorageAdapter {
     let mut storage = SqliteStorageAdapter::open_in_memory().expect("sqlite in-memory should open");
 
     let col = CollectionId::new("ddx_beads");
-    let indexes = index_defs();
+    // Register a schema declaring the indexes so the write primitives maintain
+    // them internally on each `put` (Approach C — no direct index maintenance).
+    let mut schema = axon_schema::schema::CollectionSchema::new(col.clone());
+    schema.indexes = index_defs();
+    storage.put_schema(&schema).unwrap();
 
     let beads: &[(&str, &str, i64, &str)] = &[
         ("bead-01", "open", 5, "alpha"),
@@ -129,10 +133,7 @@ fn ddx_sqlite_store() -> SqliteStorageAdapter {
             "title": title,
         });
         storage
-            .put(Entity::new(col.clone(), EntityId::new(id), data.clone()))
-            .unwrap();
-        storage
-            .update_indexes(&col, &EntityId::new(id), None, &data, &indexes)
+            .put(Entity::new(col.clone(), EntityId::new(id), data))
             .unwrap();
     }
 

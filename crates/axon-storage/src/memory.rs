@@ -2396,20 +2396,12 @@ mod tests {
     mod index_tests {
         use super::*;
         use crate::adapter::{extract_index_value, IndexValue};
-        use axon_schema::schema::{IndexDef, IndexType};
+        use axon_schema::schema::{CollectionSchema, IndexDef, IndexType};
 
         fn status_index() -> IndexDef {
             IndexDef {
                 field: "status".into(),
                 index_type: IndexType::String,
-                unique: false,
-            }
-        }
-
-        fn priority_index() -> IndexDef {
-            IndexDef {
-                field: "priority".into(),
-                index_type: IndexType::Integer,
                 unique: false,
             }
         }
@@ -2422,169 +2414,41 @@ mod tests {
             }
         }
 
-        #[expect(dead_code, reason = "helper is kept for nearby index tests")]
-        fn task_with_status(id: &str, status: &str) -> Entity {
-            Entity::new(
-                tasks(),
-                EntityId::new(id),
-                json!({"title": id, "status": status}),
-            )
-        }
-
-        #[expect(dead_code, reason = "helper is kept for nearby index tests")]
-        fn task_with_priority(id: &str, priority: i64) -> Entity {
-            Entity::new(
-                tasks(),
-                EntityId::new(id),
-                json!({"title": id, "priority": priority}),
-            )
-        }
-
-        #[test]
-        fn update_indexes_populates_equality_lookup() {
+        /// Register a schema for `tasks()` declaring the given indexes, so the
+        /// write primitives maintain them on every `put`.
+        fn store_with_indexes(single: Vec<IndexDef>) -> MemoryStorageAdapter {
             let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let eid = EntityId::new("t-001");
-            let data = json!({"status": "pending"});
-            let indexes = vec![status_index()];
-
+            let mut schema = CollectionSchema::new(tasks());
+            schema.indexes = single;
+            store.put_schema(&schema).expect("put_schema");
             store
-                .update_indexes(&col, &eid, None, &data, &indexes)
-                .expect("test operation should succeed");
-
-            let results = store
-                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .expect("test operation should succeed");
-            assert_eq!(results, vec![EntityId::new("t-001")]);
         }
 
-        #[test]
-        fn update_indexes_removes_old_entries() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let eid = EntityId::new("t-001");
-            let old_data = json!({"status": "pending"});
-            let new_data = json!({"status": "done"});
-            let indexes = vec![status_index()];
-
-            store
-                .update_indexes(&col, &eid, None, &old_data, &indexes)
-                .expect("test operation should succeed");
-            store
-                .update_indexes(&col, &eid, Some(&old_data), &new_data, &indexes)
-                .expect("test operation should succeed");
-
-            // Old value should be gone.
-            let old_results = store
-                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .expect("test operation should succeed");
-            assert!(old_results.is_empty());
-
-            // New value should be present.
-            let new_results = store
-                .index_lookup(&col, "status", &IndexValue::String("done".into()))
-                .expect("test operation should succeed");
-            assert_eq!(new_results, vec![EntityId::new("t-001")]);
+        fn task(id: &str, data: serde_json::Value) -> Entity {
+            Entity::new(tasks(), EntityId::new(id), data)
         }
 
-        #[test]
-        fn remove_index_entries_cleans_up() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let eid = EntityId::new("t-001");
-            let data = json!({"status": "pending"});
-            let indexes = vec![status_index()];
-
-            store
-                .update_indexes(&col, &eid, None, &data, &indexes)
-                .expect("test operation should succeed");
-            store
-                .remove_index_entries(&col, &eid, &data, &indexes)
-                .expect("test operation should succeed");
-
-            let results = store
-                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .expect("test operation should succeed");
-            assert!(results.is_empty());
-        }
-
-        #[test]
-        fn index_range_returns_matching_entities() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![priority_index()];
-
-            for i in 1..=5 {
-                let eid = EntityId::new(format!("t-{i:03}"));
-                let data = json!({"priority": i});
-                store
-                    .update_indexes(&col, &eid, None, &data, &indexes)
-                    .expect("test operation should succeed");
-            }
-
-            // Range: priority > 2 (i.e., 3, 4, 5)
-            let results = store
-                .index_range(
-                    &col,
-                    "priority",
-                    std::ops::Bound::Excluded(&IndexValue::Integer(2)),
-                    std::ops::Bound::Unbounded,
-                )
-                .expect("test operation should succeed");
-            assert_eq!(results.len(), 3);
-        }
-
-        #[test]
-        fn index_range_unbounded_lower_includes_integer_entries() {
-            // Regression: an unbounded LOWER bound over an Integer field must
-            // include the smallest entries. The old synthetic minimum
-            // (`Boolean(false)`) sorted after all Integer values, so this range
-            // wrongly returned nothing.
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![priority_index()];
-            for i in 1..=5 {
-                let eid = EntityId::new(format!("t-{i:03}"));
-                store
-                    .update_indexes(&col, &eid, None, &json!({"priority": i}), &indexes)
-                    .expect("index update should succeed");
-            }
-
-            // Range: priority <= 3  (unbounded lower) → {1, 2, 3}
-            let results = store
-                .index_range(
-                    &col,
-                    "priority",
-                    std::ops::Bound::Unbounded,
-                    std::ops::Bound::Included(&IndexValue::Integer(3)),
-                )
-                .expect("range should succeed");
-            assert_eq!(results.len(), 3, "unbounded-lower must include 1,2,3");
-
-            // Fully unbounded → all 5.
-            let all = store
-                .index_range(
-                    &col,
-                    "priority",
-                    std::ops::Bound::Unbounded,
-                    std::ops::Bound::Unbounded,
-                )
-                .expect("range should succeed");
-            assert_eq!(all.len(), 5, "fully-unbounded must include every entry");
-        }
+        // NOTE (Approach C): equality lookup, old-key removal on replace,
+        // entry cleanup on delete, basic range bounds, unbounded-lower over
+        // Integer, unique reject + self-update, null/type-mismatch skip, and
+        // drop_indexes are all covered cross-backend by the put-driven
+        // conformance suite (`storage_conformance_tests!`) and the
+        // `primitive_index_maintenance_tests` module below. The tests retained
+        // here cover behavior NOT exercised there: the empty-string synthetic
+        // minimum for a String range, the `index_unique_conflict` read method,
+        // abort-tx rollback of index changes, nested field-path indexing, and
+        // many-entities-share-one-non-unique-value.
 
         #[test]
         fn index_range_unbounded_lower_includes_string_entries() {
-            // Same regression for a String field, including the empty string
-            // (which is the synthetic minimum itself — it must still be included).
-            let mut store = MemoryStorageAdapter::default();
+            // Regression for a String field, including the empty string (which
+            // is the synthetic minimum itself — it must still be included).
+            let mut store = store_with_indexes(vec![status_index()]);
             let col = tasks();
-            let indexes = vec![status_index()];
             for (i, s) in ["", "alpha", "mid", "zeta"].iter().enumerate() {
-                let eid = EntityId::new(format!("t-{i:03}"));
                 store
-                    .update_indexes(&col, &eid, None, &json!({"status": s}), &indexes)
-                    .expect("index update should succeed");
+                    .put(task(&format!("t-{i:03}"), json!({"status": s})))
+                    .expect("put");
             }
 
             // Range: status <= "mid" (unbounded lower) → {"", "alpha", "mid"}
@@ -2604,99 +2468,12 @@ mod tests {
         }
 
         #[test]
-        fn unique_index_rejects_duplicate() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![unique_email_index()];
-
-            let eid1 = EntityId::new("u-001");
-            let data1 = json!({"email": "alice@example.com"});
-            store
-                .update_indexes(&col, &eid1, None, &data1, &indexes)
-                .expect("test operation should succeed");
-
-            let eid2 = EntityId::new("u-002");
-            let data2 = json!({"email": "alice@example.com"});
-            let err = store
-                .update_indexes(&col, &eid2, None, &data2, &indexes)
-                .expect_err("test operation should fail");
-            assert!(
-                matches!(err, AxonError::UniqueViolation { .. }),
-                "expected UniqueViolation, got: {err}"
-            );
-        }
-
-        #[test]
-        fn unique_index_allows_same_entity_update() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![unique_email_index()];
-
-            let eid = EntityId::new("u-001");
-            let data = json!({"email": "alice@example.com"});
-            store
-                .update_indexes(&col, &eid, None, &data, &indexes)
-                .expect("test operation should succeed");
-
-            // Updating same entity with same value should succeed.
-            let new_data = json!({"email": "alice@example.com", "name": "Alice"});
-            store
-                .update_indexes(&col, &eid, Some(&data), &new_data, &indexes)
-                .expect("test operation should succeed");
-        }
-
-        #[test]
-        fn null_values_are_not_indexed() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let eid = EntityId::new("t-001");
-            let data = json!({"title": "no status"});
-            let indexes = vec![status_index()];
-
-            store
-                .update_indexes(&col, &eid, None, &data, &indexes)
-                .expect("test operation should succeed");
-
-            // No entries should exist for missing fields.
-            let results = store
-                .index_lookup(&col, "status", &IndexValue::String(String::new()))
-                .expect("test operation should succeed");
-            assert!(results.is_empty());
-        }
-
-        #[test]
-        fn drop_indexes_removes_all_entries() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![status_index()];
-
-            let eid = EntityId::new("t-001");
-            let data = json!({"status": "pending"});
-            store
-                .update_indexes(&col, &eid, None, &data, &indexes)
-                .expect("test operation should succeed");
-
-            store
-                .drop_indexes(&col)
-                .expect("test operation should succeed");
-
-            let results = store
-                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .expect("test operation should succeed");
-            assert!(results.is_empty());
-        }
-
-        #[test]
         fn index_unique_conflict_check() {
-            let mut store = MemoryStorageAdapter::default();
+            let mut store = store_with_indexes(vec![unique_email_index()]);
             let col = tasks();
-            let indexes = vec![unique_email_index()];
-
-            let eid1 = EntityId::new("u-001");
-            let data1 = json!({"email": "alice@example.com"});
             store
-                .update_indexes(&col, &eid1, None, &data1, &indexes)
-                .expect("test operation should succeed");
+                .put(task("u-001", json!({"email": "alice@example.com"})))
+                .expect("put");
 
             let conflict = store
                 .index_unique_conflict(
@@ -2713,7 +2490,7 @@ mod tests {
                     &col,
                     "email",
                     &IndexValue::String("alice@example.com".into()),
-                    &eid1,
+                    &EntityId::new("u-001"),
                 )
                 .expect("test operation should succeed");
             assert!(
@@ -2724,21 +2501,17 @@ mod tests {
 
         #[test]
         fn abort_tx_rolls_back_index_changes() {
-            let mut store = MemoryStorageAdapter::default();
+            let mut store = store_with_indexes(vec![status_index()]);
             let col = tasks();
-            let indexes = vec![status_index()];
-
-            let eid = EntityId::new("t-001");
-            let data = json!({"status": "pending"});
             store
-                .update_indexes(&col, &eid, None, &data, &indexes)
-                .expect("test operation should succeed");
+                .put(task("t-001", json!({"status": "pending"})))
+                .expect("put");
 
             store.begin_tx().expect("test operation should succeed");
-            let new_data = json!({"status": "done"});
+            // Replace the indexed value inside the transaction.
             store
-                .update_indexes(&col, &eid, Some(&data), &new_data, &indexes)
-                .expect("test operation should succeed");
+                .put(task("t-001", json!({"status": "done"})))
+                .expect("put in tx");
             store.abort_tx().expect("test operation should succeed");
 
             // Index should still have the old value.
@@ -2755,19 +2528,16 @@ mod tests {
 
         #[test]
         fn nested_field_path_indexing() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
             let idx = IndexDef {
                 field: "address.city".into(),
                 index_type: IndexType::String,
                 unique: false,
             };
-
-            let eid = EntityId::new("t-001");
-            let data = json!({"address": {"city": "NYC"}});
+            let mut store = store_with_indexes(vec![idx]);
+            let col = tasks();
             store
-                .update_indexes(&col, &eid, None, &data, &[idx])
-                .expect("test operation should succeed");
+                .put(task("t-001", json!({"address": {"city": "NYC"}})))
+                .expect("put");
 
             let results = store
                 .index_lookup(&col, "address.city", &IndexValue::String("NYC".into()))
@@ -2788,182 +2558,18 @@ mod tests {
 
         #[test]
         fn multiple_entities_same_non_unique_value() {
-            let mut store = MemoryStorageAdapter::default();
+            let mut store = store_with_indexes(vec![status_index()]);
             let col = tasks();
-            let indexes = vec![status_index()];
-
             for i in 1..=3 {
-                let eid = EntityId::new(format!("t-{i:03}"));
-                let data = json!({"status": "pending"});
                 store
-                    .update_indexes(&col, &eid, None, &data, &indexes)
-                    .expect("test operation should succeed");
+                    .put(task(&format!("t-{i:03}"), json!({"status": "pending"})))
+                    .expect("put");
             }
 
             let results = store
                 .index_lookup(&col, "status", &IndexValue::String("pending".into()))
                 .expect("test operation should succeed");
             assert_eq!(results.len(), 3);
-        }
-    }
-
-    mod compound_index_tests {
-        use super::*;
-        use crate::adapter::CompoundKey;
-        use axon_schema::schema::{CompoundIndexDef, CompoundIndexField, IndexType};
-
-        fn status_priority_index() -> CompoundIndexDef {
-            CompoundIndexDef {
-                fields: vec![
-                    CompoundIndexField {
-                        field: "status".into(),
-                        index_type: IndexType::String,
-                    },
-                    CompoundIndexField {
-                        field: "priority".into(),
-                        index_type: IndexType::Integer,
-                    },
-                ],
-                unique: false,
-            }
-        }
-
-        #[test]
-        fn compound_index_lookup_exact_match() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![status_priority_index()];
-
-            let eid = EntityId::new("t-001");
-            let data = json!({"status": "pending", "priority": 1});
-            store
-                .update_compound_indexes(&col, &eid, None, &data, &indexes)
-                .expect("test operation should succeed");
-
-            let key = CompoundKey(vec![
-                IndexValue::String("pending".into()),
-                IndexValue::Integer(1),
-            ]);
-            let results = store
-                .compound_index_lookup(&col, 0, &key)
-                .expect("test operation should succeed");
-            assert_eq!(results, vec![EntityId::new("t-001")]);
-        }
-
-        #[test]
-        fn compound_index_prefix_match() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![status_priority_index()];
-
-            for (id, status, priority) in &[
-                ("t-001", "pending", 1),
-                ("t-002", "pending", 2),
-                ("t-003", "done", 1),
-            ] {
-                let eid = EntityId::new(*id);
-                let data = json!({"status": status, "priority": priority});
-                store
-                    .update_compound_indexes(&col, &eid, None, &data, &indexes)
-                    .expect("test operation should succeed");
-            }
-
-            // Prefix match on status=pending only.
-            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
-            let results = store
-                .compound_index_prefix(&col, 0, &prefix)
-                .expect("test operation should succeed");
-            assert_eq!(results.len(), 2, "should match t-001 and t-002");
-        }
-
-        #[test]
-        fn compound_index_removes_old_entries_on_update() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![status_priority_index()];
-
-            let eid = EntityId::new("t-001");
-            let old_data = json!({"status": "pending", "priority": 1});
-            let new_data = json!({"status": "done", "priority": 1});
-
-            store
-                .update_compound_indexes(&col, &eid, None, &old_data, &indexes)
-                .expect("test operation should succeed");
-            store
-                .update_compound_indexes(&col, &eid, Some(&old_data), &new_data, &indexes)
-                .expect("test operation should succeed");
-
-            // Old entry should be gone.
-            let old_key = CompoundKey(vec![
-                IndexValue::String("pending".into()),
-                IndexValue::Integer(1),
-            ]);
-            let old_results = store
-                .compound_index_lookup(&col, 0, &old_key)
-                .expect("test operation should succeed");
-            assert!(old_results.is_empty());
-
-            // New entry should exist.
-            let new_key = CompoundKey(vec![
-                IndexValue::String("done".into()),
-                IndexValue::Integer(1),
-            ]);
-            let new_results = store
-                .compound_index_lookup(&col, 0, &new_key)
-                .expect("test operation should succeed");
-            assert_eq!(new_results, vec![EntityId::new("t-001")]);
-        }
-
-        #[test]
-        fn compound_unique_index_rejects_duplicate() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![CompoundIndexDef {
-                fields: vec![
-                    CompoundIndexField {
-                        field: "status".into(),
-                        index_type: IndexType::String,
-                    },
-                    CompoundIndexField {
-                        field: "priority".into(),
-                        index_type: IndexType::Integer,
-                    },
-                ],
-                unique: true,
-            }];
-
-            let eid1 = EntityId::new("t-001");
-            let data1 = json!({"status": "pending", "priority": 1});
-            store
-                .update_compound_indexes(&col, &eid1, None, &data1, &indexes)
-                .expect("test operation should succeed");
-
-            let eid2 = EntityId::new("t-002");
-            let data2 = json!({"status": "pending", "priority": 1});
-            let err = store
-                .update_compound_indexes(&col, &eid2, None, &data2, &indexes)
-                .expect_err("test operation should fail");
-            assert!(matches!(err, AxonError::UniqueViolation { .. }));
-        }
-
-        #[test]
-        fn compound_index_missing_field_not_indexed() {
-            let mut store = MemoryStorageAdapter::default();
-            let col = tasks();
-            let indexes = vec![status_priority_index()];
-
-            // Entity missing priority field — should not be indexed.
-            let eid = EntityId::new("t-001");
-            let data = json!({"status": "pending"});
-            store
-                .update_compound_indexes(&col, &eid, None, &data, &indexes)
-                .expect("test operation should succeed");
-
-            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
-            let results = store
-                .compound_index_prefix(&col, 0, &prefix)
-                .expect("test operation should succeed");
-            assert!(results.is_empty());
         }
     }
 
