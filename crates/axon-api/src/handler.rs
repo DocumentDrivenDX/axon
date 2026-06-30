@@ -3876,6 +3876,26 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// backed by [`StorageAdapter::put`]. Use
     /// [`Self::create_entity_strict_with_caller`] or transaction `create`
     /// operations when duplicate IDs must be rejected.
+    /// Perform a single-entity storage write together with its durable audit
+    /// append, co-located inside one storage transaction on durable backends
+    /// (ADR-004 INV-003, ADR-030).
+    ///
+    /// This splits the `&mut self.storage` / `&mut self.audit` field borrows so
+    /// the storage write and the audit append can each take a distinct mutable
+    /// borrow (mirroring how [`Transaction::commit`] threads them separately).
+    /// See [`commit_write_with_durable_audit`] for the transaction semantics.
+    ///
+    /// Returns the write result `R` and the [`AuditEntry`] as appended to the
+    /// in-memory [`MemoryAuditLog`] — its `id` is the API-visible audit id and
+    /// must be used in responses (never the storage rowid).
+    fn write_with_durable_audit<R>(
+        &mut self,
+        write: impl FnOnce(&mut S) -> Result<R, AxonError>,
+        make_audit: impl FnOnce(&R) -> AuditEntry,
+    ) -> Result<(R, AuditEntry), AxonError> {
+        commit_write_with_durable_audit(&mut self.storage, &mut self.audit, write, make_audit)
+    }
+
     pub fn create_entity(
         &mut self,
         req: CreateEntityRequest,
@@ -3980,25 +4000,32 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
         // Secondary-index maintenance and unique-constraint enforcement
         // (FEAT-013) are performed atomically by the storage primitive itself.
-        self.storage.put(entity.clone())?;
-
-        // Audit.
-        let mut audit_entry = AuditEntry::new(
-            entity.collection.clone(),
-            entity.id.clone(),
-            entity.version,
-            MutationType::EntityCreate,
-            None,
-            Some(entity.data.clone()),
-            req.actor,
-        );
-        if let Some(meta) = req.audit_metadata {
-            audit_entry = audit_entry.with_metadata(meta);
-        }
-        if let Some(attr) = req.attribution.clone() {
-            audit_entry = audit_entry.with_attribution(attr);
-        }
-        let appended = self.audit.append(audit_entry)?;
+        // The entity write and its durable audit append are co-located inside
+        // one storage transaction on durable backends (ADR-004 INV-003).
+        let audit_metadata = req.audit_metadata.take();
+        let attribution = req.attribution.clone();
+        let actor = req.actor.take();
+        let (_, appended) = self.write_with_durable_audit(
+            |s| s.put(entity.clone()).map(|()| entity.clone()),
+            |stored| {
+                let mut audit_entry = AuditEntry::new(
+                    stored.collection.clone(),
+                    stored.id.clone(),
+                    stored.version,
+                    MutationType::EntityCreate,
+                    None,
+                    Some(stored.data.clone()),
+                    actor,
+                );
+                if let Some(meta) = audit_metadata {
+                    audit_entry = audit_entry.with_metadata(meta);
+                }
+                if let Some(attr) = attribution {
+                    audit_entry = audit_entry.with_attribution(attr);
+                }
+                audit_entry
+            },
+        )?;
         let audit_id = Some(appended.id);
 
         // Gate results were materialized onto the entity blob above; the
@@ -4463,29 +4490,38 @@ impl<S: StorageAdapter> AxonHandler<S> {
         };
         // Secondary-index maintenance and unique-constraint enforcement
         // (FEAT-013) are performed atomically by the storage primitive itself.
-        let stored = self
-            .storage
-            .compare_and_swap(candidate, req.expected_version)?;
-
-        let updated = Self::present_entity(&req.collection, stored);
-
-        // Audit.
-        let mut audit_entry = AuditEntry::new(
-            updated.collection.clone(),
-            updated.id.clone(),
-            updated.version,
-            MutationType::EntityUpdate,
-            before,
-            Some(updated.data.clone()),
-            req.actor,
-        );
-        if let Some(meta) = req.audit_metadata {
-            audit_entry = audit_entry.with_metadata(meta);
-        }
-        if let Some(attr) = req.attribution.clone() {
-            audit_entry = audit_entry.with_attribution(attr);
-        }
-        let appended = self.audit.append(audit_entry)?;
+        // The CAS write and its durable audit append are co-located inside one
+        // storage transaction on durable backends (ADR-004 INV-003). The audit
+        // entry is built from the CAS *result* so it records the bumped version.
+        let collection = req.collection.clone();
+        let expected_version = req.expected_version;
+        let audit_metadata = req.audit_metadata.take();
+        let attribution = req.attribution.clone();
+        let actor = req.actor.take();
+        let (updated, appended) = self.write_with_durable_audit(
+            |s| {
+                let stored = s.compare_and_swap(candidate, expected_version)?;
+                Ok(Self::present_entity(&collection, stored))
+            },
+            |updated| {
+                let mut audit_entry = AuditEntry::new(
+                    updated.collection.clone(),
+                    updated.id.clone(),
+                    updated.version,
+                    MutationType::EntityUpdate,
+                    before,
+                    Some(updated.data.clone()),
+                    actor,
+                );
+                if let Some(meta) = audit_metadata {
+                    audit_entry = audit_entry.with_metadata(meta);
+                }
+                if let Some(attr) = attribution {
+                    audit_entry = audit_entry.with_attribution(attr);
+                }
+                audit_entry
+            },
+        )?;
         let audit_id = Some(appended.id);
 
         // Gate results were materialized on the entity itself before the
@@ -4518,7 +4554,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     fn patch_entity_inner(
         &mut self,
-        req: PatchEntityRequest,
+        mut req: PatchEntityRequest,
         caller: Option<&CallerIdentity>,
     ) -> Result<PatchEntityResponse, AxonError> {
         // Read current entity.
@@ -4610,29 +4646,38 @@ impl<S: StorageAdapter> AxonHandler<S> {
         };
         // Secondary-index maintenance and unique-constraint enforcement
         // (FEAT-013) are performed atomically by the storage primitive itself.
-        let stored = self
-            .storage
-            .compare_and_swap(candidate, req.expected_version)?;
-
-        let updated = Self::present_entity(&req.collection, stored);
-
-        // Audit.
-        let mut audit_entry = AuditEntry::new(
-            updated.collection.clone(),
-            updated.id.clone(),
-            updated.version,
-            MutationType::EntityUpdate,
-            before,
-            Some(updated.data.clone()),
-            req.actor,
-        );
-        if let Some(meta) = req.audit_metadata {
-            audit_entry = audit_entry.with_metadata(meta);
-        }
-        if let Some(attr) = req.attribution.clone() {
-            audit_entry = audit_entry.with_attribution(attr);
-        }
-        let appended = self.audit.append(audit_entry)?;
+        // The CAS write and its durable audit append are co-located inside one
+        // storage transaction on durable backends (ADR-004 INV-003). The audit
+        // entry is built from the CAS *result* so it records the bumped version.
+        let collection = req.collection.clone();
+        let expected_version = req.expected_version;
+        let audit_metadata = req.audit_metadata.take();
+        let attribution = req.attribution.clone();
+        let actor = req.actor.take();
+        let (updated, appended) = self.write_with_durable_audit(
+            |s| {
+                let stored = s.compare_and_swap(candidate, expected_version)?;
+                Ok(Self::present_entity(&collection, stored))
+            },
+            |updated| {
+                let mut audit_entry = AuditEntry::new(
+                    updated.collection.clone(),
+                    updated.id.clone(),
+                    updated.version,
+                    MutationType::EntityUpdate,
+                    before,
+                    Some(updated.data.clone()),
+                    actor,
+                );
+                if let Some(meta) = audit_metadata {
+                    audit_entry = audit_entry.with_metadata(meta);
+                }
+                if let Some(attr) = attribution {
+                    audit_entry = audit_entry.with_attribution(attr);
+                }
+                audit_entry
+            },
+        )?;
         let audit_id = Some(appended.id);
 
         // Gate results were materialized on the entity itself before the
@@ -4660,7 +4705,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     fn delete_entity_inner(
         &mut self,
-        req: DeleteEntityRequest,
+        mut req: DeleteEntityRequest,
         caller: Option<&CallerIdentity>,
     ) -> Result<DeleteEntityResponse, AxonError> {
         let schema = self.storage.get_schema(&req.collection)?;
@@ -4714,31 +4759,44 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         // Secondary-index removal (FEAT-013) is performed atomically by the
-        // storage `delete` primitive itself.
-        self.storage.delete(&req.collection, &req.id)?;
-        // Gate results live on the entity blob (FEAT-019); deleting the
-        // entity removes them implicitly.
-
-        // Audit (only if the entity actually existed).
+        // storage `delete` primitive itself. Gate results live on the entity
+        // blob (FEAT-019); deleting the entity removes them implicitly.
+        //
+        // Audit only if the entity actually existed. When it did, the delete
+        // and its durable audit append are co-located inside one storage
+        // transaction on durable backends (ADR-004 INV-003). When it did not,
+        // the delete is a no-op and no audit entry is written, so we issue the
+        // bare storage `delete` outside the helper to preserve that behavior.
         let audit_id = if before.is_some() {
-            let mut audit_entry = AuditEntry::new(
-                req.collection.clone(),
-                req.id.clone(),
-                version,
-                MutationType::EntityDelete,
-                before,
-                None,
-                req.actor,
-            );
-            if let Some(meta) = req.audit_metadata {
-                audit_entry = audit_entry.with_metadata(meta);
-            }
-            if let Some(attr) = req.attribution.clone() {
-                audit_entry = audit_entry.with_attribution(attr);
-            }
-            let appended = self.audit.append(audit_entry)?;
+            let collection = req.collection.clone();
+            let id = req.id.clone();
+            let audit_metadata = req.audit_metadata.take();
+            let attribution = req.attribution.clone();
+            let actor = req.actor.take();
+            let ((), appended) = self.write_with_durable_audit(
+                |s| s.delete(&collection, &id),
+                |()| {
+                    let mut audit_entry = AuditEntry::new(
+                        collection.clone(),
+                        id.clone(),
+                        version,
+                        MutationType::EntityDelete,
+                        before,
+                        None,
+                        actor,
+                    );
+                    if let Some(meta) = audit_metadata {
+                        audit_entry = audit_entry.with_metadata(meta);
+                    }
+                    if let Some(attr) = attribution {
+                        audit_entry = audit_entry.with_attribution(attr);
+                    }
+                    audit_entry
+                },
+            )?;
             Some(appended.id)
         } else {
+            self.storage.delete(&req.collection, &req.id)?;
             None
         };
 
@@ -5800,53 +5858,63 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 operation_index: None,
             },
         )?;
-        let restored = match current {
-            Some(existing) => {
-                let candidate = Entity {
-                    collection: source.collection.clone(),
-                    id: source.entity_id.clone(),
-                    version: existing.version,
-                    data: before_data.clone(),
-                    created_at_ns: existing.created_at_ns,
-                    updated_at_ns: Some(now_ns()),
-                    created_by: existing.created_by.clone(),
-                    updated_by: req.actor.clone(),
-                    schema_version: schema.as_ref().map(|s| s.version),
-                    gate_results: Default::default(),
-                };
-                self.storage.compare_and_swap(candidate, existing.version)?
-            }
-            None => {
-                let mut entity = Entity::new(
-                    source.collection.clone(),
-                    source.entity_id.clone(),
-                    before_data.clone(),
+        // Apply the revert write together with its durable audit append,
+        // co-located inside one storage transaction on durable backends
+        // (ADR-004 INV-003). The audit entry is built from the write result.
+        let revert_collection = source.collection.clone();
+        let revert_entity_id = source.entity_id.clone();
+        let write_actor = req.actor.clone();
+        let audit_actor = req.actor.clone();
+        let write_data = before_data.clone();
+        let attribution = req.attribution.clone();
+        let audit_entry_id = req.audit_entry_id;
+        let schema_version = schema.as_ref().map(|s| s.version);
+        let (restored, appended) = self.write_with_durable_audit(
+            |s| match current {
+                Some(existing) => {
+                    let candidate = Entity {
+                        collection: revert_collection.clone(),
+                        id: revert_entity_id.clone(),
+                        version: existing.version,
+                        data: write_data,
+                        created_at_ns: existing.created_at_ns,
+                        updated_at_ns: Some(now_ns()),
+                        created_by: existing.created_by.clone(),
+                        updated_by: write_actor,
+                        schema_version,
+                        gate_results: Default::default(),
+                    };
+                    s.compare_and_swap(candidate, existing.version)
+                }
+                None => {
+                    let mut entity = Entity::new(
+                        revert_collection.clone(),
+                        revert_entity_id.clone(),
+                        write_data,
+                    );
+                    entity.schema_version = schema_version;
+                    s.put(entity.clone()).map(|()| entity)
+                }
+            },
+            |restored| {
+                let mut revert_entry = AuditEntry::new(
+                    restored.collection.clone(),
+                    restored.id.clone(),
+                    restored.version,
+                    MutationType::EntityRevert,
+                    data_before_revert,
+                    Some(before_data),
+                    audit_actor,
                 );
-                entity.schema_version = schema.as_ref().map(|s| s.version);
-                self.storage.put(entity.clone())?;
-                entity
-            }
-        };
-
-        // Audit the revert.
-        let mut revert_entry = AuditEntry::new(
-            restored.collection.clone(),
-            restored.id.clone(),
-            restored.version,
-            MutationType::EntityRevert,
-            data_before_revert,
-            Some(before_data),
-            req.actor,
-        );
-        revert_entry.metadata.insert(
-            "reverted_from_entry_id".into(),
-            req.audit_entry_id.to_string(),
-        );
-        if let Some(attr) = req.attribution.clone() {
-            revert_entry = revert_entry.with_attribution(attr);
-        }
-
-        let appended = self.audit.append(revert_entry)?;
+                revert_entry
+                    .metadata
+                    .insert("reverted_from_entry_id".into(), audit_entry_id.to_string());
+                if let Some(attr) = attribution {
+                    revert_entry = revert_entry.with_attribution(attr);
+                }
+                revert_entry
+            },
+        )?;
 
         Ok(RevertEntityResponse {
             entity: restored,
@@ -6011,60 +6079,63 @@ impl<S: StorageAdapter> AxonHandler<S> {
             });
         }
 
-        let stored = if let Some(current) = current.as_ref() {
-            self.storage.compare_and_swap(
-                Entity {
-                    collection: req.collection.clone(),
-                    id: req.id.clone(),
-                    version: expected_version,
-                    data: target_data.clone(),
-                    created_at_ns: current.created_at_ns,
-                    updated_at_ns: Some(now_ns()),
-                    created_by: current.created_by.clone(),
-                    updated_by: req.actor.clone(),
-                    schema_version: schema.as_ref().map(|s| s.version),
-                    gate_results: materialized_gates.clone(),
-                },
-                expected_version,
-            )?
-        } else {
-            let recreated = Entity {
-                collection: req.collection.clone(),
-                id: req.id.clone(),
-                version: expected_version + 1,
-                data: target_data.clone(),
-                created_at_ns,
-                updated_at_ns: Some(now_ns()),
-                created_by,
-                updated_by: req.actor.clone(),
-                schema_version: schema.as_ref().map(|s| s.version),
-                gate_results: materialized_gates,
-            };
-            self.storage.create_if_absent(recreated, expected_version)?
-        };
-
         // Secondary-index maintenance and unique-constraint enforcement
         // (FEAT-013) are performed atomically by the storage primitive itself
-        // (`compare_and_swap` / `create_if_absent`).
-
-        // Gate results were materialized onto the entity blob above
-        // (FEAT-019); no separate side-table write is needed.
+        // (`compare_and_swap` / `create_if_absent`); the durable audit append is
+        // co-located in the same storage transaction (ADR-004 INV-003, ADR-030).
+        let (stored, audit_entry) = self.write_with_durable_audit(
+            |storage| {
+                if let Some(current) = current.as_ref() {
+                    storage.compare_and_swap(
+                        Entity {
+                            collection: req.collection.clone(),
+                            id: req.id.clone(),
+                            version: expected_version,
+                            data: target_data.clone(),
+                            created_at_ns: current.created_at_ns,
+                            updated_at_ns: Some(now_ns()),
+                            created_by: current.created_by.clone(),
+                            updated_by: req.actor.clone(),
+                            schema_version: schema.as_ref().map(|s| s.version),
+                            gate_results: materialized_gates.clone(),
+                        },
+                        expected_version,
+                    )
+                } else {
+                    let recreated = Entity {
+                        collection: req.collection.clone(),
+                        id: req.id.clone(),
+                        version: expected_version + 1,
+                        data: target_data.clone(),
+                        created_at_ns,
+                        updated_at_ns: Some(now_ns()),
+                        created_by,
+                        updated_by: req.actor.clone(),
+                        schema_version: schema.as_ref().map(|s| s.version),
+                        gate_results: materialized_gates,
+                    };
+                    storage.create_if_absent(recreated, expected_version)
+                }
+            },
+            |stored| {
+                let entity = Self::present_entity(&req.collection, stored.clone());
+                let mut audit_entry = AuditEntry::new(
+                    entity.collection.clone(),
+                    entity.id.clone(),
+                    entity.version,
+                    MutationType::EntityRevert,
+                    current.as_ref().map(|entity| entity.data.clone()),
+                    Some(entity.data.clone()),
+                    req.actor.clone(),
+                );
+                audit_entry
+                    .metadata
+                    .insert("reverted_from_entry_id".into(), source.id.to_string());
+                audit_entry
+            },
+        )?;
 
         let entity = Self::present_entity(&req.collection, stored);
-        let mut audit_entry = AuditEntry::new(
-            entity.collection.clone(),
-            entity.id.clone(),
-            entity.version,
-            MutationType::EntityRevert,
-            current.as_ref().map(|entity| entity.data.clone()),
-            Some(entity.data.clone()),
-            req.actor,
-        );
-        audit_entry
-            .metadata
-            .insert("reverted_from_entry_id".into(), source.id.to_string());
-        let audit_entry = self.audit.append(audit_entry)?;
-
         Ok(RollbackEntityResponse::Applied {
             entity,
             audit_entry,
@@ -6232,23 +6303,33 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         // The entry is a delete — entity should not exist at this point.
                         // If it currently exists, delete it.
                         if current.is_some() && !dry_run {
-                            self.storage.delete(collection, entity_id)?;
-                            let mut audit_entry = AuditEntry::new(
-                                collection.clone(),
-                                entity_id.clone(),
-                                current.as_ref().map_or(0, |e| e.version) + 1,
-                                MutationType::EntityDelete,
-                                current.map(|e| e.data),
-                                None,
-                                actor.map(String::from),
-                            );
-                            audit_entry
-                                .metadata
-                                .insert("collection_rollback".into(), "true".into());
-                            audit_entry
-                                .metadata
-                                .insert("rollback_timestamp_ns".into(), timestamp_ns.to_string());
-                            self.audit.append(audit_entry)?;
+                            let collection = collection.clone();
+                            let entity_id = entity_id.clone();
+                            let actor = actor.map(String::from);
+                            let version = current.as_ref().map_or(0, |e| e.version) + 1;
+                            let before_data = current.map(|e| e.data);
+                            self.write_with_durable_audit(
+                                |s| s.delete(&collection, &entity_id),
+                                |()| {
+                                    let mut audit_entry = AuditEntry::new(
+                                        collection.clone(),
+                                        entity_id.clone(),
+                                        version,
+                                        MutationType::EntityDelete,
+                                        before_data,
+                                        None,
+                                        actor,
+                                    );
+                                    audit_entry
+                                        .metadata
+                                        .insert("collection_rollback".into(), "true".into());
+                                    audit_entry.metadata.insert(
+                                        "rollback_timestamp_ns".into(),
+                                        timestamp_ns.to_string(),
+                                    );
+                                    audit_entry
+                                },
+                            )?;
                         }
                         return Ok(());
                     }
@@ -6267,61 +6348,91 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
                 // Write the restored state.
                 let schema = self.storage.get_schema(collection)?;
+                let schema_version = schema.as_ref().map(|s| s.version);
                 match current {
                     Some(existing) => {
-                        let restored = Entity {
-                            collection: collection.clone(),
-                            id: entity_id.clone(),
-                            version: existing.version,
-                            data: target_data.clone(),
-                            created_at_ns: existing.created_at_ns,
-                            updated_at_ns: Some(now_ns()),
-                            created_by: existing.created_by.clone(),
-                            updated_by: actor.map(String::from),
-                            schema_version: schema.as_ref().map(|s| s.version),
-                            gate_results: Default::default(),
-                        };
-                        let stored = self.storage.compare_and_swap(restored, existing.version)?;
-                        let mut audit_entry = AuditEntry::new(
-                            collection.clone(),
-                            entity_id.clone(),
-                            stored.version,
-                            MutationType::EntityRevert,
-                            Some(existing.data),
-                            Some(target_data),
-                            actor.map(String::from),
-                        );
-                        audit_entry
-                            .metadata
-                            .insert("collection_rollback".into(), "true".into());
-                        audit_entry
-                            .metadata
-                            .insert("rollback_timestamp_ns".into(), timestamp_ns.to_string());
-                        self.audit.append(audit_entry)?;
+                        let collection = collection.clone();
+                        let entity_id = entity_id.clone();
+                        let actor = actor.map(String::from);
+                        let write_actor = actor.clone();
+                        let existing_version = existing.version;
+                        let existing_created_at_ns = existing.created_at_ns;
+                        let existing_created_by = existing.created_by.clone();
+                        let existing_data = existing.data;
+                        let write_data = target_data.clone();
+                        let (collection_w, entity_id_w) = (collection.clone(), entity_id.clone());
+                        self.write_with_durable_audit(
+                            |s| {
+                                let restored = Entity {
+                                    collection: collection_w,
+                                    id: entity_id_w,
+                                    version: existing_version,
+                                    data: write_data,
+                                    created_at_ns: existing_created_at_ns,
+                                    updated_at_ns: Some(now_ns()),
+                                    created_by: existing_created_by,
+                                    updated_by: write_actor,
+                                    schema_version,
+                                    gate_results: Default::default(),
+                                };
+                                s.compare_and_swap(restored, existing_version)
+                            },
+                            |stored| {
+                                let mut audit_entry = AuditEntry::new(
+                                    collection.clone(),
+                                    entity_id.clone(),
+                                    stored.version,
+                                    MutationType::EntityRevert,
+                                    Some(existing_data),
+                                    Some(target_data),
+                                    actor,
+                                );
+                                audit_entry
+                                    .metadata
+                                    .insert("collection_rollback".into(), "true".into());
+                                audit_entry.metadata.insert(
+                                    "rollback_timestamp_ns".into(),
+                                    timestamp_ns.to_string(),
+                                );
+                                audit_entry
+                            },
+                        )?;
                     }
                     None => {
                         // Entity was deleted — recreate it.
-                        let mut entity =
-                            Entity::new(collection.clone(), entity_id.clone(), target_data.clone());
-                        entity.schema_version = schema.as_ref().map(|s| s.version);
-                        entity.updated_by = actor.map(String::from);
-                        self.storage.put(entity.clone())?;
-                        let mut audit_entry = AuditEntry::new(
-                            collection.clone(),
-                            entity_id.clone(),
-                            entity.version,
-                            MutationType::EntityRevert,
-                            None,
-                            Some(target_data),
-                            actor.map(String::from),
-                        );
-                        audit_entry
-                            .metadata
-                            .insert("collection_rollback".into(), "true".into());
-                        audit_entry
-                            .metadata
-                            .insert("rollback_timestamp_ns".into(), timestamp_ns.to_string());
-                        self.audit.append(audit_entry)?;
+                        let collection = collection.clone();
+                        let entity_id = entity_id.clone();
+                        let actor = actor.map(String::from);
+                        let write_actor = actor.clone();
+                        let write_data = target_data.clone();
+                        let (collection_w, entity_id_w) = (collection.clone(), entity_id.clone());
+                        self.write_with_durable_audit(
+                            |s| {
+                                let mut entity = Entity::new(collection_w, entity_id_w, write_data);
+                                entity.schema_version = schema_version;
+                                entity.updated_by = write_actor;
+                                s.put(entity.clone()).map(|()| entity)
+                            },
+                            |entity| {
+                                let mut audit_entry = AuditEntry::new(
+                                    collection.clone(),
+                                    entity_id.clone(),
+                                    entity.version,
+                                    MutationType::EntityRevert,
+                                    None,
+                                    Some(target_data),
+                                    actor,
+                                );
+                                audit_entry
+                                    .metadata
+                                    .insert("collection_rollback".into(), "true".into());
+                                audit_entry.metadata.insert(
+                                    "rollback_timestamp_ns".into(),
+                                    timestamp_ns.to_string(),
+                                );
+                                audit_entry
+                            },
+                        )?;
                     }
                 }
             }
@@ -6332,23 +6443,32 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     if dry_run {
                         return Ok(());
                     }
-                    self.storage.delete(collection, entity_id)?;
-                    let mut audit_entry = AuditEntry::new(
-                        collection.clone(),
-                        entity_id.clone(),
-                        existing.version + 1,
-                        MutationType::EntityDelete,
-                        Some(existing.data),
-                        None,
-                        actor.map(String::from),
-                    );
-                    audit_entry
-                        .metadata
-                        .insert("collection_rollback".into(), "true".into());
-                    audit_entry
-                        .metadata
-                        .insert("rollback_timestamp_ns".into(), timestamp_ns.to_string());
-                    self.audit.append(audit_entry)?;
+                    let collection = collection.clone();
+                    let entity_id = entity_id.clone();
+                    let actor = actor.map(String::from);
+                    let version = existing.version + 1;
+                    let before_data = existing.data;
+                    self.write_with_durable_audit(
+                        |s| s.delete(&collection, &entity_id),
+                        |()| {
+                            let mut audit_entry = AuditEntry::new(
+                                collection.clone(),
+                                entity_id.clone(),
+                                version,
+                                MutationType::EntityDelete,
+                                Some(before_data),
+                                None,
+                                actor,
+                            );
+                            audit_entry
+                                .metadata
+                                .insert("collection_rollback".into(), "true".into());
+                            audit_entry
+                                .metadata
+                                .insert("rollback_timestamp_ns".into(), timestamp_ns.to_string());
+                            audit_entry
+                        },
+                    )?;
                 }
             }
         }
@@ -6497,23 +6617,33 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 if dry_run {
                     return Ok(());
                 }
-                self.storage.delete(collection, entity_id)?;
-                let mut audit_entry = AuditEntry::new(
-                    collection.clone(),
-                    entity_id.clone(),
-                    current.as_ref().map_or(0, |e| e.version) + 1,
-                    MutationType::EntityDelete,
-                    current.map(|e| e.data),
-                    None,
-                    actor.map(String::from),
-                );
-                audit_entry
-                    .metadata
-                    .insert("transaction_rollback".into(), "true".into());
-                audit_entry
-                    .metadata
-                    .insert("rolled_back_transaction_id".into(), transaction_id.into());
-                self.audit.append(audit_entry)?;
+                let collection = collection.clone();
+                let entity_id = entity_id.clone();
+                let actor = actor.map(String::from);
+                let transaction_id = transaction_id.to_string();
+                let version = current.as_ref().map_or(0, |e| e.version) + 1;
+                let before_data = current.map(|e| e.data);
+                self.write_with_durable_audit(
+                    |s| s.delete(&collection, &entity_id),
+                    |()| {
+                        let mut audit_entry = AuditEntry::new(
+                            collection.clone(),
+                            entity_id.clone(),
+                            version,
+                            MutationType::EntityDelete,
+                            before_data,
+                            None,
+                            actor,
+                        );
+                        audit_entry
+                            .metadata
+                            .insert("transaction_rollback".into(), "true".into());
+                        audit_entry
+                            .metadata
+                            .insert("rolled_back_transaction_id".into(), transaction_id);
+                        audit_entry
+                    },
+                )?;
             }
             MutationType::EntityUpdate | MutationType::EntityRevert => {
                 // The transaction updated this entity — restore data_before.
@@ -6538,62 +6668,92 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 }
 
                 let schema = self.storage.get_schema(collection)?;
+                let schema_version = schema.as_ref().map(|s| s.version);
                 match current {
                     Some(existing) => {
-                        let restored = Entity {
-                            collection: collection.clone(),
-                            id: entity_id.clone(),
-                            version: existing.version,
-                            data: target_data.clone(),
-                            created_at_ns: existing.created_at_ns,
-                            updated_at_ns: Some(now_ns()),
-                            created_by: existing.created_by.clone(),
-                            updated_by: actor.map(String::from),
-                            schema_version: schema.as_ref().map(|s| s.version),
-                            gate_results: Default::default(),
-                        };
-                        let stored = self.storage.compare_and_swap(restored, existing.version)?;
-                        let mut audit_entry = AuditEntry::new(
-                            collection.clone(),
-                            entity_id.clone(),
-                            stored.version,
-                            MutationType::EntityRevert,
-                            Some(existing.data),
-                            Some(target_data),
-                            actor.map(String::from),
-                        );
-                        audit_entry
-                            .metadata
-                            .insert("transaction_rollback".into(), "true".into());
-                        audit_entry
-                            .metadata
-                            .insert("rolled_back_transaction_id".into(), transaction_id.into());
-                        self.audit.append(audit_entry)?;
+                        let collection = collection.clone();
+                        let entity_id = entity_id.clone();
+                        let actor = actor.map(String::from);
+                        let write_actor = actor.clone();
+                        let transaction_id = transaction_id.to_string();
+                        let existing_version = existing.version;
+                        let existing_created_at_ns = existing.created_at_ns;
+                        let existing_created_by = existing.created_by.clone();
+                        let existing_data = existing.data;
+                        let write_data = target_data.clone();
+                        let (collection_w, entity_id_w) = (collection.clone(), entity_id.clone());
+                        self.write_with_durable_audit(
+                            |s| {
+                                let restored = Entity {
+                                    collection: collection_w,
+                                    id: entity_id_w,
+                                    version: existing_version,
+                                    data: write_data,
+                                    created_at_ns: existing_created_at_ns,
+                                    updated_at_ns: Some(now_ns()),
+                                    created_by: existing_created_by,
+                                    updated_by: write_actor,
+                                    schema_version,
+                                    gate_results: Default::default(),
+                                };
+                                s.compare_and_swap(restored, existing_version)
+                            },
+                            |stored| {
+                                let mut audit_entry = AuditEntry::new(
+                                    collection.clone(),
+                                    entity_id.clone(),
+                                    stored.version,
+                                    MutationType::EntityRevert,
+                                    Some(existing_data),
+                                    Some(target_data),
+                                    actor,
+                                );
+                                audit_entry
+                                    .metadata
+                                    .insert("transaction_rollback".into(), "true".into());
+                                audit_entry
+                                    .metadata
+                                    .insert("rolled_back_transaction_id".into(), transaction_id);
+                                audit_entry
+                            },
+                        )?;
                     }
                     None => {
                         // Entity was deleted after the transaction (or is otherwise
                         // absent) — recreate it from the pre-transaction snapshot.
-                        let mut entity =
-                            Entity::new(collection.clone(), entity_id.clone(), target_data.clone());
-                        entity.schema_version = schema.as_ref().map(|s| s.version);
-                        entity.updated_by = actor.map(String::from);
-                        self.storage.put(entity.clone())?;
-                        let mut audit_entry = AuditEntry::new(
-                            collection.clone(),
-                            entity_id.clone(),
-                            entity.version,
-                            MutationType::EntityRevert,
-                            None,
-                            Some(target_data),
-                            actor.map(String::from),
-                        );
-                        audit_entry
-                            .metadata
-                            .insert("transaction_rollback".into(), "true".into());
-                        audit_entry
-                            .metadata
-                            .insert("rolled_back_transaction_id".into(), transaction_id.into());
-                        self.audit.append(audit_entry)?;
+                        let collection = collection.clone();
+                        let entity_id = entity_id.clone();
+                        let actor = actor.map(String::from);
+                        let write_actor = actor.clone();
+                        let transaction_id = transaction_id.to_string();
+                        let write_data = target_data.clone();
+                        let (collection_w, entity_id_w) = (collection.clone(), entity_id.clone());
+                        self.write_with_durable_audit(
+                            |s| {
+                                let mut entity = Entity::new(collection_w, entity_id_w, write_data);
+                                entity.schema_version = schema_version;
+                                entity.updated_by = write_actor;
+                                s.put(entity.clone()).map(|()| entity)
+                            },
+                            |entity| {
+                                let mut audit_entry = AuditEntry::new(
+                                    collection.clone(),
+                                    entity_id.clone(),
+                                    entity.version,
+                                    MutationType::EntityRevert,
+                                    None,
+                                    Some(target_data),
+                                    actor,
+                                );
+                                audit_entry
+                                    .metadata
+                                    .insert("transaction_rollback".into(), "true".into());
+                                audit_entry
+                                    .metadata
+                                    .insert("rolled_back_transaction_id".into(), transaction_id);
+                                audit_entry
+                            },
+                        )?;
                     }
                 }
             }
@@ -6619,27 +6779,40 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 }
 
                 let schema = self.storage.get_schema(collection)?;
-                let mut entity =
-                    Entity::new(collection.clone(), entity_id.clone(), target_data.clone());
-                entity.schema_version = schema.as_ref().map(|s| s.version);
-                entity.updated_by = actor.map(String::from);
-                self.storage.put(entity.clone())?;
-                let mut audit_entry = AuditEntry::new(
-                    collection.clone(),
-                    entity_id.clone(),
-                    entity.version,
-                    MutationType::EntityRevert,
-                    None,
-                    Some(target_data),
-                    actor.map(String::from),
-                );
-                audit_entry
-                    .metadata
-                    .insert("transaction_rollback".into(), "true".into());
-                audit_entry
-                    .metadata
-                    .insert("rolled_back_transaction_id".into(), transaction_id.into());
-                self.audit.append(audit_entry)?;
+                let schema_version = schema.as_ref().map(|s| s.version);
+                let collection = collection.clone();
+                let entity_id = entity_id.clone();
+                let actor = actor.map(String::from);
+                let write_actor = actor.clone();
+                let transaction_id = transaction_id.to_string();
+                let write_data = target_data.clone();
+                let (collection_w, entity_id_w) = (collection.clone(), entity_id.clone());
+                self.write_with_durable_audit(
+                    |s| {
+                        let mut entity = Entity::new(collection_w, entity_id_w, write_data);
+                        entity.schema_version = schema_version;
+                        entity.updated_by = write_actor;
+                        s.put(entity.clone()).map(|()| entity)
+                    },
+                    |entity| {
+                        let mut audit_entry = AuditEntry::new(
+                            collection.clone(),
+                            entity_id.clone(),
+                            entity.version,
+                            MutationType::EntityRevert,
+                            None,
+                            Some(target_data),
+                            actor,
+                        );
+                        audit_entry
+                            .metadata
+                            .insert("transaction_rollback".into(), "true".into());
+                        audit_entry
+                            .metadata
+                            .insert("rolled_back_transaction_id".into(), transaction_id);
+                        audit_entry
+                    },
+                )?;
             }
             _ => {
                 // Non-entity mutations (collection create/drop, schema, etc.)
@@ -8451,6 +8624,70 @@ fn decode_snapshot_page_token(token: &str) -> Result<(String, String), AxonError
     }
     let (collection, id) = rest.split_at(collection_len);
     Ok((collection.to_string(), id.to_string()))
+}
+
+// ── Co-located durable audit write (ADR-004 INV-003, ADR-030) ──────────────────
+
+/// Apply a single-entity storage write and co-locate its durable audit append
+/// inside the same storage transaction on durable backends.
+///
+/// On adapters that report [`StorageAdapter::supports_durable_audit`] `== true`
+/// (e.g. SQLite, Postgres), this opens a storage transaction, performs the
+/// `write` (the storage primitive *joins* the already-open transaction and
+/// maintains its secondary indexes atomically), appends the audit entry to the
+/// **durable** `audit_log` within that same transaction, then commits. If any
+/// step fails the transaction is aborted so neither the entity/index write nor
+/// the audit record persists. The rowid returned by
+/// [`StorageAdapter::append_audit_entry`] is intentionally discarded — the
+/// API-visible audit id always comes from the in-memory [`MemoryAuditLog`].
+///
+/// On adapters without durable audit (e.g. in-memory, whose
+/// `append_audit_entry` is a no-op and whose `begin_tx` snapshots the whole
+/// store) it skips the transaction entirely: there is no durable record to make
+/// atomic, so it performs the write and the in-memory append directly.
+///
+/// Returns the write result together with the [`AuditEntry`] **as appended to
+/// the in-memory log** (carrying the sequential `MemoryAuditLog` id).
+///
+/// This is a free function taking `&mut S` and `&mut MemoryAuditLog` separately
+/// because a `&mut self` method plus a closure capturing another `self` field
+/// would not borrow-check; callers split the field borrows via
+/// [`AxonHandler::write_with_durable_audit`].
+fn commit_write_with_durable_audit<S: StorageAdapter, R>(
+    storage: &mut S,
+    audit: &mut MemoryAuditLog,
+    write: impl FnOnce(&mut S) -> Result<R, AxonError>,
+    make_audit: impl FnOnce(&R) -> AuditEntry,
+) -> Result<(R, AuditEntry), AxonError> {
+    if storage.supports_durable_audit() {
+        storage.begin_tx()?;
+        let inner = (|| -> Result<(R, AuditEntry), AxonError> {
+            // The primitive joins the open transaction (begin-if-not-already)
+            // and maintains secondary indexes atomically.
+            let r = write(storage)?;
+            let entry = make_audit(&r);
+            // Durable, in-transaction audit append. Discard the returned rowid;
+            // the API-visible id comes from the in-memory log below.
+            storage.append_audit_entry(entry.clone())?;
+            Ok((r, entry))
+        })();
+        match inner {
+            Ok((r, entry)) => {
+                storage.commit_tx()?;
+                let appended = audit.append(entry)?;
+                Ok((r, appended))
+            }
+            Err(e) => {
+                let _ = storage.abort_tx();
+                Err(e)
+            }
+        }
+    } else {
+        let r = write(storage)?;
+        let entry = make_audit(&r);
+        let appended = audit.append(entry)?;
+        Ok((r, appended))
+    }
 }
 
 // ── Index-accelerated query planner (FEAT-013) ─────────────────────────────────
@@ -23572,6 +23809,275 @@ ORDER BY b.priority DESC, b.updated_at DESC
             rollback_reindexes(AxonHandler::new(
                 SqliteStorageAdapter::open_in_memory().expect("sqlite"),
             ));
+        }
+    }
+
+    /// Single-entity audit co-location (ADR-004 INV-003, ADR-030): on durable
+    /// backends a single-entity mutation must co-locate a *durable* audit append
+    /// inside the same storage transaction as the entity write, while the
+    /// API-visible audit id remains the in-memory `MemoryAuditLog` id.
+    mod durable_audit_colocation {
+        use super::*;
+        use axon_storage::sqlite::SqliteStorageAdapter;
+
+        // Reach the SQLite `audit_log` table directly via `query_scalar_i64`
+        // (the API-level audit query reads the in-memory log, not the durable
+        // one, so it cannot prove the durable write happened).
+        fn count_durable_audit_rows(h: &AxonHandler<SqliteStorageAdapter>) -> i64 {
+            h.storage_ref()
+                .query_scalar_i64("SELECT COUNT(*) FROM audit_log")
+                .expect("count audit_log rows")
+        }
+
+        /// Test 1 — durable record on SQL. After a single create/update/delete on
+        /// a `SqliteStorageAdapter`, the durable `audit_log` table contains the
+        /// corresponding entries (it did NOT before this bead).
+        #[test]
+        fn single_entity_mutations_write_durable_audit_rows_on_sqlite() {
+            let mut h = AxonHandler::new(SqliteStorageAdapter::open_in_memory().expect("sqlite"));
+            let col = CollectionId::new("durable_audit_users");
+
+            assert_eq!(count_durable_audit_rows(&h), 0, "audit_log starts empty");
+
+            // CREATE
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("u-1"),
+                data: json!({"name": "alice"}),
+                actor: Some("tester".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("create");
+            assert_eq!(
+                count_durable_audit_rows(&h),
+                1,
+                "create co-locates a durable audit row"
+            );
+
+            // UPDATE
+            h.update_entity(UpdateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("u-1"),
+                data: json!({"name": "alice2"}),
+                expected_version: 1,
+                actor: Some("tester".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("update");
+            assert_eq!(
+                count_durable_audit_rows(&h),
+                2,
+                "update co-locates a durable audit row"
+            );
+
+            // DELETE
+            h.delete_entity(DeleteEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("u-1"),
+                actor: Some("tester".into()),
+                force: false,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("delete");
+            assert_eq!(
+                count_durable_audit_rows(&h),
+                3,
+                "delete co-locates a durable audit row"
+            );
+        }
+
+        /// A test-only adapter that delegates everything to a real
+        /// `SqliteStorageAdapter` but whose `append_audit_entry` always fails.
+        /// It reports `supports_durable_audit() == true` so the handler routes
+        /// the write through the co-located transaction path — exercising the
+        /// `begin_tx → write → append_audit_entry(Err) → abort_tx` rollback.
+        struct FailingAuditSqliteAdapter {
+            inner: SqliteStorageAdapter,
+        }
+
+        impl FailingAuditSqliteAdapter {
+            fn new() -> Self {
+                Self {
+                    inner: SqliteStorageAdapter::open_in_memory().expect("sqlite"),
+                }
+            }
+        }
+
+        impl StorageAdapter for FailingAuditSqliteAdapter {
+            fn get(
+                &self,
+                collection: &CollectionId,
+                id: &EntityId,
+            ) -> Result<Option<Entity>, AxonError> {
+                self.inner.get(collection, id)
+            }
+            fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+                self.inner.put(entity)
+            }
+            fn delete(
+                &mut self,
+                collection: &CollectionId,
+                id: &EntityId,
+            ) -> Result<(), AxonError> {
+                self.inner.delete(collection, id)
+            }
+            fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+                self.inner.count(collection)
+            }
+            fn range_scan(
+                &self,
+                collection: &CollectionId,
+                start: Option<&EntityId>,
+                end: Option<&EntityId>,
+                limit: Option<usize>,
+            ) -> Result<Vec<Entity>, AxonError> {
+                self.inner.range_scan(collection, start, end, limit)
+            }
+            fn compare_and_swap(
+                &mut self,
+                entity: Entity,
+                expected_version: u64,
+            ) -> Result<Entity, AxonError> {
+                self.inner.compare_and_swap(entity, expected_version)
+            }
+            fn create_if_absent(
+                &mut self,
+                entity: Entity,
+                expected_absent_version: u64,
+            ) -> Result<Entity, AxonError> {
+                self.inner.create_if_absent(entity, expected_absent_version)
+            }
+            fn get_schema(
+                &self,
+                collection: &CollectionId,
+            ) -> Result<Option<CollectionSchema>, AxonError> {
+                self.inner.get_schema(collection)
+            }
+            fn begin_tx(&mut self) -> Result<(), AxonError> {
+                self.inner.begin_tx()
+            }
+            fn commit_tx(&mut self) -> Result<(), AxonError> {
+                self.inner.commit_tx()
+            }
+            fn abort_tx(&mut self) -> Result<(), AxonError> {
+                self.inner.abort_tx()
+            }
+            fn supports_durable_audit(&self) -> bool {
+                true
+            }
+            /// Injected fault: the durable audit append always fails. Because it
+            /// runs inside the storage transaction, the co-located helper aborts
+            /// the transaction, rolling back the joined entity/index write.
+            fn append_audit_entry(&mut self, _entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+                Err(AxonError::Storage("injected audit append failure".into()))
+            }
+            fn index_lookup(
+                &self,
+                collection: &CollectionId,
+                field: &str,
+                value: &axon_storage::adapter::IndexValue,
+            ) -> Result<Vec<EntityId>, AxonError> {
+                self.inner.index_lookup(collection, field, value)
+            }
+        }
+
+        /// Test 2 — atomic rollback under fault injection. A single create whose
+        /// durable audit append fails returns that Err AND leaves NO entity and
+        /// NO secondary-index entry (the `begin_tx` rolled the whole thing back).
+        #[test]
+        fn failed_durable_audit_append_rolls_back_entity_and_index() {
+            let mut h = AxonHandler::new(FailingAuditSqliteAdapter::new());
+            let col = CollectionId::new("rollback_users");
+
+            // Indexed schema so we can assert the secondary-index write was also
+            // rolled back, not just the entity row.
+            let mut schema = CollectionSchema::new(col.clone());
+            schema.indexes = vec![IndexDef {
+                field: "email".into(),
+                index_type: IndexType::String,
+                unique: false,
+            }];
+            h.put_schema(schema).expect("schema");
+
+            let err = h
+                .create_entity(CreateEntityRequest {
+                    collection: col.clone(),
+                    id: EntityId::new("u-1"),
+                    data: json!({"email": "a@x.io"}),
+                    actor: Some("tester".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect_err("create must fail when durable audit append fails");
+            assert!(
+                matches!(err, AxonError::Storage(ref m) if m.contains("injected audit append failure")),
+                "the injected audit failure must surface, got: {err:?}"
+            );
+
+            // No entity persisted.
+            assert!(
+                h.storage_ref()
+                    .get(&col, &EntityId::new("u-1"))
+                    .expect("get")
+                    .is_none(),
+                "the entity write must be rolled back with the failed audit append"
+            );
+
+            // No secondary-index entry persisted: an indexed lookup must not find it.
+            let idx = h.storage_ref().index_lookup(
+                &col,
+                "email",
+                &axon_storage::adapter::IndexValue::String("a@x.io".into()),
+            );
+            match idx {
+                Ok(ids) => assert!(
+                    ids.is_empty(),
+                    "the secondary-index entry must be rolled back, found: {ids:?}"
+                ),
+                // An Err here means the index simply has no entry to return.
+                Err(_) => {}
+            }
+        }
+
+        /// Test 3 — the API-visible audit id is the in-memory `MemoryAuditLog`
+        /// id (a small sequential value), never the storage rowid.
+        #[test]
+        fn api_audit_id_is_the_in_memory_log_id_not_storage_rowid() {
+            let mut h = AxonHandler::new(SqliteStorageAdapter::open_in_memory().expect("sqlite"));
+            let col = CollectionId::new("audit_id_users");
+
+            let resp = h
+                .create_entity(CreateEntityRequest {
+                    collection: col.clone(),
+                    id: EntityId::new("u-1"),
+                    data: json!({"name": "alice"}),
+                    actor: Some("tester".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("create");
+
+            // The first MemoryAuditLog id is 1 (small, sequential). The durable
+            // rowid would also be 1 here, so to disambiguate we assert the id the
+            // API surfaces equals the id the in-memory audit query returns for
+            // this entity — proving the API uses the `self.audit` append result.
+            let audit_id = resp.audit_id.expect("create returns an audit id");
+            let history = h
+                .audit_log()
+                .query_by_entity(&col, &EntityId::new("u-1"))
+                .expect("audit query");
+            assert_eq!(history.len(), 1, "exactly one in-memory audit entry");
+            assert_eq!(
+                audit_id, history[0].id,
+                "the API audit id must be the in-memory MemoryAuditLog id"
+            );
+            assert_eq!(
+                audit_id, 1,
+                "the in-memory log assigns small sequential ids starting at 1"
+            );
         }
     }
 }

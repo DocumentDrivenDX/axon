@@ -87,15 +87,26 @@ already shipped, and only a partial residual closure.
 | Negative | A maintaining write resolves the collection's index defs (a schema read) and, on SQL, runs a short transaction — paid only when the collection has indexes; `put` is now schema-aware (no longer a policy-free byte upsert) for the index dimension |
 | Neutral | The in-memory adapter keeps its typed `IndexValue` representation; the public maintenance trait methods remain for now as a tested low-level primitive (their production callers are removed) — their removal is tracked separately |
 
-## Out of scope — audit atomicity (still open)
+## Out of scope here — audit atomicity (resolved by the follow-up below)
 
-C makes entity↔index atomic. It does **not** make the single-entity **audit**
-write atomic: audit is a separate `AuditLog` written above storage, so a crash
-between a committed entity+index write and the audit append can still leave a
-mutation unaudited. This is the pre-existing **ADR-004 INV-003** gap; it is
-explicitly NOT closed here and remains tracked. The same consolidation principle
-could later bring audit into the atomic unit, but that is a separate change. The
-"residual closed" claim of this ADR is scoped to **entity↔index** only.
+C itself makes entity↔index atomic but not the **audit** write. That gap — the
+pre-existing **ADR-004 INV-003** — was closed for **single-entity mutations** by a
+follow-up (`axon-06459077`): the durable audit append (`storage.append_audit_entry`)
+now runs INSIDE the write transaction, co-located with the entity+index write,
+mirroring the multi-op transaction path. It is capability-gated via
+`StorageAdapter::supports_durable_audit()` (SQLite/Postgres `true`; in-memory
+`false`, whose `append_audit_entry` is a no-op and whose `begin_tx` snapshots the
+whole store). The in-memory `self.audit` (`MemoryAuditLog`) append still runs
+post-commit as the queryable view; the API-visible audit id remains that view's.
+All 8 single-entity write paths (create / update / patch / delete / revert /
+rollback_entity / rollback_single_entity_to_timestamp /
+rollback_single_entity_from_transaction) route through this co-location.
+
+Still open (separate, tracked): (a) the SAME co-location for **non-entity** audit
+writes — collection/template/schema/link operations still append audit out of band;
+(b) rehydrating the in-memory `MemoryAuditLog` from the durable `audit_log` table on
+restart so audit *queries* reflect the durable record. Neither regresses anything
+(both pre-existed and affect the transaction path identically).
 
 ## Risks
 
@@ -126,11 +137,11 @@ could later bring audit into the atomic unit, but that is a separate change. The
 |----------------|----------------|
 | Every entity-write path (incl. transactions, rollback, revert) reflects in indexed queries across all backends | A stale-index or missing-index query result |
 | Joined-path abort rolls back entity + index together (SQL) | A partial-write divergence report |
-| Single-entity audit atomicity (INV-003) addressed separately | A committed-but-unaudited mutation report |
+| Single-entity audit atomicity (INV-003) closed via `axon-06459077` (durable audit co-located in the write tx); non-entity audit + query rehydration remain tracked follow-ups | A committed-but-unaudited mutation report on a non-entity operation |
 
 ## References
 
 - [FEAT-013: Secondary Indexes](../../01-frame/features/FEAT-013-secondary-indexes.md)
 - [ADR-029: Persisted Byte-Keyed Secondary Indexes](./ADR-029-persisted-sql-secondary-indexes.md) (single-mutation consistency stance superseded here)
-- [ADR-004: Transaction Model — OCC](./ADR-004-transaction-model.md) (INV-003 audit atomicity, still open)
+- [ADR-004: Transaction Model — OCC](./ADR-004-transaction-model.md) (INV-003 audit atomicity — closed for single-entity mutations via `axon-06459077`; non-entity audit paths still open)
 - [Storage write primitives + index maintenance](../../../crates/axon-storage/src/adapter.rs)

@@ -596,6 +596,21 @@ pub trait StorageAdapter: Send + Sync {
         Ok(entry)
     }
 
+    /// Whether [`append_audit_entry`](Self::append_audit_entry) writes a durable
+    /// audit record that participates in the storage transaction (`begin_tx` …
+    /// `commit_tx`).
+    ///
+    /// When `true`, callers should co-locate the audit append inside the same
+    /// storage transaction as the entity write so the durable audit record is
+    /// atomic with the mutation (ADR-004 INV-003, ADR-030). When `false` (the
+    /// default — e.g. the in-memory adapter, whose `append_audit_entry` is a
+    /// no-op and whose `begin_tx` snapshots the whole store), callers should NOT
+    /// open a transaction solely for audit: there is no durable record to make
+    /// atomic, and the snapshot would be pure overhead.
+    fn supports_durable_audit(&self) -> bool {
+        false
+    }
+
     // ── Mutation intent persistence (FEAT-030) ──────────────────────────────
 
     /// Persist a server-side mutation intent record.
@@ -1572,6 +1587,9 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
     }
     fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
         (**self).append_audit_entry(entry)
+    }
+    fn supports_durable_audit(&self) -> bool {
+        (**self).supports_durable_audit()
     }
     fn create_mutation_intent(&mut self, intent: &MutationIntent) -> Result<(), AxonError> {
         (**self).create_mutation_intent(intent)

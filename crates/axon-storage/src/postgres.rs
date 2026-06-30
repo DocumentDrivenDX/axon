@@ -1943,6 +1943,10 @@ impl StorageAdapter for PostgresStorageAdapter {
         Ok(entry)
     }
 
+    fn supports_durable_audit(&self) -> bool {
+        true
+    }
+
     // ── Persisted secondary index operations (FEAT-013) ─────────────────
     //
     // Direct mirrors of the SQLite trait-method implementations over Postgres

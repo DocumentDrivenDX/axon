@@ -161,6 +161,16 @@ database transaction as entity mutations, or by implementing a write-ahead inten
 log that is replayed on startup to close any gap left by a crash between commit
 and audit flush.
 
+**Status**: INV-003 is satisfied for **all entity mutations** on durable backends.
+The multi-op transaction path co-locates the durable audit append inside its
+`begin_tx`/`commit_tx`, and single-entity mutations do the same via
+`axon-06459077` / ADR-030 (the durable `append_audit_entry` runs in the write
+transaction alongside the entity+index write; the in-memory `MemoryAuditLog` is a
+post-commit queryable view). Still open: **non-entity** audit writes
+(collection/template/schema/link operations) co-locate audit out of band, and the
+in-memory query view is not rehydrated from the durable `audit_log` on restart —
+both tracked as follow-ups.
+
 ### Limits and Timeouts (Not Yet Implemented)
 
 Per FEAT-008, the following limits are planned but not yet enforced:

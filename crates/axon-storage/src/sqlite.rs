@@ -2347,6 +2347,10 @@ impl StorageAdapter for SqliteStorageAdapter {
         Ok(entry)
     }
 
+    fn supports_durable_audit(&self) -> bool {
+        true
+    }
+
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(&schema.collection)?;
         // Auto-increment: find current max version for this collection.
