@@ -83,6 +83,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Cargo.lock is gitignored; the Dockerfile COPYs it for dependency-layer
+      # caching, so generate one before docker build when checkout/cache did not
+      # provide it.
+      - name: Ensure Cargo.lock exists
+        run: test -f Cargo.lock || cargo generate-lockfile
+
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
