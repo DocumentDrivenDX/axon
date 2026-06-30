@@ -1254,30 +1254,6 @@ impl StorageAdapter for MemoryStorageAdapter {
 
     // ── Secondary index operations (FEAT-013) ───────────────────────────
 
-    fn update_indexes(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        old_data: Option<&serde_json::Value>,
-        new_data: &serde_json::Value,
-        indexes: &[axon_schema::schema::IndexDef],
-    ) -> Result<(), AxonError> {
-        let collection_key = self.resolve_catalog_key(collection)?;
-        self.maintain_single_indexes(&collection_key, entity_id, old_data, new_data, indexes)
-    }
-
-    fn remove_index_entries(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        data: &serde_json::Value,
-        indexes: &[axon_schema::schema::IndexDef],
-    ) -> Result<(), AxonError> {
-        let collection_key = self.resolve_catalog_key(collection)?;
-        self.remove_single_indexes(&collection_key, entity_id, data, indexes);
-        Ok(())
-    }
-
     fn index_lookup(
         &self,
         collection: &CollectionId,
@@ -1373,30 +1349,6 @@ impl StorageAdapter for MemoryStorageAdapter {
     }
 
     // ── Compound index operations (US-033) ──────────────────────────────
-
-    fn update_compound_indexes(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        old_data: Option<&serde_json::Value>,
-        new_data: &serde_json::Value,
-        indexes: &[axon_schema::schema::CompoundIndexDef],
-    ) -> Result<(), AxonError> {
-        let collection_key = self.resolve_catalog_key(collection)?;
-        self.maintain_compound_indexes(&collection_key, entity_id, old_data, new_data, indexes)
-    }
-
-    fn remove_compound_index_entries(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        data: &serde_json::Value,
-        indexes: &[axon_schema::schema::CompoundIndexDef],
-    ) -> Result<(), AxonError> {
-        let collection_key = self.resolve_catalog_key(collection)?;
-        self.remove_compound_indexes_for(&collection_key, entity_id, data, indexes);
-        Ok(())
-    }
 
     fn compound_index_lookup(
         &self,

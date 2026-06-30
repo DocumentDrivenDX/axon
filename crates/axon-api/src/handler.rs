@@ -23159,8 +23159,8 @@ ORDER BY b.priority DESC, b.updated_at DESC
     // 1. Multi-op transactions must maintain secondary indexes (Gap 1): an
     //    entity created/updated/deleted inside a `commit_transaction` must be
     //    reflected in an index-accelerated query. (Fails before the fix: the
-    //    transaction path never called `update_indexes`, so the indexed query
-    //    returned the wrong rows.)
+    //    transaction path did not maintain secondary indexes, so the indexed
+    //    query returned the wrong rows.)
     // 2. Single-entity create enforces unique constraints atomically inside the
     //    `put` primitive (Gap 2): a duplicate unique value returns
     //    `UniqueViolation` and the new entity is NOT persisted.

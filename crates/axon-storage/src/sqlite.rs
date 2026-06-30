@@ -1155,11 +1155,10 @@ impl SqliteStorageAdapter {
     // ── Shared index-maintenance helpers (Approach C) ────────────────────
     //
     // These operate on an already-resolved `QualifiedCollectionId` and issue
-    // the same DELETE-by-(field/ordinal, entity_id) + INSERT-new statements the
-    // public `update_indexes` / `update_compound_indexes` trait methods use.
-    // Both those trait methods AND the write primitives
-    // (`put`/`compare_and_swap`/`delete`/`create_if_absent`) route through them,
-    // so maintenance logic lives in exactly one place. Because deletion is by
+    // DELETE-by-(field/ordinal, entity_id) + INSERT-new statements. The write
+    // primitives (`put`/`compare_and_swap`/`delete`/`create_if_absent`) route
+    // through them, so maintenance logic lives in exactly one place. Because
+    // deletion is by
     // entity_id (not by recomputed old value), `put`/`cas` never need to read
     // the prior entity for index purposes — delete-by-entity + insert-from-new
     // is sufficient (this is why the SQLite primitives, unlike the in-memory
@@ -2682,33 +2681,6 @@ impl StorageAdapter for SqliteStorageAdapter {
     // they automatically participate in any active `BEGIN IMMEDIATE`
     // transaction and roll back together on `abort_tx`.
 
-    fn update_indexes(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        old_data: Option<&serde_json::Value>,
-        new_data: &serde_json::Value,
-        indexes: &[axon_schema::schema::IndexDef],
-    ) -> Result<(), AxonError> {
-        let key = self.resolve_catalog_key(collection)?;
-        // Delegates to the shared helper that both this trait method and the
-        // write primitives use. Delete-by-(field, entity_id) + insert-new is
-        // equivalent to recomputing old byte keys (and to the in-memory
-        // adapter's old-entry removal).
-        self.maintain_single_indexes_at(&key, entity_id, old_data.is_some(), new_data, indexes)
-    }
-
-    fn remove_index_entries(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        _data: &serde_json::Value,
-        indexes: &[axon_schema::schema::IndexDef],
-    ) -> Result<(), AxonError> {
-        let key = self.resolve_catalog_key(collection)?;
-        self.remove_single_indexes_at(&key, entity_id, indexes)
-    }
-
     fn index_lookup(
         &self,
         collection: &CollectionId,
@@ -2863,29 +2835,6 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     // ── Compound index operations (FEAT-013, US-033) ────────────────────
-
-    fn update_compound_indexes(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        old_data: Option<&serde_json::Value>,
-        new_data: &serde_json::Value,
-        indexes: &[axon_schema::schema::CompoundIndexDef],
-    ) -> Result<(), AxonError> {
-        let key = self.resolve_catalog_key(collection)?;
-        self.maintain_compound_indexes_at(&key, entity_id, old_data.is_some(), new_data, indexes)
-    }
-
-    fn remove_compound_index_entries(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        _data: &serde_json::Value,
-        indexes: &[axon_schema::schema::CompoundIndexDef],
-    ) -> Result<(), AxonError> {
-        let key = self.resolve_catalog_key(collection)?;
-        self.remove_compound_indexes_at(&key, entity_id, indexes)
-    }
 
     fn compound_index_lookup(
         &self,
@@ -5473,8 +5422,8 @@ mod tests {
     /// `create_if_absent`) maintain single + compound indexes internally and
     /// atomically, looking up the collection's index defs from its schema. These
     /// tests drive maintenance THROUGH the primitives and assert via the read
-    /// methods (`index_lookup` / `compound_index_lookup`), never calling
-    /// `update_indexes` directly.
+    /// methods (`index_lookup` / `compound_index_lookup`); index maintenance is
+    /// no longer exposed as a separate public method.
     mod primitive_maintenance_tests {
         use super::*;
         use crate::adapter::{CompoundKey, IndexValue};

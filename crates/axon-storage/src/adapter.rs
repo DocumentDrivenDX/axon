@@ -972,40 +972,6 @@ pub trait StorageAdapter: Send + Sync {
             .unwrap_or_default())
     }
 
-    /// Update index entries for an entity.
-    ///
-    /// Removes any existing index entries for this entity, then inserts new
-    /// entries based on the entity's current data and the declared indexes.
-    /// Called automatically on every `put` and `compare_and_swap`.
-    ///
-    /// `old_data` is the previous entity data (for removing stale entries).
-    /// `None` if this is a new entity.
-    ///
-    /// The default implementation is a no-op.
-    fn update_indexes(
-        &mut self,
-        _collection: &CollectionId,
-        _entity_id: &EntityId,
-        _old_data: Option<&serde_json::Value>,
-        _new_data: &serde_json::Value,
-        _indexes: &[axon_schema::schema::IndexDef],
-    ) -> Result<(), AxonError> {
-        Ok(())
-    }
-
-    /// Remove all index entries for a deleted entity.
-    ///
-    /// The default implementation is a no-op.
-    fn remove_index_entries(
-        &mut self,
-        _collection: &CollectionId,
-        _entity_id: &EntityId,
-        _data: &serde_json::Value,
-        _indexes: &[axon_schema::schema::IndexDef],
-    ) -> Result<(), AxonError> {
-        Ok(())
-    }
-
     /// Look up entity IDs by exact index value (equality query).
     ///
     /// Returns entity IDs in ascending order. Returns an empty vec if no
@@ -1062,29 +1028,6 @@ pub trait StorageAdapter: Send + Sync {
     }
 
     // ── Compound index operations (FEAT-013, US-033) ────────────────────
-
-    /// Update compound index entries for an entity.
-    fn update_compound_indexes(
-        &mut self,
-        _collection: &CollectionId,
-        _entity_id: &EntityId,
-        _old_data: Option<&serde_json::Value>,
-        _new_data: &serde_json::Value,
-        _indexes: &[axon_schema::schema::CompoundIndexDef],
-    ) -> Result<(), AxonError> {
-        Ok(())
-    }
-
-    /// Remove compound index entries for a deleted entity.
-    fn remove_compound_index_entries(
-        &mut self,
-        _collection: &CollectionId,
-        _entity_id: &EntityId,
-        _data: &serde_json::Value,
-        _indexes: &[axon_schema::schema::CompoundIndexDef],
-    ) -> Result<(), AxonError> {
-        Ok(())
-    }
 
     /// Look up entity IDs by exact compound key.
     fn compound_index_lookup(
@@ -1783,25 +1726,6 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
     fn collection_by_numeric_id(&self, numeric_id: u64) -> Result<Option<CollectionId>, AxonError> {
         (**self).collection_by_numeric_id(numeric_id)
     }
-    fn update_indexes(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        old_data: Option<&serde_json::Value>,
-        new_data: &serde_json::Value,
-        indexes: &[axon_schema::schema::IndexDef],
-    ) -> Result<(), AxonError> {
-        (**self).update_indexes(collection, entity_id, old_data, new_data, indexes)
-    }
-    fn remove_index_entries(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        data: &serde_json::Value,
-        indexes: &[axon_schema::schema::IndexDef],
-    ) -> Result<(), AxonError> {
-        (**self).remove_index_entries(collection, entity_id, data, indexes)
-    }
     fn index_lookup(
         &self,
         collection: &CollectionId,
@@ -1830,25 +1754,6 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
     }
     fn drop_indexes(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         (**self).drop_indexes(collection)
-    }
-    fn update_compound_indexes(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        old_data: Option<&serde_json::Value>,
-        new_data: &serde_json::Value,
-        indexes: &[axon_schema::schema::CompoundIndexDef],
-    ) -> Result<(), AxonError> {
-        (**self).update_compound_indexes(collection, entity_id, old_data, new_data, indexes)
-    }
-    fn remove_compound_index_entries(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        data: &serde_json::Value,
-        indexes: &[axon_schema::schema::CompoundIndexDef],
-    ) -> Result<(), AxonError> {
-        (**self).remove_compound_index_entries(collection, entity_id, data, indexes)
     }
     fn compound_index_lookup(
         &self,
