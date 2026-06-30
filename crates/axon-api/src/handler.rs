@@ -323,6 +323,137 @@ pub struct AxonHandler<S: StorageAdapter> {
     markdown_template_cache: Mutex<MarkdownTemplateCache>,
 }
 
+/// Read-only audit log view exposed by [`AxonHandler`].
+///
+/// Upgraded storage adapters are the authoritative audit source. The memory
+/// fallback keeps older custom adapters from panicking on reads, but built-in
+/// adapters all route through storage-owned audit entries.
+pub struct HandlerAuditLog<'a, S: StorageAdapter> {
+    storage: &'a S,
+    fallback: &'a MemoryAuditLog,
+}
+
+impl<S: StorageAdapter> HandlerAuditLog<'_, S> {
+    fn use_storage(&self) -> bool {
+        self.storage.owns_audit_log()
+    }
+
+    pub fn entries(&self) -> Vec<AuditEntry> {
+        self.try_entries()
+            .expect("handler audit entries should be readable")
+    }
+
+    pub fn try_entries(&self) -> Result<Vec<AuditEntry>, AxonError> {
+        if self.use_storage() {
+            self.storage.audit_entries()
+        } else {
+            Ok(self.fallback.entries())
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.try_len()
+            .expect("handler audit length should be readable")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn try_len(&self) -> Result<usize, AxonError> {
+        if self.use_storage() {
+            self.storage.audit_len()
+        } else {
+            Ok(self.fallback.len())
+        }
+    }
+
+    pub fn query_by_entity(
+        &self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        if self.use_storage() {
+            self.storage.query_audit_by_entity(collection, entity_id)
+        } else {
+            self.fallback.query_by_entity(collection, entity_id)
+        }
+    }
+
+    pub fn query_by_time_range(
+        &self,
+        start_ns: u64,
+        end_ns: u64,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        if self.use_storage() {
+            self.storage.query_audit_by_time_range(start_ns, end_ns)
+        } else {
+            self.fallback.query_by_time_range(start_ns, end_ns)
+        }
+    }
+
+    pub fn query_by_actor(&self, actor: &str) -> Result<Vec<AuditEntry>, AxonError> {
+        if self.use_storage() {
+            self.storage.query_audit_by_actor(actor)
+        } else {
+            self.fallback.query_by_actor(actor)
+        }
+    }
+
+    pub fn query_by_operation(
+        &self,
+        operation: &MutationType,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        if self.use_storage() {
+            self.storage.query_audit_by_operation(operation)
+        } else {
+            self.fallback.query_by_operation(operation)
+        }
+    }
+
+    pub fn find_by_id(&self, id: u64) -> Result<Option<AuditEntry>, AxonError> {
+        if self.use_storage() {
+            self.storage.find_audit_by_id(id)
+        } else {
+            self.fallback.find_by_id(id)
+        }
+    }
+
+    pub fn query_by_transaction_id(
+        &self,
+        transaction_id: &str,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        if self.use_storage() {
+            self.storage.query_audit_by_transaction_id(transaction_id)
+        } else {
+            self.fallback.query_by_transaction_id(transaction_id)
+        }
+    }
+
+    pub fn query_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+        if self.use_storage() {
+            self.storage.query_audit_paginated(query)
+        } else {
+            self.fallback.query_paginated(query)
+        }
+    }
+
+    pub fn known_collections(&self) -> std::collections::HashSet<CollectionId> {
+        self.try_known_collections()
+            .expect("handler audit collections should be readable")
+    }
+
+    pub fn try_known_collections(
+        &self,
+    ) -> Result<std::collections::HashSet<CollectionId>, AxonError> {
+        if self.use_storage() {
+            self.storage.known_audit_collections()
+        } else {
+            Ok(self.fallback.known_collections())
+        }
+    }
+}
+
 impl<S: StorageAdapter> AxonHandler<S> {
     fn present_entity(requested: &CollectionId, mut entity: Entity) -> Entity {
         entity.collection = requested.clone();
@@ -506,6 +637,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Subsequent creates and updates for that collection are validated
     /// against this schema. Replaces any previously stored schema.
     pub fn put_schema(&mut self, schema: CollectionSchema) -> Result<(), AxonError> {
+        self.validate_schema_for_put(&schema)?;
+        self.storage.put_schema(&schema)
+    }
+
+    fn validate_schema_for_put(&self, schema: &CollectionSchema) -> Result<(), AxonError> {
         if let Some(entity_schema) = &schema.entity_schema {
             compile_entity_schema(entity_schema)?;
         }
@@ -534,15 +670,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
         }
 
-        let compile_report = self.compile_report_for_schema(&schema)?;
+        let compile_report = self.compile_report_for_schema(schema)?;
         if !compile_report.is_success() {
             return Err(AxonError::SchemaValidation(format!(
                 "query_compile_failed: {}",
                 query_compile_summary(&compile_report)
             )));
         }
-
-        self.storage.put_schema(&schema)
+        Ok(())
     }
 
     /// Retrieve the persisted schema for a collection, if one exists.
@@ -553,14 +688,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.storage.get_schema(collection)
     }
 
-    /// Returns a reference to the internal audit log (useful in tests).
-    pub fn audit_log(&self) -> &MemoryAuditLog {
-        &self.audit
-    }
-
-    /// Mutable reference to the internal audit log (used by transaction tests).
-    pub fn audit_log_mut(&mut self) -> &mut MemoryAuditLog {
-        &mut self.audit
+    /// Returns a read-only view of the handler audit log.
+    pub fn audit_log(&self) -> HandlerAuditLog<'_, S> {
+        HandlerAuditLog {
+            storage: &self.storage,
+            fallback: &self.audit,
+        }
     }
 
     /// Read-only access to the underlying storage adapter.
@@ -571,11 +704,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Mutable access to the underlying storage adapter (used by simulation framework).
     pub fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
-    }
-
-    /// Mutable access to both storage and audit log for transaction commit.
-    pub fn storage_and_audit_mut(&mut self) -> (&mut S, &mut MemoryAuditLog) {
-        (&mut self.storage, &mut self.audit)
     }
 
     fn policy_snapshot_for_request(
@@ -3650,7 +3778,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
         self.enforce_transaction_policy(&tx, actor.as_deref(), attribution.as_ref(), caller)?;
-        tx.commit(&mut self.storage, &mut self.audit, actor, attribution)
+        tx.commit(&mut self.storage, actor, attribution)
     }
 
     fn enforce_transaction_policy(
@@ -3880,20 +4008,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// append, co-located inside one storage transaction on durable backends
     /// (ADR-004 INV-003, ADR-030).
     ///
-    /// This splits the `&mut self.storage` / `&mut self.audit` field borrows so
-    /// the storage write and the audit append can each take a distinct mutable
-    /// borrow (mirroring how [`Transaction::commit`] threads them separately).
     /// See [`commit_write_with_durable_audit`] for the transaction semantics.
     ///
-    /// Returns the write result `R` and the [`AuditEntry`] as appended to the
-    /// in-memory [`MemoryAuditLog`] — its `id` is the API-visible audit id and
-    /// must be used in responses (never the storage rowid).
+    /// Returns the write result `R` and the storage-assigned [`AuditEntry`].
     fn write_with_durable_audit<R>(
         &mut self,
         write: impl FnOnce(&mut S) -> Result<R, AxonError>,
         make_audit: impl FnOnce(&R) -> AuditEntry,
     ) -> Result<(R, AuditEntry), AxonError> {
-        commit_write_with_durable_audit(&mut self.storage, &mut self.audit, write, make_audit)
+        commit_write_with_durable_audit(&mut self.storage, write, make_audit)
+    }
+
+    fn write_with_durable_audit_entries<R>(
+        &mut self,
+        write: impl FnOnce(&mut S) -> Result<R, AxonError>,
+        make_audits: impl FnOnce(&R) -> Result<Vec<AuditEntry>, AxonError>,
+    ) -> Result<(R, Vec<AuditEntry>), AxonError> {
+        commit_write_with_durable_audit_entries(&mut self.storage, write, make_audits)
     }
 
     pub fn create_entity(
@@ -5057,7 +5188,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // cursor correctly represents "no changes newer than this snapshot".
         // This happens under the same `&self` reference as the entity scan, so
         // no writer can interleave between the cursor read and the data read.
-        let audit_cursor = self.audit.entries().last().map(|e| e.id).unwrap_or(0);
+        let audit_cursor = self.audit_log().entries().last().map(|e| e.id).unwrap_or(0);
 
         // Resolve the list of collections to scan.
         let collections: Vec<CollectionId> = match req.collections {
@@ -5369,7 +5500,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             limit: req.limit,
         };
 
-        let page: AuditPage = self.audit.query_paginated(query)?;
+        let page: AuditPage = self.audit_log().query_paginated(query)?;
         let mut entries = page.entries;
         for entry in &mut entries {
             self.redact_audit_entry_for_read_with_context(entry, caller, attribution)?;
@@ -5806,7 +5937,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: RevertEntityRequest,
     ) -> Result<RevertEntityResponse, AxonError> {
         let source = self
-            .audit
+            .audit_log()
             .find_by_id(req.audit_entry_id)?
             .ok_or_else(|| AxonError::NotFound(format!("audit entry {}", req.audit_entry_id)))?;
 
@@ -5948,7 +6079,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 audit_entry_id
             )),
         })?;
-        let audit_history = self.audit.query_by_entity(&req.collection, &req.id)?;
+        let audit_history = self.audit_log().query_by_entity(&req.collection, &req.id)?;
         let latest_entry = audit_history
             .last()
             .cloned()
@@ -6150,7 +6281,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<AuditEntry, AxonError> {
         match target {
             RollbackEntityTarget::Version(version) => self
-                .audit
+                .audit_log()
                 .query_by_entity(collection, id)?
                 .into_iter()
                 .find(|entry| entry.version == *version && entry.data_after.is_some())
@@ -6161,9 +6292,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     ))
                 }),
             RollbackEntityTarget::AuditEntryId(audit_entry_id) => {
-                let entry = self.audit.find_by_id(*audit_entry_id)?.ok_or_else(|| {
-                    AxonError::NotFound(format!("audit entry {}", audit_entry_id))
-                })?;
+                let entry = self
+                    .audit_log()
+                    .find_by_id(*audit_entry_id)?
+                    .ok_or_else(|| {
+                        AxonError::NotFound(format!("audit entry {}", audit_entry_id))
+                    })?;
                 if &entry.collection != collection || &entry.entity_id != id {
                     return Err(AxonError::NotFound(format!(
                         "audit entry {} not found for {}/{}",
@@ -6188,7 +6322,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<RollbackCollectionResponse, AxonError> {
         // 1. Query the audit log for all entity-level mutations in this
         //    collection that occurred strictly after the target timestamp.
-        let page = self.audit.query_paginated(AuditQuery {
+        let page = self.audit_log().query_paginated(AuditQuery {
             collection: Some(req.collection.clone()),
             since_ns: Some(req.timestamp_ns + 1),
             ..AuditQuery::default()
@@ -6283,7 +6417,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         actor: Option<&str>,
         dry_run: bool,
     ) -> Result<(), AxonError> {
-        let history = self.audit.query_by_entity(collection, entity_id)?;
+        let history = self.audit_log().query_by_entity(collection, entity_id)?;
 
         // Find the last audit entry whose timestamp is <= the target timestamp.
         // That entry's `data_after` is the entity state at that point in time.
@@ -6497,7 +6631,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: RollbackTransactionRequest,
     ) -> Result<RollbackTransactionResponse, AxonError> {
         // 1. Find all audit entries from the target transaction.
-        let tx_entries = self.audit.query_by_transaction_id(&req.transaction_id)?;
+        let tx_entries = self
+            .audit_log()
+            .query_by_transaction_id(&req.transaction_id)?;
 
         if tx_entries.is_empty() {
             return Err(AxonError::NotFound(format!(
@@ -6895,11 +7031,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
-        // Validate entity_schema before any mutations so a bad schema never
-        // leaves an orphan (schemaless) collection registration.
-        if let Some(entity_schema) = &req.schema.entity_schema {
-            compile_entity_schema(entity_schema)?;
-        }
+        self.validate_schema_for_put(&req.schema)?;
 
         if self
             .storage
@@ -6907,22 +7039,30 @@ impl<S: StorageAdapter> AxonHandler<S> {
         {
             return Err(AxonError::AlreadyExists(req.name.to_string()));
         }
-        self.storage
-            .register_collection_in_namespace(&bare_collection, &namespace)?;
-        self.put_schema(req.schema)?;
-
-        self.audit.append(AuditEntry::new(
-            req.name.clone(),
-            EntityId::new(""),
-            0,
-            MutationType::CollectionCreate,
-            None,
-            None,
-            req.actor,
-        ))?;
+        let name = req.name.clone();
+        let actor = req.actor.clone();
+        let schema = req.schema;
+        self.write_with_durable_audit(
+            |storage| {
+                storage.register_collection_in_namespace(&bare_collection, &namespace)?;
+                storage.put_schema(&schema)?;
+                Ok(())
+            },
+            |()| {
+                AuditEntry::new(
+                    name.clone(),
+                    EntityId::new(""),
+                    0,
+                    MutationType::CollectionCreate,
+                    None,
+                    None,
+                    actor,
+                )
+            },
+        )?;
 
         Ok(CreateCollectionResponse {
-            name: req.name.to_string(),
+            name: name.to_string(),
         })
     }
 
@@ -6948,54 +7088,58 @@ impl<S: StorageAdapter> AxonHandler<S> {
             return Err(AxonError::NotFound(req.name.to_string()));
         }
 
-        // Remove all entities in the collection.
-        let entities = self.storage.range_scan(&req.name, None, None, None)?;
-        let count = entities.len();
-        for entity in &entities {
-            self.storage.delete(&req.name, &entity.id)?;
-        }
-        self.storage.delete_schema(&req.name)?;
-        self.storage.delete_collection_view(&req.name)?;
-        self.invalidate_markdown_template(&req.name)?;
-        self.storage.unregister_collection(&req.name)?;
-
-        let mut drop_meta = std::collections::HashMap::new();
-        drop_meta.insert("entities_removed".into(), count.to_string());
-        self.audit.append(
-            AuditEntry::new(
-                req.name.clone(),
-                EntityId::new(""),
-                0,
-                MutationType::CollectionDrop,
-                None,
-                None,
-                req.actor,
-            )
-            .with_metadata(drop_meta),
+        let name = req.name.clone();
+        let actor = req.actor.clone();
+        let (count, _) = self.write_with_durable_audit(
+            |storage| {
+                let entities = storage.range_scan(&name, None, None, None)?;
+                let count = entities.len();
+                for entity in &entities {
+                    storage.delete(&name, &entity.id)?;
+                }
+                storage.delete_schema(&name)?;
+                storage.delete_collection_view(&name)?;
+                storage.unregister_collection(&name)?;
+                Ok(count)
+            },
+            |count| {
+                let mut drop_meta = std::collections::HashMap::new();
+                drop_meta.insert("entities_removed".into(), count.to_string());
+                AuditEntry::new(
+                    name.clone(),
+                    EntityId::new(""),
+                    0,
+                    MutationType::CollectionDrop,
+                    None,
+                    None,
+                    actor,
+                )
+                .with_metadata(drop_meta)
+            },
         )?;
+        self.invalidate_markdown_template(&name)?;
 
         Ok(DropCollectionResponse {
-            name: req.name.to_string(),
+            name: name.to_string(),
             entities_removed: count,
         })
     }
 
-    fn append_collection_drop_audit_entries(
-        &mut self,
-        collections: &[CollectionId],
-    ) -> Result<(), AxonError> {
-        for collection in collections {
-            self.audit.append(AuditEntry::new(
-                collection.clone(),
-                EntityId::new(""),
-                0,
-                MutationType::CollectionDrop,
-                None,
-                None,
-                None,
-            ))?;
-        }
-        Ok(())
+    fn collection_drop_audit_entries(collections: &[CollectionId]) -> Vec<AuditEntry> {
+        collections
+            .iter()
+            .map(|collection| {
+                AuditEntry::new(
+                    collection.clone(),
+                    EntityId::new(""),
+                    0,
+                    MutationType::CollectionDrop,
+                    None,
+                    None,
+                    None,
+                )
+            })
+            .collect()
     }
 
     /// List all explicitly created collections with summary metadata.
@@ -7083,26 +7227,33 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let mut view = CollectionView::new(req.collection.clone(), req.template);
         view.updated_by = req.actor.clone();
 
-        let view = Self::present_collection_view(
-            &req.collection,
-            self.storage.put_collection_view(&view)?,
-        );
-        self.invalidate_markdown_template(&req.collection)?;
-        self.audit.append(AuditEntry::new(
-            req.collection.clone(),
-            EntityId::new(""),
-            u64::from(view.version),
-            if before_view.is_some() {
-                MutationType::TemplateUpdate
-            } else {
-                MutationType::TemplateCreate
+        let collection = req.collection.clone();
+        let actor = req.actor.clone();
+        let before_audit = before_view
+            .clone()
+            .map(|view| Self::collection_view_audit_state(&collection, view))
+            .transpose()?;
+        let (view, _) = self.write_with_durable_audit_entries(
+            |storage| storage.put_collection_view(&view),
+            |view| {
+                let presented = Self::present_collection_view(&collection, view.clone());
+                Ok(vec![AuditEntry::new(
+                    collection.clone(),
+                    EntityId::new(""),
+                    u64::from(presented.version),
+                    if before_view.is_some() {
+                        MutationType::TemplateUpdate
+                    } else {
+                        MutationType::TemplateCreate
+                    },
+                    before_audit,
+                    Some(serde_json::to_value(presented)?),
+                    actor,
+                )])
             },
-            before_view
-                .map(|view| Self::collection_view_audit_state(&req.collection, view))
-                .transpose()?,
-            Some(serde_json::to_value(view.clone())?),
-            req.actor,
-        ))?;
+        )?;
+        let view = Self::present_collection_view(&collection, view);
+        self.invalidate_markdown_template(&req.collection)?;
 
         Ok(PutCollectionTemplateResponse {
             view,
@@ -7141,22 +7292,29 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<DeleteCollectionTemplateResponse, AxonError> {
         self.ensure_collection_exists(&req.collection)?;
         let before_view = self.storage.get_collection_view(&req.collection)?;
-        self.storage.delete_collection_view(&req.collection)?;
-        self.invalidate_markdown_template(&req.collection)?;
         if let Some(before_view) = before_view {
             let version = before_view.version;
-            self.audit.append(AuditEntry::new(
-                req.collection.clone(),
-                EntityId::new(""),
-                u64::from(version),
-                MutationType::TemplateDelete,
-                Some(Self::collection_view_audit_state(
-                    &req.collection,
-                    before_view,
-                )?),
-                None,
-                req.actor,
-            ))?;
+            let collection = req.collection.clone();
+            let actor = req.actor.clone();
+            let before_audit = Self::collection_view_audit_state(&collection, before_view)?;
+            self.write_with_durable_audit(
+                |storage| storage.delete_collection_view(&collection),
+                |()| {
+                    AuditEntry::new(
+                        collection.clone(),
+                        EntityId::new(""),
+                        u64::from(version),
+                        MutationType::TemplateDelete,
+                        Some(before_audit),
+                        None,
+                        actor,
+                    )
+                },
+            )?;
+            self.invalidate_markdown_template(&collection)?;
+        } else {
+            self.storage.delete_collection_view(&req.collection)?;
+            self.invalidate_markdown_template(&req.collection)?;
         }
         Ok(DeleteCollectionTemplateResponse {
             collection: req.collection.to_string(),
@@ -7169,7 +7327,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         collection: &CollectionId,
     ) -> Result<(Option<u64>, Option<u64>), AxonError> {
-        let page = self.audit.query_paginated(AuditQuery {
+        let page = self.audit_log().query_paginated(AuditQuery {
             collection: Some(collection.clone()),
             ..Default::default()
         })?;
@@ -7261,7 +7419,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
-        self.put_schema(req.schema.clone())?;
+        self.validate_schema_for_put(&req.schema)?;
 
         // Build audit metadata with compatibility classification and impact counts.
         let mut audit_meta = HashMap::new();
@@ -7328,20 +7486,25 @@ impl<S: StorageAdapter> AxonHandler<S> {
             policy_compile_report.envelope_summaries.len().to_string(),
         );
 
-        self.audit.append(
-            AuditEntry::new(
-                collection,
-                EntityId::new(""),
-                0,
-                MutationType::SchemaUpdate,
-                None,
-                None,
-                req.actor,
-            )
-            .with_metadata(audit_meta),
+        let response_schema = req.schema.clone();
+        let actor = req.actor.clone();
+        self.write_with_durable_audit(
+            |storage| storage.put_schema(&req.schema),
+            |()| {
+                AuditEntry::new(
+                    collection.clone(),
+                    EntityId::new(""),
+                    0,
+                    MutationType::SchemaUpdate,
+                    None,
+                    None,
+                    actor,
+                )
+                .with_metadata(audit_meta)
+            },
         )?;
         Ok(PutSchemaResponse {
-            schema: req.schema,
+            schema: response_schema,
             compatibility: Some(compatibility),
             diff: Some(diff),
             policy_compile_report: Some(policy_compile_report),
@@ -7572,9 +7735,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .iter()
             .map(|collection| QualifiedCollectionId::from_parts(&namespace, collection))
             .collect();
+        self.write_with_durable_audit_entries(
+            |storage| storage.drop_namespace(&namespace),
+            |()| Ok(Self::collection_drop_audit_entries(&collections)),
+        )?;
         self.invalidate_markdown_templates_for_collections(&doomed_collections)?;
-        self.storage.drop_namespace(&namespace)?;
-        self.append_collection_drop_audit_entries(&collections)?;
         Ok(DropNamespaceResponse {
             database: req.database,
             schema: req.schema,
@@ -7636,9 +7801,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
+        self.write_with_durable_audit_entries(
+            |storage| storage.drop_database(&req.name),
+            |()| Ok(Self::collection_drop_audit_entries(&collections)),
+        )?;
         self.invalidate_markdown_templates_for_collections(&doomed_collections)?;
-        self.storage.drop_database(&req.name)?;
-        self.append_collection_drop_audit_entries(&collections)?;
 
         Ok(DropDatabaseResponse {
             name: req.name,
@@ -7839,25 +8006,28 @@ impl<S: StorageAdapter> AxonHandler<S> {
             metadata: req.metadata,
         };
 
-        // Store the link and its reverse-index entry.
-        self.storage.put(link.to_rev_entity())?;
         let link_entity = link.to_entity();
-        self.storage.put(link_entity.clone())?;
-
-        // Audit: record the link creation.
-        let mut link_audit_entry = AuditEntry::new(
-            link_entity.collection,
-            link_entity.id,
-            link_entity.version,
-            MutationType::LinkCreate,
-            None,
-            Some(link_entity.data),
-            req.actor,
-        );
-        if let Some(attr) = req.attribution.clone() {
-            link_audit_entry = link_audit_entry.with_attribution(attr);
-        }
-        self.audit.append(link_audit_entry)?;
+        let audit_link_entity = link_entity.clone();
+        let actor = req.actor.clone();
+        let attribution = req.attribution.clone();
+        self.write_with_durable_audit(
+            |storage| storage.put_link(&link),
+            |()| {
+                let mut link_audit_entry = AuditEntry::new(
+                    audit_link_entity.collection,
+                    audit_link_entity.id,
+                    audit_link_entity.version,
+                    MutationType::LinkCreate,
+                    None,
+                    Some(audit_link_entity.data),
+                    actor,
+                );
+                if let Some(attr) = attribution {
+                    link_audit_entry = link_audit_entry.with_attribution(attr);
+                }
+                link_audit_entry
+            },
+        )?;
 
         Ok(CreateLinkResponse { link })
     }
@@ -7891,32 +8061,35 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 ))
             })?;
 
-        // Delete the reverse-index entry first, then the forward link.
-        let rev_id = Link::rev_storage_id(
-            &req.target_collection,
-            &req.target_id,
-            &req.source_collection,
-            &req.source_id,
-            &req.link_type,
-        );
-        self.storage
-            .delete(&Link::links_rev_collection(), &rev_id)?;
-        self.storage.delete(&Link::links_collection(), &link_id)?;
-
-        // Audit: record the link deletion.
-        let mut link_audit_entry = AuditEntry::new(
-            link_entity.collection,
-            link_entity.id,
-            link_entity.version,
-            MutationType::LinkDelete,
-            Some(link_entity.data),
-            None,
-            req.actor,
-        );
-        if let Some(attr) = req.attribution.clone() {
-            link_audit_entry = link_audit_entry.with_attribution(attr);
-        }
-        self.audit.append(link_audit_entry)?;
+        let audit_link_entity = link_entity.clone();
+        let actor = req.actor.clone();
+        let attribution = req.attribution.clone();
+        self.write_with_durable_audit(
+            |storage| {
+                storage.delete_link(
+                    &req.source_collection,
+                    &req.source_id,
+                    &req.link_type,
+                    &req.target_collection,
+                    &req.target_id,
+                )
+            },
+            |()| {
+                let mut link_audit_entry = AuditEntry::new(
+                    audit_link_entity.collection,
+                    audit_link_entity.id,
+                    audit_link_entity.version,
+                    MutationType::LinkDelete,
+                    Some(audit_link_entity.data),
+                    None,
+                    actor,
+                );
+                if let Some(attr) = attribution {
+                    link_audit_entry = link_audit_entry.with_attribution(attr);
+                }
+                link_audit_entry
+            },
+        )?;
 
         Ok(DeleteLinkResponse {
             source_collection: req.source_collection.to_string(),
@@ -8628,65 +8801,59 @@ fn decode_snapshot_page_token(token: &str) -> Result<(String, String), AxonError
 
 // ── Co-located durable audit write (ADR-004 INV-003, ADR-030) ──────────────────
 
-/// Apply a single-entity storage write and co-locate its durable audit append
-/// inside the same storage transaction on durable backends.
+/// Apply a storage write and co-locate its audit append inside the same storage
+/// transaction.
 ///
 /// On adapters that report [`StorageAdapter::supports_durable_audit`] `== true`
 /// (e.g. SQLite, Postgres), this opens a storage transaction, performs the
 /// `write` (the storage primitive *joins* the already-open transaction and
 /// maintains its secondary indexes atomically), appends the audit entry to the
-/// **durable** `audit_log` within that same transaction, then commits. If any
-/// step fails the transaction is aborted so neither the entity/index write nor
-/// the audit record persists. The rowid returned by
-/// [`StorageAdapter::append_audit_entry`] is intentionally discarded — the
-/// API-visible audit id always comes from the in-memory [`MemoryAuditLog`].
-///
-/// On adapters without durable audit (e.g. in-memory, whose
-/// `append_audit_entry` is a no-op and whose `begin_tx` snapshots the whole
-/// store) it skips the transaction entirely: there is no durable record to make
-/// atomic, so it performs the write and the in-memory append directly.
-///
-/// Returns the write result together with the [`AuditEntry`] **as appended to
-/// the in-memory log** (carrying the sequential `MemoryAuditLog` id).
-///
-/// This is a free function taking `&mut S` and `&mut MemoryAuditLog` separately
-/// because a `&mut self` method plus a closure capturing another `self` field
-/// would not borrow-check; callers split the field borrows via
-/// [`AxonHandler::write_with_durable_audit`].
+/// storage-owned audit log within that same transaction, then commits. If any
+/// step fails the transaction is aborted so neither the data write nor the audit
+/// record persists. The returned [`AuditEntry`] carries the storage-assigned id.
 fn commit_write_with_durable_audit<S: StorageAdapter, R>(
     storage: &mut S,
-    audit: &mut MemoryAuditLog,
     write: impl FnOnce(&mut S) -> Result<R, AxonError>,
     make_audit: impl FnOnce(&R) -> AuditEntry,
 ) -> Result<(R, AuditEntry), AxonError> {
-    if storage.supports_durable_audit() {
-        storage.begin_tx()?;
-        let inner = (|| -> Result<(R, AuditEntry), AxonError> {
-            // The primitive joins the open transaction (begin-if-not-already)
-            // and maintains secondary indexes atomically.
-            let r = write(storage)?;
-            let entry = make_audit(&r);
-            // Durable, in-transaction audit append. Discard the returned rowid;
-            // the API-visible id comes from the in-memory log below.
-            storage.append_audit_entry(entry.clone())?;
-            Ok((r, entry))
-        })();
-        match inner {
-            Ok((r, entry)) => {
-                storage.commit_tx()?;
-                let appended = audit.append(entry)?;
-                Ok((r, appended))
-            }
-            Err(e) => {
-                let _ = storage.abort_tx();
-                Err(e)
-            }
-        }
-    } else {
+    let (r, mut entries) =
+        commit_write_with_durable_audit_entries(storage, write, |r| Ok(vec![make_audit(r)]))?;
+    let entry = entries.pop().ok_or_else(|| {
+        AxonError::InvalidOperation("storage audit append did not return an entry".into())
+    })?;
+    Ok((r, entry))
+}
+
+fn commit_write_with_durable_audit_entries<S: StorageAdapter, R>(
+    storage: &mut S,
+    write: impl FnOnce(&mut S) -> Result<R, AxonError>,
+    make_audits: impl FnOnce(&R) -> Result<Vec<AuditEntry>, AxonError>,
+) -> Result<(R, Vec<AuditEntry>), AxonError> {
+    if !storage.owns_audit_log() {
+        return Err(AxonError::InvalidOperation(
+            "storage adapter does not own an audit log".into(),
+        ));
+    }
+
+    storage.begin_tx()?;
+    let inner = (|| -> Result<(R, Vec<AuditEntry>), AxonError> {
         let r = write(storage)?;
-        let entry = make_audit(&r);
-        let appended = audit.append(entry)?;
+        let entries = make_audits(&r)?;
+        let mut appended = Vec::with_capacity(entries.len());
+        for entry in entries {
+            appended.push(storage.append_audit_entry(entry)?);
+        }
         Ok((r, appended))
+    })();
+    match inner {
+        Ok((r, appended)) => {
+            storage.commit_tx()?;
+            Ok((r, appended))
+        }
+        Err(e) => {
+            let _ = storage.abort_tx();
+            Err(e)
+        }
     }
 }
 
@@ -10159,6 +10326,18 @@ mod tests {
 
             self.inner.create_if_absent(entity, expected_absent_version)
         }
+
+        fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+            self.inner.append_audit_entry(entry)
+        }
+
+        fn owns_audit_log(&self) -> bool {
+            self.inner.owns_audit_log()
+        }
+
+        fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+            self.inner.query_audit_paginated(query)
+        }
     }
 
     #[derive(Default)]
@@ -10230,6 +10409,30 @@ mod tests {
         ) -> Result<Option<CollectionSchema>, AxonError> {
             *self.schema_reads.lock().expect("schema read counter") += 1;
             self.inner.get_schema(collection)
+        }
+
+        fn begin_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.begin_tx()
+        }
+
+        fn commit_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.commit_tx()
+        }
+
+        fn abort_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.abort_tx()
+        }
+
+        fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+            self.inner.append_audit_entry(entry)
+        }
+
+        fn owns_audit_log(&self) -> bool {
+            self.inner.owns_audit_log()
+        }
+
+        fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+            self.inner.query_audit_paginated(query)
         }
     }
 
@@ -11593,18 +11796,13 @@ mod tests {
         let svc = crate::MutationIntentLifecycleService::new(
             crate::MutationIntentTokenSigner::new(b"redaction-test-secret"),
         );
-        let token = {
-            let (storage, audit) = h.storage_and_audit_mut();
-            svc.create_preview_record(storage, audit, intent)
-        }
-        .expect("preview record should persist")
-        .intent_token
-        .expect("needs-approval intent should issue a token");
+        let token = { svc.create_preview_record(h.storage_mut(), intent) }
+            .expect("preview record should persist")
+            .intent_token
+            .expect("needs-approval intent should issue a token");
         {
-            let (storage, audit) = h.storage_and_audit_mut();
             svc.approve_with_audit(
-                storage,
-                audit,
+                h.storage_mut(),
                 &scope,
                 intent_id,
                 crate::MutationIntentReviewMetadata {
@@ -11617,10 +11815,8 @@ mod tests {
             .expect("intent should approve");
         }
         {
-            let (storage, audit) = h.storage_and_audit_mut();
             svc.commit_transaction_intent(
-                storage,
-                audit,
+                h.storage_mut(),
                 crate::MutationIntentTransactionCommitRequest {
                     scope: scope.clone(),
                     token,
@@ -14526,7 +14722,10 @@ entity_schema:
         .unwrap();
 
         // Record the timestamp after e1 creation (the audit entry timestamp).
-        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let entries = h
+            .audit_log()
+            .query_by_entity(&col, &EntityId::new("e1"))
+            .unwrap();
         let cutoff_ns = entries.last().unwrap().timestamp_ns;
 
         // Mutate e1 after the cutoff.
@@ -14601,7 +14800,10 @@ entity_schema:
         })
         .unwrap();
 
-        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let entries = h
+            .audit_log()
+            .query_by_entity(&col, &EntityId::new("e1"))
+            .unwrap();
         let cutoff_ns = entries.last().unwrap().timestamp_ns;
 
         h.update_entity(UpdateEntityRequest {
@@ -14683,7 +14885,10 @@ entity_schema:
         })
         .unwrap();
 
-        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let entries = h
+            .audit_log()
+            .query_by_entity(&col, &EntityId::new("e1"))
+            .unwrap();
         let cutoff_ns = entries.last().unwrap().timestamp_ns;
 
         // Delete e1 after the cutoff.
@@ -14734,7 +14939,10 @@ entity_schema:
         })
         .unwrap();
 
-        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let entries = h
+            .audit_log()
+            .query_by_entity(&col, &EntityId::new("e1"))
+            .unwrap();
         let cutoff_ns = entries.last().unwrap().timestamp_ns;
 
         h.update_entity(UpdateEntityRequest {
@@ -14757,7 +14965,10 @@ entity_schema:
         .unwrap();
 
         // The latest audit entry for e1 should be the rollback revert.
-        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let entries = h
+            .audit_log()
+            .query_by_entity(&col, &EntityId::new("e1"))
+            .unwrap();
         let last = entries.last().unwrap();
         assert_eq!(last.mutation, MutationType::EntityRevert);
         assert_eq!(
@@ -15126,7 +15337,10 @@ entity_schema:
 
         // The latest audit entry for "a" should be the rollback revert
         // with transaction_rollback metadata.
-        let entries = h.audit.query_by_entity(&col, &EntityId::new("a")).unwrap();
+        let entries = h
+            .audit_log()
+            .query_by_entity(&col, &EntityId::new("a"))
+            .unwrap();
         let last = entries.last().unwrap();
         assert_eq!(last.mutation, MutationType::EntityRevert);
         assert_eq!(
@@ -17273,15 +17487,6 @@ ORDER BY b.priority DESC, b.updated_at DESC
     }
 
     // ── explain_transaction_with_caller tests ───────────────────────────────
-
-    /// Build an `AccessControlPolicy` that allows a single named operation for
-    /// any caller (`where: {}` means unconditionally allow).
-    fn allow_operation_policy(op: &str) -> axon_schema::AccessControlPolicy {
-        serde_json::from_value(json!({
-            op: { "allow": [{ "name": "allow-all" }] }
-        }))
-        .unwrap()
-    }
 
     /// Schema with a write-allow-all and read-deny-all policy (status != "open"
     /// implies deny for reads) — used to produce a per-step denied outcome.
@@ -23812,17 +24017,15 @@ ORDER BY b.priority DESC, b.updated_at DESC
         }
     }
 
-    /// Single-entity audit co-location (ADR-004 INV-003, ADR-030): on durable
-    /// backends a single-entity mutation must co-locate a *durable* audit append
-    /// inside the same storage transaction as the entity write, while the
-    /// API-visible audit id remains the in-memory `MemoryAuditLog` id.
+    /// Audit co-location (ADR-004 INV-003, ADR-030): storage is the
+    /// authoritative audit source, so mutations must co-locate the audit append
+    /// inside the same storage transaction as the data write.
     mod durable_audit_colocation {
         use super::*;
         use axon_storage::sqlite::SqliteStorageAdapter;
 
-        // Reach the SQLite `audit_log` table directly via `query_scalar_i64`
-        // (the API-level audit query reads the in-memory log, not the durable
-        // one, so it cannot prove the durable write happened).
+        // Reach the SQLite `audit_log` table directly when a test needs to
+        // distinguish raw durable rows from public handler query behavior.
         fn count_durable_audit_rows(h: &AxonHandler<SqliteStorageAdapter>) -> i64 {
             h.storage_ref()
                 .query_scalar_i64("SELECT COUNT(*) FROM audit_log")
@@ -23968,6 +24171,25 @@ ORDER BY b.priority DESC, b.updated_at DESC
             fn supports_durable_audit(&self) -> bool {
                 true
             }
+            fn collection_registered_in_namespace(
+                &self,
+                collection: &CollectionId,
+                namespace: &Namespace,
+            ) -> Result<bool, AxonError> {
+                self.inner
+                    .collection_registered_in_namespace(collection, namespace)
+            }
+            fn register_collection_in_namespace(
+                &mut self,
+                collection: &CollectionId,
+                namespace: &Namespace,
+            ) -> Result<(), AxonError> {
+                self.inner
+                    .register_collection_in_namespace(collection, namespace)
+            }
+            fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+                self.inner.put_schema(schema)
+            }
             /// Injected fault: the durable audit append always fails. Because it
             /// runs inside the storage transaction, the co-located helper aborts
             /// the transaction, rolling back the joined entity/index write.
@@ -24042,12 +24264,101 @@ ORDER BY b.priority DESC, b.updated_at DESC
             }
         }
 
-        /// Test 3 — the API-visible audit id is the in-memory `MemoryAuditLog`
-        /// id (a small sequential value), never the storage rowid.
         #[test]
-        fn api_audit_id_is_the_in_memory_log_id_not_storage_rowid() {
+        fn failed_collection_create_audit_append_rolls_back_registration_and_schema() {
+            let mut h = AxonHandler::new(FailingAuditSqliteAdapter::new());
+            let collection = CollectionId::new("rollback_collection");
+            let schema = CollectionSchema::new(collection.clone());
+
+            let err = h
+                .create_collection(CreateCollectionRequest {
+                    name: collection.clone(),
+                    schema,
+                    actor: Some("tester".into()),
+                })
+                .expect_err("collection create must fail when audit append fails");
+            assert!(
+                matches!(err, AxonError::Storage(ref m) if m.contains("injected audit append failure")),
+                "the injected audit failure must surface, got: {err:?}"
+            );
+
+            assert!(
+                !h.storage_ref()
+                    .collection_registered_in_namespace(&collection, &Namespace::default_ns())
+                    .expect("registration lookup"),
+                "collection registration must roll back with failed audit append"
+            );
+            assert!(
+                h.storage_ref()
+                    .get_schema(&collection)
+                    .expect("schema lookup")
+                    .is_none(),
+                "schema write must roll back with failed audit append"
+            );
+        }
+
+        #[test]
+        fn sqlite_audit_query_survives_handler_reopen() {
+            let path = std::env::temp_dir().join(format!(
+                "axon-audit-reopen-{}-{}.sqlite",
+                std::process::id(),
+                now_ns()
+            ));
+            let path_str = path.to_string_lossy().to_string();
+            let col = CollectionId::new("reopen_audit_users");
+            let id = EntityId::new("u-1");
+            let audit_id = {
+                let mut h = AxonHandler::new(
+                    SqliteStorageAdapter::open(&path_str).expect("sqlite file should open"),
+                );
+                h.create_entity(CreateEntityRequest {
+                    collection: col.clone(),
+                    id: id.clone(),
+                    data: json!({"name": "alice"}),
+                    actor: Some("tester".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("create")
+                .audit_id
+                .expect("create returns audit id")
+            };
+
+            let h = AxonHandler::new(
+                SqliteStorageAdapter::open(&path_str).expect("sqlite file should reopen"),
+            );
+            let page = h
+                .query_audit(QueryAuditRequest {
+                    collection: Some(col.clone()),
+                    entity_id: Some(id.clone()),
+                    ..QueryAuditRequest::default()
+                })
+                .expect("audit query after reopen");
+            assert_eq!(page.entries.len(), 1);
+            assert_eq!(page.entries[0].id, audit_id);
+            assert_eq!(page.entries[0].collection, col);
+            assert_eq!(page.entries[0].entity_id, id);
+            assert_eq!(page.entries[0].actor, "tester");
+
+            let _ = std::fs::remove_file(path);
+        }
+
+        /// Test 3 — the API-visible audit id is the storage rowid.
+        #[test]
+        fn api_audit_id_is_the_storage_rowid() {
             let mut h = AxonHandler::new(SqliteStorageAdapter::open_in_memory().expect("sqlite"));
             let col = CollectionId::new("audit_id_users");
+            h.storage_mut()
+                .append_audit_entry(AuditEntry::new(
+                    CollectionId::new("seed_audit"),
+                    EntityId::new("seed"),
+                    0,
+                    MutationType::GuardrailRejection,
+                    None,
+                    None,
+                    Some("seed".into()),
+                ))
+                .expect("seed audit row");
 
             let resp = h
                 .create_entity(CreateEntityRequest {
@@ -24060,23 +24371,19 @@ ORDER BY b.priority DESC, b.updated_at DESC
                 })
                 .expect("create");
 
-            // The first MemoryAuditLog id is 1 (small, sequential). The durable
-            // rowid would also be 1 here, so to disambiguate we assert the id the
-            // API surfaces equals the id the in-memory audit query returns for
-            // this entity — proving the API uses the `self.audit` append result.
             let audit_id = resp.audit_id.expect("create returns an audit id");
             let history = h
                 .audit_log()
                 .query_by_entity(&col, &EntityId::new("u-1"))
                 .expect("audit query");
-            assert_eq!(history.len(), 1, "exactly one in-memory audit entry");
+            assert_eq!(history.len(), 1, "exactly one entity audit entry");
             assert_eq!(
                 audit_id, history[0].id,
-                "the API audit id must be the in-memory MemoryAuditLog id"
+                "the API audit id must be the storage-owned audit row id"
             );
             assert_eq!(
-                audit_id, 1,
-                "the in-memory log assigns small sequential ids starting at 1"
+                audit_id, 2,
+                "the seed row proves API ids come from the storage sequence"
             );
         }
     }

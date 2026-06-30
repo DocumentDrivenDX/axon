@@ -27,7 +27,6 @@ use serde_json::json;
 use axon_api::handler::AxonHandler;
 use axon_api::request::*;
 use axon_api::transaction::Transaction;
-use axon_audit::log::MemoryAuditLog;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
 use axon_schema::EsfDocument;
@@ -124,7 +123,6 @@ entity_schema:
 
 fn bm_003_multi_entity_transaction(c: &mut Criterion) {
     let mut storage = MemoryStorageAdapter::default();
-    let mut audit = MemoryAuditLog::default();
 
     // Seed 1000 accounts.
     for i in 0..1000 {
@@ -158,10 +156,7 @@ fn bm_003_multi_entity_transaction(c: &mut Criterion) {
                     Some(current.data),
                 );
             }
-            black_box(
-                tx.commit(&mut storage, &mut audit, Some("bench".into()), None)
-                    .unwrap(),
-            );
+            black_box(tx.commit(&mut storage, Some("bench".into()), None).unwrap());
         })
     });
 }
@@ -391,7 +386,6 @@ fn bm_008_concurrent_writers(c: &mut Criterion) {
     // Simulate 100 agents writing to different entities sequentially
     // (true concurrency would need threads, but this measures per-write throughput).
     let mut storage = MemoryStorageAdapter::default();
-    let mut audit = MemoryAuditLog::default();
 
     for i in 0..100 {
         storage
@@ -419,13 +413,8 @@ fn bm_008_concurrent_writers(c: &mut Criterion) {
                     current.version,
                     Some(current.data),
                 );
-                tx.commit(
-                    &mut storage,
-                    &mut audit,
-                    Some(format!("agent-{round}")),
-                    None,
-                )
-                .unwrap();
+                tx.commit(&mut storage, Some(format!("agent-{round}")), None)
+                    .unwrap();
             }
             round += 1;
         })

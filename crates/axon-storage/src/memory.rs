@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axon_audit::entry::AuditEntry;
+use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::{
     CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User,
     UserId,
@@ -83,6 +85,8 @@ struct TxSnapshot {
     links: BTreeMap<LinkKey, Link>,
     /// Mutation intent records snapshot.
     mutation_intents: BTreeMap<IntentKey, MutationIntent>,
+    /// Storage-owned audit log snapshot.
+    audit_log: MemoryAuditLog,
 }
 
 /// In-memory storage adapter for testing and development.
@@ -129,6 +133,9 @@ pub struct MemoryStorageAdapter {
     links: BTreeMap<LinkKey, Link>,
     /// Server-side mutation intents keyed by (tenant_id, database_id, intent_id).
     mutation_intents: BTreeMap<IntentKey, MutationIntent>,
+    /// Storage-owned audit log. It is in-memory, but participates in
+    /// `begin_tx`/`abort_tx` snapshots with the rest of the adapter state.
+    audit_log: MemoryAuditLog,
     /// Revoked JWT IDs (ADR-018).
     revoked_jtis: HashSet<Uuid>,
     /// User store (ADR-018).
@@ -225,6 +232,7 @@ impl Default for MemoryStorageAdapter {
             numeric_ids: NumericIdCache::default(),
             links: BTreeMap::new(),
             mutation_intents: BTreeMap::new(),
+            audit_log: MemoryAuditLog::default(),
             revoked_jtis: HashSet::new(),
             users: std::sync::Mutex::new(HashMap::new()),
             tenant_members: std::sync::Mutex::new(HashMap::new()),
@@ -852,6 +860,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             numeric_ids: self.numeric_ids.clone(),
             links: self.links.clone(),
             mutation_intents: self.mutation_intents.clone(),
+            audit_log: self.audit_log.clone(),
         });
         Ok(())
     }
@@ -877,8 +886,71 @@ impl StorageAdapter for MemoryStorageAdapter {
             self.numeric_ids = snapshot.numeric_ids;
             self.links = snapshot.links;
             self.mutation_intents = snapshot.mutation_intents;
+            self.audit_log = snapshot.audit_log;
         }
         Ok(())
+    }
+
+    fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+        self.audit_log.append(entry)
+    }
+
+    fn owns_audit_log(&self) -> bool {
+        true
+    }
+
+    fn audit_entries(&self) -> Result<Vec<AuditEntry>, AxonError> {
+        Ok(self.audit_log.entries())
+    }
+
+    fn audit_len(&self) -> Result<usize, AxonError> {
+        Ok(self.audit_log.len())
+    }
+
+    fn find_audit_by_id(&self, id: u64) -> Result<Option<AuditEntry>, AxonError> {
+        self.audit_log.find_by_id(id)
+    }
+
+    fn query_audit_by_entity(
+        &self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        self.audit_log.query_by_entity(collection, entity_id)
+    }
+
+    fn query_audit_by_time_range(
+        &self,
+        start_ns: u64,
+        end_ns: u64,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        self.audit_log.query_by_time_range(start_ns, end_ns)
+    }
+
+    fn query_audit_by_actor(&self, actor: &str) -> Result<Vec<AuditEntry>, AxonError> {
+        self.audit_log.query_by_actor(actor)
+    }
+
+    fn query_audit_by_operation(
+        &self,
+        operation: &axon_audit::entry::MutationType,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        self.audit_log.query_by_operation(operation)
+    }
+
+    fn query_audit_by_transaction_id(
+        &self,
+        transaction_id: &str,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        self.audit_log.query_by_transaction_id(transaction_id)
+    }
+
+    fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+        self.audit_log.query_paginated(query)
+    }
+
+    fn known_audit_collections(&self) -> Result<HashSet<CollectionId>, AxonError> {
+        Ok(self.audit_log.known_collections())
     }
 
     fn create_mutation_intent(&mut self, intent: &MutationIntent) -> Result<(), AxonError> {
@@ -3838,4 +3910,4 @@ mod tests {
 }
 
 // L4 conformance test suite for MemoryStorageAdapter.
-crate::storage_conformance_tests!(memory_conformance, MemoryStorageAdapter::default());
+crate::storage_conformance_tests!(memory_conformance, super::MemoryStorageAdapter::default());

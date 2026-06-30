@@ -1,17 +1,121 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
+use axon_audit::log::{AuditPage, AuditQuery};
 use axon_core::auth::{
     CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User,
     UserId,
 };
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId};
+use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE};
 use axon_core::intent::{ApprovalState, MutationIntent};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use uuid::Uuid;
+
+const DEFAULT_AUDIT_PAGE_SIZE: usize = 100;
+
+fn audit_collection_is_in_database(collection: &CollectionId, database: &str) -> bool {
+    let (namespace, _) = Namespace::parse_with_database(collection.as_str(), DEFAULT_DATABASE);
+    namespace.database == database
+}
+
+/// Apply the canonical audit query semantics over an already ordered entry stream.
+///
+/// SQL adapters use this after reading `audit_log` rows in `id ASC` order so nested
+/// JSON-only predicates (`intent_id`, `approval_id`) match `MemoryAuditLog` exactly.
+pub fn filter_audit_entries_for_query(
+    entries: impl IntoIterator<Item = AuditEntry>,
+    query: AuditQuery,
+) -> AuditPage {
+    let limit = query.limit.unwrap_or(DEFAULT_AUDIT_PAGE_SIZE);
+    let after_id = query.after_id.unwrap_or(0);
+    let mut effective_collections = query.collection_ids.clone();
+    if let Some(collection) = query.collection.clone() {
+        if !effective_collections.contains(&collection) {
+            effective_collections.push(collection);
+        }
+    }
+
+    let mut filtered: Vec<AuditEntry> = entries
+        .into_iter()
+        .filter(|entry| {
+            if entry.id <= after_id {
+                return false;
+            }
+            if let Some(database) = &query.database {
+                if !audit_collection_is_in_database(&entry.collection, database) {
+                    return false;
+                }
+            }
+            if !effective_collections.is_empty()
+                && !effective_collections.contains(&entry.collection)
+            {
+                return false;
+            }
+            if let Some(entity_id) = &query.entity_id {
+                if &entry.entity_id != entity_id {
+                    return false;
+                }
+            }
+            if let Some(actor) = &query.actor {
+                if &entry.actor != actor {
+                    return false;
+                }
+            }
+            if let Some(operation) = &query.operation {
+                if &entry.mutation != operation {
+                    return false;
+                }
+            }
+            if let Some(intent_id) = &query.intent_id {
+                if !matches!(
+                    entry.intent_lineage.as_ref(),
+                    Some(lineage) if &lineage.intent_id == intent_id
+                ) {
+                    return false;
+                }
+            }
+            if let Some(approval_id) = &query.approval_id {
+                if !matches!(
+                    entry
+                        .intent_lineage
+                        .as_ref()
+                        .and_then(|lineage| lineage.approval_id.as_ref()),
+                    Some(entry_approval_id) if entry_approval_id == approval_id
+                ) {
+                    return false;
+                }
+            }
+            if let Some(since_ns) = query.since_ns {
+                if entry.timestamp_ns < since_ns {
+                    return false;
+                }
+            }
+            if let Some(until_ns) = query.until_ns {
+                if entry.timestamp_ns > until_ns {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    filtered.sort_by_key(|entry| entry.id);
+    let has_more = filtered.len() > limit;
+    filtered.truncate(limit);
+    let next_cursor = if has_more {
+        filtered.last().map(|entry| entry.id)
+    } else {
+        None
+    };
+
+    AuditPage {
+        entries: filtered,
+        next_cursor,
+    }
+}
 
 /// A typed index value extracted from entity data.
 ///
@@ -609,6 +713,135 @@ pub trait StorageAdapter: Send + Sync {
     /// atomic, and the snapshot would be pure overhead.
     fn supports_durable_audit(&self) -> bool {
         false
+    }
+
+    /// Whether this adapter is the authoritative audit-log source for both
+    /// appends and reads.
+    ///
+    /// Durable adapters return `true` via the default below. In-memory storage
+    /// also returns `true` because its audit entries participate in its
+    /// snapshot transaction model even though they are not durable across
+    /// process restart.
+    fn owns_audit_log(&self) -> bool {
+        self.supports_durable_audit()
+    }
+
+    /// Return all audit entries in ascending audit id order.
+    fn audit_entries(&self) -> Result<Vec<AuditEntry>, AxonError> {
+        Ok(self
+            .query_audit_paginated(AuditQuery {
+                limit: Some(usize::MAX),
+                ..AuditQuery::default()
+            })?
+            .entries)
+    }
+
+    /// Return the number of audit entries owned by this adapter.
+    fn audit_len(&self) -> Result<usize, AxonError> {
+        Ok(self.audit_entries()?.len())
+    }
+
+    /// Look up one audit entry by its storage-assigned audit id.
+    fn find_audit_by_id(&self, id: u64) -> Result<Option<AuditEntry>, AxonError> {
+        Ok(self
+            .query_audit_paginated(AuditQuery {
+                after_id: id.checked_sub(1),
+                limit: Some(1),
+                ..AuditQuery::default()
+            })?
+            .entries
+            .into_iter()
+            .find(|entry| entry.id == id))
+    }
+
+    /// Query audit entries by entity identity.
+    fn query_audit_by_entity(
+        &self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        Ok(self
+            .query_audit_paginated(AuditQuery {
+                collection: Some(collection.clone()),
+                entity_id: Some(entity_id.clone()),
+                limit: Some(usize::MAX),
+                ..AuditQuery::default()
+            })?
+            .entries)
+    }
+
+    /// Query audit entries by timestamp range.
+    fn query_audit_by_time_range(
+        &self,
+        start_ns: u64,
+        end_ns: u64,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        Ok(self
+            .query_audit_paginated(AuditQuery {
+                since_ns: Some(start_ns),
+                until_ns: Some(end_ns),
+                limit: Some(usize::MAX),
+                ..AuditQuery::default()
+            })?
+            .entries)
+    }
+
+    /// Query audit entries by actor.
+    fn query_audit_by_actor(&self, actor: &str) -> Result<Vec<AuditEntry>, AxonError> {
+        Ok(self
+            .query_audit_paginated(AuditQuery {
+                actor: Some(actor.to_string()),
+                limit: Some(usize::MAX),
+                ..AuditQuery::default()
+            })?
+            .entries)
+    }
+
+    /// Query audit entries by mutation type.
+    fn query_audit_by_operation(
+        &self,
+        operation: &axon_audit::entry::MutationType,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        Ok(self
+            .query_audit_paginated(AuditQuery {
+                operation: Some(operation.clone()),
+                limit: Some(usize::MAX),
+                ..AuditQuery::default()
+            })?
+            .entries)
+    }
+
+    /// Query audit entries by transaction id.
+    fn query_audit_by_transaction_id(
+        &self,
+        transaction_id: &str,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        Ok(self
+            .query_audit_paginated(AuditQuery {
+                limit: Some(usize::MAX),
+                ..AuditQuery::default()
+            })?
+            .entries
+            .into_iter()
+            .filter(|entry| entry.transaction_id.as_deref() == Some(transaction_id))
+            .collect())
+    }
+
+    /// Execute a multi-field filtered audit query.
+    fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+        let _ = query;
+        Err(AxonError::InvalidOperation(
+            "storage adapter does not own an audit log".into(),
+        ))
+    }
+
+    /// Return distinct collections known from audit entries.
+    fn known_audit_collections(&self) -> Result<HashSet<CollectionId>, AxonError> {
+        Ok(self
+            .audit_entries()?
+            .into_iter()
+            .map(|entry| entry.collection)
+            .collect())
     }
 
     // ── Mutation intent persistence (FEAT-030) ──────────────────────────────
@@ -1590,6 +1823,53 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
     }
     fn supports_durable_audit(&self) -> bool {
         (**self).supports_durable_audit()
+    }
+    fn owns_audit_log(&self) -> bool {
+        (**self).owns_audit_log()
+    }
+    fn audit_entries(&self) -> Result<Vec<AuditEntry>, AxonError> {
+        (**self).audit_entries()
+    }
+    fn audit_len(&self) -> Result<usize, AxonError> {
+        (**self).audit_len()
+    }
+    fn find_audit_by_id(&self, id: u64) -> Result<Option<AuditEntry>, AxonError> {
+        (**self).find_audit_by_id(id)
+    }
+    fn query_audit_by_entity(
+        &self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        (**self).query_audit_by_entity(collection, entity_id)
+    }
+    fn query_audit_by_time_range(
+        &self,
+        start_ns: u64,
+        end_ns: u64,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        (**self).query_audit_by_time_range(start_ns, end_ns)
+    }
+    fn query_audit_by_actor(&self, actor: &str) -> Result<Vec<AuditEntry>, AxonError> {
+        (**self).query_audit_by_actor(actor)
+    }
+    fn query_audit_by_operation(
+        &self,
+        operation: &axon_audit::entry::MutationType,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        (**self).query_audit_by_operation(operation)
+    }
+    fn query_audit_by_transaction_id(
+        &self,
+        transaction_id: &str,
+    ) -> Result<Vec<AuditEntry>, AxonError> {
+        (**self).query_audit_by_transaction_id(transaction_id)
+    }
+    fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+        (**self).query_audit_paginated(query)
+    }
+    fn known_audit_collections(&self) -> Result<HashSet<CollectionId>, AxonError> {
+        (**self).known_audit_collections()
     }
     fn create_mutation_intent(&mut self, intent: &MutationIntent) -> Result<(), AxonError> {
         (**self).create_mutation_intent(intent)

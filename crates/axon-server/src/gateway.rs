@@ -49,7 +49,6 @@ use axon_api::request::{
 };
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::entry::{AuditAttribution, AuditEntry, MutationType};
-use axon_audit::AuditLog;
 use axon_core::auth::{CallerIdentity as CoreCallerIdentity, ResolvedIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};

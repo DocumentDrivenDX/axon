@@ -23,7 +23,6 @@ use axon_api::request::{
     RevalidateRequest, RevertEntityRequest, RollbackEntityRequest, RollbackEntityTarget,
     RollbackTransactionRequest, TraverseRequest, UpdateEntityRequest,
 };
-use axon_audit::AuditLog;
 use axon_core::auth::CallerIdentity;
 use axon_core::id::{CollectionId, EntityId};
 use axon_schema::schema::CollectionSchema;

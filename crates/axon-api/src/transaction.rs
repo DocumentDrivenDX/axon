@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axon_audit::entry::{AuditAttribution, AuditEntry, MutationIntentAuditMetadata, MutationType};
-use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::{Entity, Link};
@@ -438,22 +437,20 @@ impl Transaction {
     ///
     /// Returns the list of written entities (deletes produce an entry with the
     /// sentinel entity; callers may ignore it).
-    pub fn commit<S: StorageAdapter, L: AuditLog>(
+    pub fn commit<S: StorageAdapter>(
         self,
         storage: &mut S,
-        audit: &mut L,
         actor: Option<String>,
         attribution: Option<AuditAttribution>,
     ) -> Result<Vec<Entity>, AxonError> {
         let (written, ()) =
-            self.commit_with_storage_hook(storage, audit, actor, attribution, None, |_| Ok(()))?;
+            self.commit_with_storage_hook(storage, actor, attribution, None, |_| Ok(()))?;
         Ok(written)
     }
 
-    pub(crate) fn commit_with_storage_hook<S, L, F, T>(
+    pub(crate) fn commit_with_storage_hook<S, F, T>(
         self,
         storage: &mut S,
-        audit: &mut L,
         actor: Option<String>,
         attribution: Option<AuditAttribution>,
         intent_lineage: Option<MutationIntentAuditMetadata>,
@@ -461,7 +458,6 @@ impl Transaction {
     ) -> Result<(Vec<Entity>, T), AxonError>
     where
         S: StorageAdapter,
-        L: AuditLog,
         F: FnOnce(&mut S) -> Result<T, AxonError>,
     {
         // Check timeout before entering the commit path (FEAT-008).
@@ -472,6 +468,12 @@ impl Transaction {
                 elapsed.as_secs_f64(),
                 self.timeout.as_secs()
             )));
+        }
+
+        if !storage.owns_audit_log() {
+            return Err(AxonError::InvalidOperation(
+                "storage adapter does not own an audit log".into(),
+            ));
         }
 
         storage.begin_tx()?;
@@ -485,8 +487,8 @@ impl Transaction {
                 // SQLite) a rollback undoes both. For adapters whose
                 // `append_audit_entry` is a no-op (e.g. in-memory) this is
                 // free and the post-commit path below handles persistence.
-                for entry in &pending_entries {
-                    if let Err(e) = storage.append_audit_entry(entry.clone()) {
+                for entry in pending_entries {
+                    if let Err(e) = storage.append_audit_entry(entry) {
                         let _ = storage.abort_tx();
                         return Err(e);
                     }
@@ -502,12 +504,7 @@ impl Transaction {
 
                 match storage.commit_tx() {
                     Ok(()) => {
-                        // Storage committed (entities + co-located audit entries
-                        // are now durable). Also flush to the standalone audit log
-                        // so callers that query via `AuditLog` see the entries.
-                        for entry in pending_entries {
-                            audit.append(entry)?;
-                        }
+                        // Storage committed entities and audit entries together.
                         Ok((written, hook_result))
                     }
                     Err(e) => {
@@ -885,7 +882,6 @@ impl Default for Transaction {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use axon_audit::log::MemoryAuditLog;
     use axon_core::id::{CollectionId, EntityId};
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::json;
@@ -957,6 +953,18 @@ mod tests {
             self.abort_called = true;
             self.inner.abort_tx()
         }
+        fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+            self.inner.append_audit_entry(entry)
+        }
+        fn owns_audit_log(&self) -> bool {
+            self.inner.owns_audit_log()
+        }
+        fn audit_entries(&self) -> Result<Vec<AuditEntry>, AxonError> {
+            self.inner.audit_entries()
+        }
+        fn audit_len(&self) -> Result<usize, AxonError> {
+            self.inner.audit_len()
+        }
     }
 
     fn accounts() -> CollectionId {
@@ -970,7 +978,6 @@ mod tests {
     #[test]
     fn atomic_debit_credit_succeeds() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
 
         // Seed two accounts.
         storage.put(account("A", 100)).unwrap();
@@ -1001,7 +1008,7 @@ mod tests {
         .unwrap();
 
         let written = tx
-            .commit(&mut storage, &mut audit, Some("system".into()), None)
+            .commit(&mut storage, Some("system".into()), None)
             .unwrap();
         assert_eq!(written.len(), 2);
 
@@ -1020,7 +1027,6 @@ mod tests {
     #[test]
     fn version_conflict_aborts_entire_transaction() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
 
         storage.put(account("A", 100)).unwrap();
         storage.put(account("B", 50)).unwrap();
@@ -1029,7 +1035,7 @@ mod tests {
         tx.update(account("A", 70), 1, None).unwrap(); // correct version
         tx.update(account("B", 80), 99, None).unwrap(); // WRONG version — should abort all
 
-        let err = tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
+        let err = tx.commit(&mut storage, None, None).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1061,13 +1067,12 @@ mod tests {
             .unwrap();
         assert_eq!(a.data["balance"], 100, "A should be unchanged after abort");
         assert_eq!(b.data["balance"], 50, "B should be unchanged after abort");
-        assert_eq!(audit.len(), 0, "no audit entries on abort");
+        assert_eq!(storage.audit_len().unwrap(), 0, "no audit entries on abort");
     }
 
     #[test]
     fn partial_failure_rolls_back_all_changes() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
 
         storage.put(account("A", 100)).unwrap();
         // B does not exist — create will succeed, but C check will fail.
@@ -1077,7 +1082,7 @@ mod tests {
         tx.update(account("A", 70), 1, None).unwrap(); // OK
         tx.update(account("C", 190), 99, None).unwrap(); // WRONG version — triggers abort
 
-        let err = tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
+        let err = tx.commit(&mut storage, None, None).unwrap_err();
         assert!(matches!(err, AxonError::ConflictingVersion { .. }));
 
         // A must be unchanged.
@@ -1094,7 +1099,6 @@ mod tests {
         inner.put(account("A", 100)).unwrap();
 
         let mut storage = FailOnCommitAdapter::new(inner);
-        let mut audit = MemoryAuditLog::default();
 
         let a_before = storage
             .get(&accounts(), &EntityId::new("A"))
@@ -1104,7 +1108,7 @@ mod tests {
         tx.update(account("A", 90), a_before.version, Some(a_before.data))
             .unwrap();
 
-        let err = tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
+        let err = tx.commit(&mut storage, None, None).unwrap_err();
         assert!(
             matches!(err, AxonError::Storage(_)),
             "expected storage error from simulated commit failure, got: {err}"
@@ -1135,7 +1139,7 @@ mod tests {
         // No audit entries must be written when commit_tx fails — the audit log
         // must only record mutations that were actually committed to storage.
         assert_eq!(
-            audit.len(),
+            storage.audit_len().unwrap(),
             0,
             "audit log must be empty after a rolled-back transaction"
         );
@@ -1146,22 +1150,24 @@ mod tests {
         // When the version check fails (Phase 1), no writes happen and therefore
         // no audit entries should be produced.
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
 
         storage.put(account("A", 100)).unwrap();
 
         let mut tx = Transaction::new();
         tx.update(account("A", 70), 99, None).unwrap(); // WRONG version
 
-        let _ = tx.commit(&mut storage, &mut audit, None, None);
+        let _ = tx.commit(&mut storage, None, None);
 
-        assert_eq!(audit.len(), 0, "no audit entries on version-conflict abort");
+        assert_eq!(
+            storage.audit_len().unwrap(),
+            0,
+            "no audit entries on version-conflict abort"
+        );
     }
 
     #[test]
     fn audit_entries_share_transaction_id() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
 
         storage.put(account("A", 100)).unwrap();
         storage.put(account("B", 50)).unwrap();
@@ -1180,9 +1186,9 @@ mod tests {
         tx.update(account("A", 70), a.version, None).unwrap();
         tx.update(account("B", 80), b.version, None).unwrap();
 
-        tx.commit(&mut storage, &mut audit, None, None).unwrap();
+        tx.commit(&mut storage, None, None).unwrap();
 
-        let entries = audit.entries();
+        let entries = storage.audit_entries().unwrap();
         assert_eq!(entries.len(), 2);
         for entry in entries {
             assert_eq!(
@@ -1221,7 +1227,6 @@ mod tests {
     #[test]
     fn timeout_aborts_commit() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
 
         storage.put(account("A", 100)).unwrap();
 
@@ -1232,7 +1237,7 @@ mod tests {
         // Small sleep to ensure timeout fires.
         std::thread::sleep(Duration::from_millis(1));
 
-        let err = tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
+        let err = tx.commit(&mut storage, None, None).unwrap_err();
         assert!(
             matches!(err, AxonError::InvalidOperation(_)),
             "expected timeout error, got: {err}"
@@ -1280,7 +1285,6 @@ mod tests {
     #[test]
     fn write_skew_is_allowed_under_snapshot_isolation() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         storage.put(account("X", 1)).unwrap(); // flag = balance, both start at 1
         storage.put(account("Y", 1)).unwrap();
 
@@ -1288,14 +1292,14 @@ mod tests {
         let mut t1 = Transaction::new();
         t1.record_read(accounts(), EntityId::new("Y"), 1).unwrap();
         t1.update(account("X", 0), 1, None).unwrap();
-        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
+        t1.commit(&mut storage, Some("t1".into()), None)
             .expect("T1 commits");
 
         // T2 read X *before* T1 committed (observed version 1), clears Y.
         let mut t2 = Transaction::new();
         t2.record_read(accounts(), EntityId::new("X"), 1).unwrap();
         t2.update(account("Y", 0), 1, None).unwrap();
-        t2.commit(&mut storage, &mut audit, Some("t2".into()), None)
+        t2.commit(&mut storage, Some("t2".into()), None)
             .expect("under snapshot isolation T2 also commits (write skew allowed)");
 
         let x = storage
@@ -1314,7 +1318,6 @@ mod tests {
     #[test]
     fn write_skew_is_prevented_under_serializable_isolation() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         storage.put(account("X", 1)).unwrap();
         storage.put(account("Y", 1)).unwrap();
 
@@ -1322,7 +1325,7 @@ mod tests {
         let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
         t1.record_read(accounts(), EntityId::new("Y"), 1).unwrap();
         t1.update(account("X", 0), 1, None).unwrap();
-        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
+        t1.commit(&mut storage, Some("t1".into()), None)
             .expect("T1 commits on fresh state");
 
         // T2 observed X@1 before T1 committed; clears Y. Its read of X is now
@@ -1331,7 +1334,7 @@ mod tests {
         t2.record_read(accounts(), EntityId::new("X"), 1).unwrap();
         t2.update(account("Y", 0), 1, None).unwrap();
         let err = t2
-            .commit(&mut storage, &mut audit, Some("t2".into()), None)
+            .commit(&mut storage, Some("t2".into()), None)
             .expect_err("serializable must reject T2: its read set changed");
         assert!(
             matches!(
@@ -1363,7 +1366,6 @@ mod tests {
         // A transaction whose invariant depends on an entity being ABSENT must
         // abort if that entity is concurrently created (key-addressed phantom).
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         storage.put(account("anchor", 1)).unwrap();
 
         // Concurrently, "Z" gets created (version 1).
@@ -1373,7 +1375,7 @@ mod tests {
         tx.record_read(accounts(), EntityId::new("Z"), 0).unwrap(); // observed absent
         tx.update(account("anchor", 2), 1, None).unwrap();
         let err = tx
-            .commit(&mut storage, &mut audit, None, None)
+            .commit(&mut storage, None, None)
             .expect_err("must abort: observed-absent Z now exists");
         assert!(
             matches!(err, AxonError::ConflictingVersion { expected: 0, .. }),
@@ -1402,21 +1404,20 @@ mod tests {
         // INSERTS a new on-call engineer. Under Snapshot both commit and the
         // "at most one on-call" invariant is violated — documents the SI gap.
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
 
         // T1: scan (snapshot → record_scan_read is a no-op), insert E1.
         let mut t1 = Transaction::new();
         let v1 = storage.structural_version(&engineers()).unwrap();
         t1.record_scan_read(engineers(), v1).unwrap();
         t1.create(on_call("E1")).unwrap();
-        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
+        t1.commit(&mut storage, Some("t1".into()), None)
             .expect("T1 commits");
 
         // T2 scanned before T1 inserted, inserts E2. Snapshot allows it.
         let mut t2 = Transaction::new();
         t2.record_scan_read(engineers(), v1).unwrap();
         t2.create(on_call("E2")).unwrap();
-        t2.commit(&mut storage, &mut audit, Some("t2".into()), None)
+        t2.commit(&mut storage, Some("t2".into()), None)
             .expect("under snapshot isolation T2 also commits (phantom skew allowed)");
 
         // Invariant "at most one on-call" is VIOLATED — both rows exist.
@@ -1429,7 +1430,6 @@ mod tests {
         // structurally (T1 inserted E1), so its scan read is stale and the
         // structural-version guard aborts it.
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
 
         let v0 = storage.structural_version(&engineers()).unwrap();
 
@@ -1437,7 +1437,7 @@ mod tests {
         let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
         t1.record_scan_read(engineers(), v0).unwrap();
         t1.create(on_call("E1")).unwrap();
-        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
+        t1.commit(&mut storage, Some("t1".into()), None)
             .expect("T1 commits on fresh state");
 
         // T2 observed the collection at v0 before T1 inserted; inserts E2.
@@ -1447,7 +1447,7 @@ mod tests {
         t2.record_scan_read(engineers(), v0).unwrap();
         t2.create(on_call("E2")).unwrap();
         let err = t2
-            .commit(&mut storage, &mut audit, Some("t2".into()), None)
+            .commit(&mut storage, Some("t2".into()), None)
             .expect_err("serializable must reject T2: its scanned collection changed");
         assert!(
             matches!(err, AxonError::ConflictingVersion { expected, .. } if expected == v0),
@@ -1465,7 +1465,6 @@ mod tests {
         // concurrently-updated (but not inserted/deleted) collection must NOT
         // falsely abort. (Updates are covered by the key-addressed read set.)
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         storage.put(on_call("E1")).unwrap();
 
         let v = storage.structural_version(&engineers()).unwrap();
@@ -1483,7 +1482,7 @@ mod tests {
         let mut tx = Transaction::with_isolation(IsolationLevel::Serializable);
         tx.record_scan_read(engineers(), v).unwrap();
         tx.create(on_call("E2")).unwrap();
-        tx.commit(&mut storage, &mut audit, None, None)
+        tx.commit(&mut storage, None, None)
             .expect("pure update must not bump the structural version");
     }
 
@@ -1492,12 +1491,11 @@ mod tests {
         // Snapshot must not consult the scan-read set: a stale scan-read must
         // not cause an abort.
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let mut tx = Transaction::new();
         // Record a deliberately-wrong structural version; snapshot ignores it.
         tx.record_scan_read(engineers(), 999).unwrap();
         tx.create(on_call("E1")).unwrap();
-        tx.commit(&mut storage, &mut audit, None, None)
+        tx.commit(&mut storage, None, None)
             .expect("snapshot must ignore the scan-read set");
     }
 }

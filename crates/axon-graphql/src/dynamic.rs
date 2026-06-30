@@ -51,7 +51,6 @@ use axon_api::request::{
 use axon_api::transaction::Transaction;
 use axon_api::PolicySubjectSnapshot;
 use axon_audit::entry::compute_diff;
-use axon_audit::log::AuditLog;
 use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, LinkId};
@@ -6126,9 +6125,8 @@ async fn mutation_intent_resolver<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
-    let (storage, audit) = guard.storage_and_audit_mut();
     service
-        .expire_due_with_audit(storage, audit, &scope, now_ns, None)
+        .expire_due_with_audit(guard.storage_mut(), &scope, now_ns, None)
         .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let intent = guard
         .storage_ref()
@@ -6160,9 +6158,8 @@ async fn pending_mutation_intents_resolver<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
-    let (storage, audit) = guard.storage_and_audit_mut();
     service
-        .expire_due_with_audit(storage, audit, &scope, now_ns, None)
+        .expire_due_with_audit(guard.storage_mut(), &scope, now_ns, None)
         .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let mut intents = if filter.states.is_empty() {
         let mut pending = service
@@ -6260,9 +6257,8 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
-    let (storage, audit) = guard.storage_and_audit_mut();
     service
-        .expire_due_with_audit(storage, audit, &scope, now_ns, None)
+        .expire_due_with_audit(guard.storage_mut(), &scope, now_ns, None)
         .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let intent = guard
         .storage_ref()
@@ -6277,11 +6273,10 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
         })?;
     authorize_mutation_intent_review(&guard, &caller, &intent)?;
 
-    let (storage, audit) = guard.storage_and_audit_mut();
     let intent = if approve {
-        service.approve_with_audit(storage, audit, &scope, &intent_id, metadata, now_ns)
+        service.approve_with_audit(guard.storage_mut(), &scope, &intent_id, metadata, now_ns)
     } else {
-        service.reject_with_audit(storage, audit, &scope, &intent_id, metadata, now_ns)
+        service.reject_with_audit(guard.storage_mut(), &scope, &intent_id, metadata, now_ns)
     }
     .map_err(mutation_intent_lifecycle_error_to_gql)?;
 
@@ -6597,11 +6592,9 @@ async fn commit_mutation_intent_resolver<S: StorageAdapter + 'static>(
         caller_authorized: caller.check(Operation::Write).is_ok(),
     };
     {
-        let (storage, audit) = guard.storage_and_audit_mut();
         service
             .validate_commit_bindings_with_audit(
-                storage,
-                audit,
+                guard.storage_mut(),
                 MutationIntentCommitValidationAuditRequest {
                     scope: &scope,
                     token: &token,
@@ -6613,11 +6606,9 @@ async fn commit_mutation_intent_resolver<S: StorageAdapter + 'static>(
             .map_err(mutation_intent_commit_error_to_gql)?;
     }
     let transaction = transaction_from_intent_operation(&guard, &operation)?;
-    let (storage, audit) = guard.storage_and_audit_mut();
     let result = service
         .commit_transaction_intent(
-            storage,
-            audit,
+            guard.storage_mut(),
             MutationIntentTransactionCommitRequest {
                 scope,
                 token,
@@ -6737,11 +6728,9 @@ async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
         review_summary,
     };
     let service = graphql_intent_lifecycle_service();
-    let (storage, audit) = guard.storage_and_audit_mut();
     let record = service
         .create_preview_record_with_origin(
-            storage,
-            audit,
+            guard.storage_mut(),
             intent,
             Some(MutationIntentAuditOrigin {
                 surface: MutationIntentAuditOriginSurface::Graphql,

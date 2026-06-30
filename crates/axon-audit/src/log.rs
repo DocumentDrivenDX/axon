@@ -202,7 +202,7 @@ pub trait AuditLog: Send + Sync {
 /// In-memory audit log for testing and embedded mode.
 ///
 /// Entries are stored in append order. Sequential IDs start at 1.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MemoryAuditLog {
     entries: Vec<AuditEntry>,
     next_id: u64,
@@ -210,8 +210,8 @@ pub struct MemoryAuditLog {
 
 impl MemoryAuditLog {
     /// Returns all stored entries (useful in tests).
-    pub fn entries(&self) -> &[AuditEntry] {
-        &self.entries
+    pub fn entries(&self) -> Vec<AuditEntry> {
+        self.entries.clone()
     }
 }
 

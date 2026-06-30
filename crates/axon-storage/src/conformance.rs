@@ -7,10 +7,10 @@
 //!
 //! ```ignore
 //! // Always-available backend (memory, SQLite in-memory):
-//! storage_conformance_tests!(memory_backend, || MemoryStorageAdapter::default());
+//! storage_conformance_tests!(memory_backend, super::MemoryStorageAdapter::default());
 //!
 //! // Optional backend (PostgreSQL, FoundationDB) — tests skip when None:
-//! storage_conformance_tests!(maybe: { make_pg_adapter() }, postgres_backend);
+//! storage_conformance_tests!(maybe: { super::make_pg_adapter() }, postgres_backend);
 //! ```
 //!
 //! In the `maybe:` form, each test function returns early (effectively skipping)
@@ -56,7 +56,6 @@ macro_rules! storage_conformance_tests {
     (@impl $mod_name:ident, $($store_fn:tt)*) => {
         #[cfg(test)]
         mod $mod_name {
-            use super::*;
             use $crate::adapter::StorageAdapter;
             use axon_core::error::AxonError;
             use axon_core::id::{CollectionId, EntityId};

@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_audit::entry::AuditEntry;
+use axon_audit::log::{AuditPage, AuditQuery};
 use axon_core::auth::TenantDatabase;
 use axon_core::error::AxonError;
 use axon_core::id::{
@@ -14,7 +15,9 @@ use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use sqlx::postgres::PgConnectOptions;
 
-use crate::adapter::{prefix_successor, CompoundKey, IndexValue, StorageAdapter};
+use crate::adapter::{
+    filter_audit_entries_for_query, prefix_successor, CompoundKey, IndexValue, StorageAdapter,
+};
 
 fn pg_connect_options(params: &str) -> Result<PgConnectOptions, AxonError> {
     if params.starts_with("postgres://") || params.starts_with("postgresql://") {
@@ -1945,6 +1948,68 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn supports_durable_audit(&self) -> bool {
         true
+    }
+
+    fn audit_len(&self) -> Result<usize, AxonError> {
+        use sqlx::Row;
+
+        let row =
+            self.block_on(sqlx::query("SELECT COUNT(*) FROM audit_log").fetch_one(&self.pool))?;
+        let count: i64 = row.get(0);
+        Ok(count as usize)
+    }
+
+    fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+        use sqlx::Row;
+
+        let after_id = query.after_id.unwrap_or(0) as i64;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT id, timestamp_ns, entry_json
+                 FROM audit_log
+                 WHERE id > $1
+                 ORDER BY id ASC",
+            )
+            .bind(after_id)
+            .fetch_all(&self.pool),
+        )?;
+
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = row.get::<i64, _>("id") as u64;
+            let timestamp_ns = row.get::<i64, _>("timestamp_ns") as u64;
+            let entry_json = row.get::<serde_json::Value, _>("entry_json");
+            let mut entry: AuditEntry = serde_json::from_value(entry_json)?;
+            entry.id = id;
+            entry.timestamp_ns = timestamp_ns;
+            entries.push(entry);
+        }
+
+        Ok(filter_audit_entries_for_query(entries, query))
+    }
+
+    fn find_audit_by_id(&self, id: u64) -> Result<Option<AuditEntry>, AxonError> {
+        use sqlx::Row;
+
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT id, timestamp_ns, entry_json
+                 FROM audit_log
+                 WHERE id = $1",
+            )
+            .bind(id as i64)
+            .fetch_optional(&self.pool),
+        )?;
+        row.map(|row| {
+            let row_id = row.get::<i64, _>("id") as u64;
+            let timestamp_ns = row.get::<i64, _>("timestamp_ns") as u64;
+            let entry_json = row.get::<serde_json::Value, _>("entry_json");
+            let mut entry: AuditEntry = serde_json::from_value(entry_json)?;
+            entry.id = row_id;
+            entry.timestamp_ns = timestamp_ns;
+            Ok(entry)
+        })
+        .transpose()
     }
 
     // ── Persisted secondary index operations (FEAT-013) ─────────────────

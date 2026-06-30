@@ -6,7 +6,6 @@ use axon_audit::entry::{
     AuditAttribution, AuditEntry, MutationIntentApproverMetadata, MutationIntentAuditMetadata,
     MutationIntentAuditOrigin, MutationIntentAuditOriginSurface, MutationType,
 };
-use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 pub use axon_core::intent::*;
@@ -873,20 +872,18 @@ impl MutationIntentLifecycleService {
     }
 
     /// Persist a preview intent record and issue an executable token when legal.
-    pub fn create_preview_record<S: StorageAdapter, A: AuditLog>(
+    pub fn create_preview_record<S: StorageAdapter>(
         &self,
         storage: &mut S,
-        audit: &mut A,
         intent: MutationIntent,
     ) -> Result<MutationIntentPreviewRecord, MutationIntentLifecycleError> {
-        self.create_preview_record_with_origin(storage, audit, intent, None)
+        self.create_preview_record_with_origin(storage, intent, None)
     }
 
     /// Persist a preview intent record and attach API/tool origin metadata to the audit entry.
-    pub fn create_preview_record_with_origin<S: StorageAdapter, A: AuditLog>(
+    pub fn create_preview_record_with_origin<S: StorageAdapter>(
         &self,
         storage: &mut S,
-        audit: &mut A,
         intent: MutationIntent,
         origin: Option<MutationIntentAuditOrigin>,
     ) -> Result<MutationIntentPreviewRecord, MutationIntentLifecycleError> {
@@ -900,15 +897,27 @@ impl MutationIntentLifecycleService {
             });
         }
 
-        storage.create_mutation_intent(&intent)?;
-        append_intent_lifecycle_audit(
-            audit,
-            &intent,
-            MutationType::IntentPreview,
-            intent_audit_actor(&intent),
-            None,
-            origin,
-        )?;
+        require_storage_audit_log(storage)?;
+        storage.begin_tx()?;
+        let inner = (|| -> Result<(), MutationIntentLifecycleError> {
+            storage.create_mutation_intent(&intent)?;
+            append_intent_lifecycle_audit(
+                storage,
+                &intent,
+                MutationType::IntentPreview,
+                intent_audit_actor(&intent),
+                None,
+                origin,
+            )?;
+            Ok(())
+        })();
+        match inner {
+            Ok(()) => storage.commit_tx()?,
+            Err(error) => {
+                let _ = storage.abort_tx();
+                return Err(error);
+            }
+        }
         let intent_token = intent
             .can_have_executable_token()
             .then(|| self.token_signer.issue(&intent));
@@ -962,25 +971,38 @@ impl MutationIntentLifecycleService {
     }
 
     /// Approve a pending approval-routed intent and append a lineage audit record.
-    pub fn approve_with_audit<S: StorageAdapter, A: AuditLog>(
+    pub fn approve_with_audit<S: StorageAdapter>(
         &self,
         storage: &mut S,
-        audit: &mut A,
         scope: &MutationIntentScopeBinding,
         intent_id: &str,
         metadata: MutationIntentReviewMetadata,
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
         let before = load_intent(storage, scope, intent_id)?;
-        let approved = self.approve(storage, scope, intent_id, metadata.clone(), now_ns)?;
-        append_intent_review_audit(
-            audit,
-            &before,
-            &approved,
-            MutationType::IntentApprove,
-            &metadata,
-        )?;
-        Ok(approved)
+        require_storage_audit_log(storage)?;
+        storage.begin_tx()?;
+        let inner = (|| -> Result<MutationIntent, MutationIntentLifecycleError> {
+            let approved = self.approve(storage, scope, intent_id, metadata.clone(), now_ns)?;
+            append_intent_review_audit(
+                storage,
+                &before,
+                &approved,
+                MutationType::IntentApprove,
+                &metadata,
+            )?;
+            Ok(approved)
+        })();
+        match inner {
+            Ok(approved) => {
+                storage.commit_tx()?;
+                Ok(approved)
+            }
+            Err(error) => {
+                let _ = storage.abort_tx();
+                Err(error)
+            }
+        }
     }
 
     /// Reject a pending approval-routed intent.
@@ -1022,25 +1044,38 @@ impl MutationIntentLifecycleService {
     }
 
     /// Reject a pending approval-routed intent and append a lineage audit record.
-    pub fn reject_with_audit<S: StorageAdapter, A: AuditLog>(
+    pub fn reject_with_audit<S: StorageAdapter>(
         &self,
         storage: &mut S,
-        audit: &mut A,
         scope: &MutationIntentScopeBinding,
         intent_id: &str,
         metadata: MutationIntentReviewMetadata,
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
         let before = load_intent(storage, scope, intent_id)?;
-        let rejected = self.reject(storage, scope, intent_id, metadata.clone(), now_ns)?;
-        append_intent_review_audit(
-            audit,
-            &before,
-            &rejected,
-            MutationType::IntentReject,
-            &metadata,
-        )?;
-        Ok(rejected)
+        require_storage_audit_log(storage)?;
+        storage.begin_tx()?;
+        let inner = (|| -> Result<MutationIntent, MutationIntentLifecycleError> {
+            let rejected = self.reject(storage, scope, intent_id, metadata.clone(), now_ns)?;
+            append_intent_review_audit(
+                storage,
+                &before,
+                &rejected,
+                MutationType::IntentReject,
+                &metadata,
+            )?;
+            Ok(rejected)
+        })();
+        match inner {
+            Ok(rejected) => {
+                storage.commit_tx()?;
+                Ok(rejected)
+            }
+            Err(error) => {
+                let _ = storage.abort_tx();
+                Err(error)
+            }
+        }
     }
 
     /// Expire an uncommitted intent whose deadline has passed.
@@ -1101,32 +1136,44 @@ impl MutationIntentLifecycleService {
     }
 
     /// Expire one due intent and append a lineage audit record for the transition.
-    pub fn expire_with_audit<S: StorageAdapter, A: AuditLog>(
+    pub fn expire_with_audit<S: StorageAdapter>(
         &self,
         storage: &mut S,
-        audit: &mut A,
         scope: &MutationIntentScopeBinding,
         intent_id: &str,
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
         let before = load_intent(storage, scope, intent_id)?;
-        let expired = self.expire(storage, scope, intent_id, now_ns)?;
-        append_intent_transition_audit(
-            audit,
-            &before,
-            &expired,
-            MutationType::IntentExpire,
-            "system",
-            None,
-        )?;
-        Ok(expired)
+        require_storage_audit_log(storage)?;
+        storage.begin_tx()?;
+        let inner = (|| -> Result<MutationIntent, MutationIntentLifecycleError> {
+            let expired = self.expire(storage, scope, intent_id, now_ns)?;
+            append_intent_transition_audit(
+                storage,
+                &before,
+                &expired,
+                MutationType::IntentExpire,
+                "system",
+                None,
+            )?;
+            Ok(expired)
+        })();
+        match inner {
+            Ok(expired) => {
+                storage.commit_tx()?;
+                Ok(expired)
+            }
+            Err(error) => {
+                let _ = storage.abort_tx();
+                Err(error)
+            }
+        }
     }
 
     /// Expire all due intents and append lineage audit records for each transition.
-    pub fn expire_due_with_audit<S: StorageAdapter, A: AuditLog>(
+    pub fn expire_due_with_audit<S: StorageAdapter>(
         &self,
         storage: &mut S,
-        audit: &mut A,
         scope: &MutationIntentScopeBinding,
         now_ns: u64,
         limit: Option<usize>,
@@ -1137,20 +1184,34 @@ impl MutationIntentLifecycleService {
             now_ns,
             limit,
         )?;
-        let mut expired = Vec::with_capacity(due.len());
-        for intent in due {
-            let updated = self.expire(storage, scope, &intent.intent_id, now_ns)?;
-            append_intent_transition_audit(
-                audit,
-                &intent,
-                &updated,
-                MutationType::IntentExpire,
-                "system",
-                None,
-            )?;
-            expired.push(updated);
+        require_storage_audit_log(storage)?;
+        storage.begin_tx()?;
+        let inner = (|| -> Result<Vec<MutationIntent>, MutationIntentLifecycleError> {
+            let mut expired = Vec::with_capacity(due.len());
+            for intent in due {
+                let updated = self.expire(storage, scope, &intent.intent_id, now_ns)?;
+                append_intent_transition_audit(
+                    storage,
+                    &intent,
+                    &updated,
+                    MutationType::IntentExpire,
+                    "system",
+                    None,
+                )?;
+                expired.push(updated);
+            }
+            Ok(expired)
+        })();
+        match inner {
+            Ok(expired) => {
+                storage.commit_tx()?;
+                Ok(expired)
+            }
+            Err(error) => {
+                let _ = storage.abort_tx();
+                Err(error)
+            }
         }
-        Ok(expired)
     }
 
     /// Materialize due expirations, then list currently pending review intents.
@@ -1236,10 +1297,9 @@ impl MutationIntentLifecycleService {
     }
 
     /// Validate commit bindings and append audit records for stale/mismatch attempts.
-    pub fn validate_commit_bindings_with_audit<S: StorageAdapter, A: AuditLog>(
+    pub fn validate_commit_bindings_with_audit<S: StorageAdapter>(
         &self,
-        storage: &S,
-        audit: &mut A,
+        storage: &mut S,
         request: MutationIntentCommitValidationAuditRequest<'_>,
     ) -> Result<MutationIntent, MutationIntentCommitValidationError> {
         match self.validate_commit_bindings(
@@ -1252,7 +1312,6 @@ impl MutationIntentLifecycleService {
             Ok(intent) => Ok(intent),
             Err(error) => {
                 append_commit_validation_failure_audit(
-                    audit,
                     storage,
                     request.scope,
                     &error,
@@ -1264,10 +1323,9 @@ impl MutationIntentLifecycleService {
     }
 
     /// Validate and execute a transaction intent through the normal atomic transaction path.
-    pub fn commit_transaction_intent<S: StorageAdapter, L: AuditLog>(
+    pub fn commit_transaction_intent<S: StorageAdapter>(
         &self,
         storage: &mut S,
-        audit: &mut L,
         request: MutationIntentTransactionCommitRequest,
     ) -> Result<MutationIntentCommitResult, MutationIntentCommitValidationError> {
         let MutationIntentTransactionCommitRequest {
@@ -1286,7 +1344,6 @@ impl MutationIntentLifecycleService {
         current.operation_hash = operation.operation_hash.clone();
         let intent = self.validate_commit_bindings_with_audit(
             storage,
-            audit,
             MutationIntentCommitValidationAuditRequest {
                 scope: &scope,
                 token: &token,
@@ -1306,23 +1363,16 @@ impl MutationIntentLifecycleService {
         let lineage = intent_lifecycle_lineage(&intent, None);
 
         let (written, committed) = transaction
-            .commit_with_storage_hook(
-                storage,
-                audit,
-                actor,
-                attribution,
-                Some(lineage),
-                |storage| {
-                    update_state(
-                        storage,
-                        &scope,
-                        &intent_id,
-                        expected_state,
-                        ApprovalState::Committed,
-                    )
-                    .map_err(|error| AxonError::InvalidOperation(error.to_string()))
-                },
-            )
+            .commit_with_storage_hook(storage, actor, attribution, Some(lineage), |storage| {
+                update_state(
+                    storage,
+                    &scope,
+                    &intent_id,
+                    expected_state,
+                    ApprovalState::Committed,
+                )
+                .map_err(|error| AxonError::InvalidOperation(error.to_string()))
+            })
             .map_err(|error| commit_execution_error(&intent.intent_id, error))?;
 
         Ok(MutationIntentCommitResult {
@@ -1719,8 +1769,20 @@ fn require_reason(
     Ok(())
 }
 
-fn append_intent_lifecycle_audit<A: AuditLog>(
-    audit: &mut A,
+fn require_storage_audit_log<S: StorageAdapter>(
+    storage: &S,
+) -> Result<(), MutationIntentLifecycleError> {
+    if storage.owns_audit_log() {
+        Ok(())
+    } else {
+        Err(MutationIntentLifecycleError::Storage(
+            "storage adapter does not own an audit log".into(),
+        ))
+    }
+}
+
+fn append_intent_lifecycle_audit<S: StorageAdapter>(
+    storage: &mut S,
     intent: &MutationIntent,
     mutation: MutationType,
     actor: &str,
@@ -1730,7 +1792,7 @@ fn append_intent_lifecycle_audit<A: AuditLog>(
     let data_after = serde_json::to_value(&intent.review_summary)
         .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
     append_intent_lifecycle_audit_entry(
-        audit,
+        storage,
         IntentAuditEntryParts {
             intent,
             mutation,
@@ -1756,8 +1818,8 @@ fn preview_audit_metadata(intent: &MutationIntent) -> HashMap<String, String> {
     ])
 }
 
-fn append_intent_transition_audit<A: AuditLog>(
-    audit: &mut A,
+fn append_intent_transition_audit<S: StorageAdapter>(
+    storage: &mut S,
     before: &MutationIntent,
     after: &MutationIntent,
     mutation: MutationType,
@@ -1769,7 +1831,7 @@ fn append_intent_transition_audit<A: AuditLog>(
     let data_after = serde_json::to_value(after)
         .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
     append_intent_lifecycle_audit_entry(
-        audit,
+        storage,
         IntentAuditEntryParts {
             intent: after,
             mutation,
@@ -1782,8 +1844,8 @@ fn append_intent_transition_audit<A: AuditLog>(
     )
 }
 
-fn append_intent_review_audit<A: AuditLog>(
-    audit: &mut A,
+fn append_intent_review_audit<S: StorageAdapter>(
+    storage: &mut S,
     before: &MutationIntent,
     after: &MutationIntent,
     mutation: MutationType,
@@ -1798,7 +1860,7 @@ fn append_intent_review_audit<A: AuditLog>(
         entry_metadata.insert("reason".into(), reason.clone());
     }
     append_intent_lifecycle_audit_entry(
-        audit,
+        storage,
         IntentAuditEntryParts {
             intent: after,
             mutation,
@@ -1821,8 +1883,8 @@ struct IntentAuditEntryParts<'a> {
     metadata: HashMap<String, String>,
 }
 
-fn append_intent_lifecycle_audit_entry<A: AuditLog>(
-    audit: &mut A,
+fn append_intent_lifecycle_audit_entry<S: StorageAdapter>(
+    storage: &mut S,
     parts: IntentAuditEntryParts<'_>,
 ) -> Result<AuditEntry, MutationIntentLifecycleError> {
     let entry = AuditEntry::new(
@@ -1836,8 +1898,8 @@ fn append_intent_lifecycle_audit_entry<A: AuditLog>(
     )
     .with_metadata(parts.metadata)
     .with_intent_lineage(parts.lineage);
-    audit
-        .append(entry)
+    storage
+        .append_audit_entry(entry)
         .map_err(MutationIntentLifecycleError::from)
 }
 
@@ -1902,9 +1964,8 @@ fn intent_review_lineage(
     lineage
 }
 
-fn append_commit_validation_failure_audit<S: StorageAdapter, A: AuditLog>(
-    audit: &mut A,
-    storage: &S,
+fn append_commit_validation_failure_audit<S: StorageAdapter>(
+    storage: &mut S,
     scope: &MutationIntentScopeBinding,
     error: &MutationIntentCommitValidationError,
     actor: Option<&str>,
@@ -1921,8 +1982,16 @@ fn append_commit_validation_failure_audit<S: StorageAdapter, A: AuditLog>(
     metadata.insert("event".into(), "commit_validation_failed".into());
     metadata.insert("error_code".into(), error.error_code().into());
 
+    if !storage.owns_audit_log() {
+        return Err(MutationIntentCommitValidationError::Storage(
+            "storage adapter does not own an audit log".into(),
+        ));
+    }
+    storage
+        .begin_tx()
+        .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
     append_intent_lifecycle_audit_entry(
-        audit,
+        storage,
         IntentAuditEntryParts {
             intent: &intent,
             mutation: MutationType::IntentCommit,
@@ -1933,7 +2002,14 @@ fn append_commit_validation_failure_audit<S: StorageAdapter, A: AuditLog>(
             metadata,
         },
     )
-    .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
+    .map_err(|error| {
+        let _ = storage.abort_tx();
+        MutationIntentCommitValidationError::Storage(error.to_string())
+    })?;
+    storage.commit_tx().map_err(|error| {
+        let _ = storage.abort_tx();
+        MutationIntentCommitValidationError::Storage(error.to_string())
+    })?;
     Ok(())
 }
 
@@ -1996,7 +2072,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use axon_audit::log::{AuditLog, AuditQuery, MemoryAuditLog};
+    use axon_audit::log::AuditQuery;
     use axon_core::id::{CollectionId, EntityId};
     use axon_storage::memory::MemoryStorageAdapter;
 
@@ -2103,7 +2179,7 @@ mod tests {
         svc: &MutationIntentLifecycleService,
         intent: MutationIntent,
     ) -> MutationIntentToken {
-        svc.create_preview_record(storage, &mut MemoryAuditLog::default(), intent)
+        svc.create_preview_record(storage, intent)
             .expect("preview record")
             .intent_token
             .expect("executable token")
@@ -2285,7 +2361,6 @@ mod tests {
     #[test]
     fn transaction_intent_rejects_stale_entity_before_any_write_or_mutation_audit() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let svc = service();
         storage.put(account("A", 100)).expect("seed A");
         storage.put(account("B", 50)).expect("seed B");
@@ -2323,7 +2398,6 @@ mod tests {
         let err = svc
             .commit_transaction_intent(
                 &mut storage,
-                &mut audit,
                 MutationIntentTransactionCommitRequest {
                     scope: scope(),
                     token,
@@ -2363,12 +2437,12 @@ mod tests {
                 .data["balance"],
             55
         );
-        assert!(audit
-            .query_by_operation(&MutationType::EntityUpdate)
+        assert!(storage
+            .query_audit_by_operation(&MutationType::EntityUpdate)
             .expect("entity update audit query should pass")
             .is_empty());
-        let stale_audit = audit
-            .query_paginated(AuditQuery {
+        let stale_audit = storage
+            .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentCommit),
                 intent_id: Some("mint_tx_stale".into()),
                 ..AuditQuery::default()
@@ -2392,7 +2466,6 @@ mod tests {
     #[test]
     fn transaction_intent_rejects_operation_mismatch_before_any_write_or_mutation_audit() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let svc = service();
         storage.put(account("A", 100)).expect("seed A");
         let a_before = storage
@@ -2425,7 +2498,6 @@ mod tests {
         let err = svc
             .commit_transaction_intent(
                 &mut storage,
-                &mut audit,
                 MutationIntentTransactionCommitRequest {
                     scope: scope(),
                     token,
@@ -2448,12 +2520,12 @@ mod tests {
                 .data["balance"],
             100
         );
-        assert!(audit
-            .query_by_operation(&MutationType::EntityUpdate)
+        assert!(storage
+            .query_audit_by_operation(&MutationType::EntityUpdate)
             .expect("entity update audit query should pass")
             .is_empty());
-        let mismatch_audit = audit
-            .query_paginated(AuditQuery {
+        let mismatch_audit = storage
+            .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentCommit),
                 intent_id: Some("mint_tx_mismatch".into()),
                 ..AuditQuery::default()
@@ -2469,7 +2541,6 @@ mod tests {
     #[test]
     fn transaction_intent_commits_entity_and_link_operations_atomically() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let svc = service();
         storage.put(account("inv-001", 100)).expect("seed invoice");
         storage.put(vendor("ven-001")).expect("seed vendor");
@@ -2511,7 +2582,6 @@ mod tests {
         let result = svc
             .commit_transaction_intent(
                 &mut storage,
-                &mut audit,
                 MutationIntentTransactionCommitRequest {
                     scope: scope(),
                     token,
@@ -2547,8 +2617,19 @@ mod tests {
             .get(&Link::links_collection(), &link_id)
             .expect("read link")
             .is_some());
-        assert_eq!(audit.len(), 2);
-        for entry in audit.entries() {
+        let committed_entries: Vec<_> = storage
+            .audit_entries()
+            .unwrap()
+            .into_iter()
+            .filter(|entry| {
+                matches!(
+                    entry.mutation,
+                    MutationType::EntityUpdate | MutationType::LinkCreate
+                )
+            })
+            .collect();
+        assert_eq!(committed_entries.len(), 2);
+        for entry in &committed_entries {
             assert_eq!(
                 entry.transaction_id.as_deref(),
                 Some(expected_tx_id.as_str())
@@ -2561,16 +2642,26 @@ mod tests {
                 Some("mint_tx_mixed")
             );
         }
-        let intent_entries = audit
-            .query_paginated(AuditQuery {
+        let intent_entries = storage
+            .query_audit_paginated(AuditQuery {
                 intent_id: Some("mint_tx_mixed".into()),
                 ..AuditQuery::default()
             })
             .expect("committed mutation lineage should be queryable by intent id");
-        assert_eq!(intent_entries.entries.len(), 2);
-        let update_entry = intent_entries
+        let committed_intent_entries: Vec<_> = intent_entries
             .entries
             .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.mutation,
+                    MutationType::EntityUpdate | MutationType::LinkCreate
+                )
+            })
+            .collect();
+        assert_eq!(committed_intent_entries.len(), 2);
+        let update_entry = committed_intent_entries
+            .iter()
+            .copied()
             .find(|entry| entry.mutation == MutationType::EntityUpdate)
             .expect("intent query should include committed entity update audit");
         let lineage = update_entry
@@ -2605,7 +2696,6 @@ mod tests {
     #[test]
     fn transaction_intent_version_conflict_aborts_without_partial_audit_or_state_change() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let svc = service();
         storage.put(account("A", 100)).expect("seed A");
         storage.put(account("B", 50)).expect("seed B");
@@ -2636,7 +2726,6 @@ mod tests {
         let err = svc
             .commit_transaction_intent(
                 &mut storage,
-                &mut audit,
                 MutationIntentTransactionCommitRequest {
                     scope: scope(),
                     token,
@@ -2667,7 +2756,21 @@ mod tests {
                 .data["balance"],
             50
         );
-        assert_eq!(audit.len(), 0);
+        assert!(storage
+            .query_audit_by_operation(&MutationType::EntityUpdate)
+            .expect("entity update audit query should pass")
+            .is_empty());
+        assert!(storage
+            .query_audit_by_operation(&MutationType::LinkCreate)
+            .expect("link create audit query should pass")
+            .is_empty());
+        assert_eq!(
+            storage
+                .query_audit_by_operation(&MutationType::IntentPreview)
+                .expect("preview audit query should pass")
+                .len(),
+            1
+        );
         assert_eq!(
             storage
                 .get_mutation_intent("acme", "finance", "mint_tx_conflict")
@@ -2951,7 +3054,7 @@ mod tests {
             false,
         );
         intent.operation = previewed_operation.clone();
-        svc.create_preview_record(&mut storage, &mut MemoryAuditLog::default(), intent)
+        svc.create_preview_record(&mut storage, intent)
             .expect("preview should persist");
 
         let err = svc
@@ -2994,12 +3097,10 @@ mod tests {
     #[test]
     fn create_preview_records_allowed_intent_with_none_state_and_token() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let svc = service();
         let record = svc
             .create_preview_record(
                 &mut storage,
-                &mut audit,
                 intent(
                     "mint_allowed",
                     MutationIntentDecision::Allow,
@@ -3020,8 +3121,8 @@ mod tests {
         assert_eq!(stored.approval_state, ApprovalState::None);
         assert_eq!(stored.decision, MutationIntentDecision::Allow);
 
-        let preview_page = audit
-            .query_paginated(AuditQuery {
+        let preview_page = storage
+            .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentPreview),
                 intent_id: Some("mint_allowed".into()),
                 ..AuditQuery::default()
@@ -3080,7 +3181,6 @@ mod tests {
         let record = svc
             .create_preview_record(
                 &mut storage,
-                &mut MemoryAuditLog::default(),
                 intent(
                     "mint_pending",
                     MutationIntentDecision::NeedsApproval,
@@ -3108,7 +3208,6 @@ mod tests {
         let err = svc
             .create_preview_record(
                 &mut storage,
-                &mut MemoryAuditLog::default(),
                 intent(
                     "mint_bad",
                     MutationIntentDecision::Allow,
@@ -3136,7 +3235,6 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_approve",
                 MutationIntentDecision::NeedsApproval,
@@ -3171,7 +3269,6 @@ mod tests {
 
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_reject",
                 MutationIntentDecision::NeedsApproval,
@@ -3213,11 +3310,9 @@ mod tests {
     #[test]
     fn approve_and_reject_with_audit_record_actor_reason_policy_and_intent() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let svc = service();
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_approve_audit",
                 MutationIntentDecision::NeedsApproval,
@@ -3231,7 +3326,6 @@ mod tests {
         let approved = svc
             .approve_with_audit(
                 &mut storage,
-                &mut audit,
                 &scope(),
                 "mint_approve_audit",
                 metadata(Some("approved after review")),
@@ -3240,8 +3334,8 @@ mod tests {
             .expect("approval should pass");
         assert_eq!(approved.approval_state, ApprovalState::Approved);
 
-        let approve_page = audit
-            .query_paginated(AuditQuery {
+        let approve_page = storage
+            .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentApprove),
                 intent_id: Some("mint_approve_audit".into()),
                 ..AuditQuery::default()
@@ -3285,7 +3379,6 @@ mod tests {
 
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_reject_audit",
                 MutationIntentDecision::NeedsApproval,
@@ -3298,7 +3391,6 @@ mod tests {
         let rejected = svc
             .reject_with_audit(
                 &mut storage,
-                &mut audit,
                 &scope(),
                 "mint_reject_audit",
                 metadata(Some("risk too high")),
@@ -3307,8 +3399,8 @@ mod tests {
             .expect("rejection should pass");
         assert_eq!(rejected.approval_state, ApprovalState::Rejected);
 
-        let reject_page = audit
-            .query_paginated(AuditQuery {
+        let reject_page = storage
+            .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentReject),
                 intent_id: Some("mint_reject_audit".into()),
                 ..AuditQuery::default()
@@ -3347,7 +3439,6 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_expire",
                 MutationIntentDecision::NeedsApproval,
@@ -3397,12 +3488,8 @@ mod tests {
                 ApprovalState::None,
             ),
         ] {
-            svc.create_preview_record(
-                &mut storage,
-                &mut MemoryAuditLog::default(),
-                intent(id, decision, state, 10, false),
-            )
-            .expect("preview should persist");
+            svc.create_preview_record(&mut storage, intent(id, decision, state, 10, false))
+                .expect("preview should persist");
         }
 
         let approve = svc
@@ -3478,7 +3565,6 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_due_pending",
                 MutationIntentDecision::NeedsApproval,
@@ -3490,7 +3576,6 @@ mod tests {
         .expect("due preview should persist");
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_live_pending",
                 MutationIntentDecision::NeedsApproval,
@@ -3523,11 +3608,9 @@ mod tests {
     #[test]
     fn expire_due_with_audit_records_intent_lineage() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let svc = service();
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_due_audited",
                 MutationIntentDecision::NeedsApproval,
@@ -3539,13 +3622,13 @@ mod tests {
         .expect("preview should persist");
 
         let expired = svc
-            .expire_due_with_audit(&mut storage, &mut audit, &scope(), 10, None)
+            .expire_due_with_audit(&mut storage, &scope(), 10, None)
             .expect("audited expiry scan should succeed");
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].approval_state, ApprovalState::Expired);
 
-        let page = audit
-            .query_paginated(AuditQuery {
+        let page = storage
+            .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentExpire),
                 intent_id: Some("mint_due_audited".into()),
                 ..AuditQuery::default()
@@ -3595,7 +3678,6 @@ mod tests {
     #[test]
     fn commit_stale_and_mismatch_attempts_are_audited_and_queryable() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let svc = service();
 
         let stale_intent = intent(
@@ -3612,8 +3694,7 @@ mod tests {
 
         let stale_error = svc
             .validate_commit_bindings_with_audit(
-                &storage,
-                &mut audit,
+                &mut storage,
                 MutationIntentCommitValidationAuditRequest {
                     scope: &scope(),
                     token: &stale_token,
@@ -3625,8 +3706,8 @@ mod tests {
             .expect_err("stale bindings should reject commit");
         assert_eq!(stale_error.error_code(), "intent_stale");
 
-        let stale_page = audit
-            .query_paginated(AuditQuery {
+        let stale_page = storage
+            .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentCommit),
                 intent_id: Some("mint_stale_audit".into()),
                 ..AuditQuery::default()
@@ -3671,8 +3752,7 @@ mod tests {
 
         let mismatch_error = svc
             .validate_commit_bindings_with_audit(
-                &storage,
-                &mut audit,
+                &mut storage,
                 MutationIntentCommitValidationAuditRequest {
                     scope: &scope(),
                     token: &mismatch_token,
@@ -3684,8 +3764,8 @@ mod tests {
             .expect_err("operation mismatch should reject commit");
         assert_eq!(mismatch_error.error_code(), "intent_mismatch");
 
-        let mismatch_page = audit
-            .query_paginated(AuditQuery {
+        let mismatch_page = storage
+            .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentCommit),
                 intent_id: Some("mint_mismatch_audit".into()),
                 ..AuditQuery::default()
@@ -3714,12 +3794,10 @@ mod tests {
     #[test]
     fn preview_record_does_not_create_entity_or_link_audit_entries() {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit = MemoryAuditLog::default();
         let svc = service();
 
         svc.create_preview_record(
             &mut storage,
-            &mut audit,
             intent(
                 "mint_preview_no_mutation_audit",
                 MutationIntentDecision::Allow,
@@ -3730,22 +3808,22 @@ mod tests {
         )
         .expect("preview should persist");
 
-        assert_eq!(audit.len(), 1);
+        assert_eq!(storage.audit_len().unwrap(), 1);
         assert_eq!(
-            audit.entries()[0].mutation,
+            storage.audit_entries().unwrap()[0].mutation,
             MutationType::IntentPreview,
             "preview should be audited as intent lineage, not entity/link mutation"
         );
-        assert!(audit
-            .query_by_operation(&MutationType::EntityCreate)
+        assert!(storage
+            .query_audit_by_operation(&MutationType::EntityCreate)
             .expect("entity create audit query should pass")
             .is_empty());
-        assert!(audit
-            .query_by_operation(&MutationType::EntityUpdate)
+        assert!(storage
+            .query_audit_by_operation(&MutationType::EntityUpdate)
             .expect("entity update audit query should pass")
             .is_empty());
-        assert!(audit
-            .query_by_operation(&MutationType::LinkCreate)
+        assert!(storage
+            .query_audit_by_operation(&MutationType::LinkCreate)
             .expect("link create audit query should pass")
             .is_empty());
     }
@@ -3756,7 +3834,6 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_commit",
                 MutationIntentDecision::Allow,
@@ -3792,7 +3869,6 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_rejected",
                 MutationIntentDecision::NeedsApproval,
@@ -3826,7 +3902,6 @@ mod tests {
 
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_expired",
                 MutationIntentDecision::NeedsApproval,
@@ -3860,7 +3935,6 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_allowed",
                 MutationIntentDecision::Allow,
@@ -3885,7 +3959,6 @@ mod tests {
 
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_pending_commit",
                 MutationIntentDecision::NeedsApproval,
@@ -3917,7 +3990,6 @@ mod tests {
         for id in ["mint_due_a", "mint_due_b"] {
             svc.create_preview_record(
                 &mut storage,
-                &mut MemoryAuditLog::default(),
                 intent(
                     id,
                     MutationIntentDecision::NeedsApproval,
@@ -3930,7 +4002,6 @@ mod tests {
         }
         svc.create_preview_record(
             &mut storage,
-            &mut MemoryAuditLog::default(),
             intent(
                 "mint_later",
                 MutationIntentDecision::NeedsApproval,

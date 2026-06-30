@@ -2335,7 +2335,6 @@ async fn http_create_entity_publishes_change_event_with_audit_id() {
     let audit_id: u64 = event.audit_id.parse().expect("audit_id parses as u64");
     let entry = {
         let h = handler.lock().await;
-        use axon_audit::log::AuditLog;
         h.audit_log()
             .find_by_id(audit_id)
             .expect("audit lookup succeeds")

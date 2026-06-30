@@ -9,7 +9,6 @@
 use proptest::prelude::*;
 use serde_json::json;
 
-use axon_audit::log::{AuditLog, MemoryAuditLog};
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::{Entity, Link};
 use axon_storage::adapter::StorageAdapter;
@@ -167,7 +166,6 @@ proptest! {
         t2_value   in 200_u64..=299,
     ) {
         let mut storage = MemoryStorageAdapter::default();
-        let mut audit   = MemoryAuditLog::default();
         let col = CollectionId::new("accts");
 
         // Seed all entities at version 1 with a known initial balance.
@@ -198,11 +196,11 @@ proptest! {
         }
 
         // T1 commits first — must succeed on the fresh initial state.
-        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
+        t1.commit(&mut storage, Some("t1".into()), None)
             .expect("T1 must commit on fresh initial state");
 
         // T2 must fail: all its expected_version values are now stale.
-        let t2_result = t2.commit(&mut storage, &mut audit, Some("t2".into()), None);
+        let t2_result = t2.commit(&mut storage, Some("t2".into()), None);
         prop_assert!(
             t2_result.is_err(),
             "T2 must be rejected after T1 incremented the overlapping entity versions"
@@ -231,7 +229,7 @@ proptest! {
         // Audit log must contain exactly T1's writes; T2's aborted writes must
         // not appear.
         prop_assert_eq!(
-            audit.len(),
+            storage.audit_len().unwrap(),
             n_entities,
             "audit must hold exactly T1's {} entries; T2 was aborted",
             n_entities
@@ -261,20 +259,19 @@ proptest! {
         // ── Snapshot isolation: write skew is ALLOWED (both commit) ──────────
         {
             let mut storage = MemoryStorageAdapter::default();
-            let mut audit = MemoryAuditLog::default();
             storage.put(Entity::new(col.clone(), x.clone(), json!({"v": x0}))).unwrap();
             storage.put(Entity::new(col.clone(), y.clone(), json!({"v": y0}))).unwrap();
 
             let mut t1 = Transaction::new();
             t1.record_read(col.clone(), y.clone(), 1).unwrap(); // no-op under SI
             t1.update(Entity::new(col.clone(), x.clone(), json!({"v": 0})), 1, None).unwrap();
-            t1.commit(&mut storage, &mut audit, Some("t1".into()), None).unwrap();
+            t1.commit(&mut storage, Some("t1".into()), None).unwrap();
 
             let mut t2 = Transaction::new();
             t2.record_read(col.clone(), x.clone(), 1).unwrap(); // stale, ignored under SI
             t2.update(Entity::new(col.clone(), y.clone(), json!({"v": 0})), 1, None).unwrap();
             prop_assert!(
-                t2.commit(&mut storage, &mut audit, Some("t2".into()), None).is_ok(),
+                t2.commit(&mut storage, Some("t2".into()), None).is_ok(),
                 "snapshot isolation allows write skew"
             );
         }
@@ -282,20 +279,19 @@ proptest! {
         // ── Serializable: write skew is PREVENTED (second aborts) ────────────
         {
             let mut storage = MemoryStorageAdapter::default();
-            let mut audit = MemoryAuditLog::default();
             storage.put(Entity::new(col.clone(), x.clone(), json!({"v": x0}))).unwrap();
             storage.put(Entity::new(col.clone(), y.clone(), json!({"v": y0}))).unwrap();
 
             let mut t1 = Transaction::with_isolation(IsolationLevel::Serializable);
             t1.record_read(col.clone(), y.clone(), 1).unwrap();
             t1.update(Entity::new(col.clone(), x.clone(), json!({"v": 0})), 1, None).unwrap();
-            t1.commit(&mut storage, &mut audit, Some("t1".into()), None).unwrap();
+            t1.commit(&mut storage, Some("t1".into()), None).unwrap();
 
             let mut t2 = Transaction::with_isolation(IsolationLevel::Serializable);
             t2.record_read(col.clone(), x.clone(), 1).unwrap(); // observed before T1 committed
             t2.update(Entity::new(col.clone(), y.clone(), json!({"v": 0})), 1, None).unwrap();
             prop_assert!(
-                t2.commit(&mut storage, &mut audit, Some("t2".into()), None).is_err(),
+                t2.commit(&mut storage, Some("t2".into()), None).is_err(),
                 "serializable must prevent write skew"
             );
 

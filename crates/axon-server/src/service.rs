@@ -12,7 +12,6 @@ use axon_api::request::{
     TransitionLifecycleRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::transaction::Transaction;
-use axon_audit::log::AuditLog;
 use axon_core::auth::{CallerIdentity as CoreCallerIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE};
@@ -688,9 +687,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
 
         let tx_id = tx.id.clone();
         let mut h = self.handler.lock().await;
-        let (storage, audit) = h.storage_and_audit_mut();
         let written = tx
-            .commit(storage, audit, Some(caller.actor.clone()), None)
+            .commit(h.storage_mut(), Some(caller.actor.clone()), None)
             .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoCommitTxResp {

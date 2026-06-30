@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_audit::entry::AuditEntry;
+use axon_audit::log::{AuditPage, AuditQuery};
 use axon_core::auth::{CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{
@@ -12,7 +13,7 @@ use axon_core::intent::{ApprovalState, MutationIntent};
 use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
-use crate::adapter::{CompoundKey, IndexValue, StorageAdapter};
+use crate::adapter::{filter_audit_entries_for_query, CompoundKey, IndexValue, StorageAdapter};
 
 use crate::adapter::prefix_successor;
 
@@ -2349,6 +2350,65 @@ impl StorageAdapter for SqliteStorageAdapter {
 
     fn supports_durable_audit(&self) -> bool {
         true
+    }
+
+    fn audit_len(&self) -> Result<usize, AxonError> {
+        let count: i64 = self
+            .block_on(sqlx::query_scalar("SELECT COUNT(*) FROM audit_log").fetch_one(&self.pool))?;
+        Ok(count as usize)
+    }
+
+    fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+        use sqlx::Row;
+
+        let after_id = query.after_id.unwrap_or(0) as i64;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT id, timestamp_ns, entry_json
+                 FROM audit_log
+                 WHERE id > ?1
+                 ORDER BY id ASC",
+            )
+            .bind(after_id)
+            .fetch_all(&self.pool),
+        )?;
+
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = row.get::<i64, _>("id") as u64;
+            let timestamp_ns = row.get::<i64, _>("timestamp_ns") as u64;
+            let entry_json = row.get::<String, _>("entry_json");
+            let mut entry: AuditEntry = serde_json::from_str(&entry_json)?;
+            entry.id = id;
+            entry.timestamp_ns = timestamp_ns;
+            entries.push(entry);
+        }
+
+        Ok(filter_audit_entries_for_query(entries, query))
+    }
+
+    fn find_audit_by_id(&self, id: u64) -> Result<Option<AuditEntry>, AxonError> {
+        use sqlx::Row;
+
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT id, timestamp_ns, entry_json
+                 FROM audit_log
+                 WHERE id = ?1",
+            )
+            .bind(id as i64)
+            .fetch_optional(&self.pool),
+        )?;
+        row.map(|row| {
+            let row_id = row.get::<i64, _>("id") as u64;
+            let timestamp_ns = row.get::<i64, _>("timestamp_ns") as u64;
+            let entry_json = row.get::<String, _>("entry_json");
+            let mut entry: AuditEntry = serde_json::from_str(&entry_json)?;
+            entry.id = row_id;
+            entry.timestamp_ns = timestamp_ns;
+            Ok(entry)
+        })
+        .transpose()
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
@@ -5726,5 +5786,5 @@ mod tests {
 // L4 conformance test suite for SqliteStorageAdapter.
 crate::storage_conformance_tests!(
     sqlite_conformance,
-    SqliteStorageAdapter::open_in_memory().expect("test operation should succeed")
+    super::SqliteStorageAdapter::open_in_memory().expect("test operation should succeed")
 );

@@ -722,11 +722,9 @@ fn execute_intent_preview<S: StorageAdapter>(
     };
 
     let service = mcp_intent_lifecycle_service();
-    let (storage, audit) = handler.storage_and_audit_mut();
     let record = service
         .create_preview_record_with_origin(
-            storage,
-            audit,
+            handler.storage_mut(),
             intent,
             Some(MutationIntentAuditOrigin {
                 surface: MutationIntentAuditOriginSurface::Mcp,
@@ -795,10 +793,8 @@ fn execute_intent_commit<S: StorageAdapter>(
     };
     let transaction = transaction_from_intent_operation(handler, &operation)?;
     let now_ns = current_time_ns();
-    let (storage, audit) = handler.storage_and_audit_mut();
     match service.commit_transaction_intent(
-        storage,
-        audit,
+        handler.storage_mut(),
         MutationIntentTransactionCommitRequest {
             scope,
             token,

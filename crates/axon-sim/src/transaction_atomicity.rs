@@ -225,7 +225,7 @@ pub fn run_transaction_atomicity_workload(
     // Build a map: tx_id → count of audit entries.
     let mut tx_entry_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    for entry in all_entries {
+    for entry in &all_entries {
         if let Some(ref tx_id) = entry.transaction_id {
             *tx_entry_counts.entry(tx_id.clone()).or_insert(0) += 1;
         }

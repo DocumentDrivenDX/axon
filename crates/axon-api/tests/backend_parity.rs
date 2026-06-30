@@ -8,7 +8,6 @@
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::*;
-use axon_audit::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_schema::schema::CollectionSchema;
