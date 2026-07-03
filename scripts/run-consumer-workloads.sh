@@ -3,6 +3,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DEFAULT_NEXIQ_WORKLOAD_PATH="$(cd "${REPO_ROOT}/.." && pwd)/nexiq"
 
 CONSUMER="fake"
 BACKEND="sqlite"
@@ -19,10 +20,11 @@ SUMMARY_PATH=""
 STARTED_AT=""
 FINISHED_AT=""
 AXON_SHA=""
-ENDPOINT="${AXON_ENDPOINT:-http://127.0.0.1:0}"
-TENANT="${AXON_TENANT:-consumer-workload}"
-DATABASE="${AXON_DATABASE:-default}"
-SCHEMA_HASH="${AXON_SCHEMA_HASH:-}"
+ENDPOINT="${AXON_ENDPOINT:-${NEXIQ_AXON_ENDPOINT:-http://127.0.0.1:0}}"
+TENANT="${AXON_TENANT:-${NEXIQ_AXON_TENANT:-consumer-workload}}"
+DATABASE="${AXON_DATABASE:-${NEXIQ_AXON_DATABASE:-default}}"
+SCHEMA_HASH="${AXON_SCHEMA_HASH:-${NEXIQ_AXON_SCHEMA_HASH:-}}"
+NEXIQ_WORKLOAD_PATH="${NEXIQ_WORKLOAD_PATH:-${AXON_NEXIQ_PATH:-${DEFAULT_NEXIQ_WORKLOAD_PATH}}}"
 
 STATUS="unknown"
 CLASSIFICATION="unknown"
@@ -38,9 +40,9 @@ usage() {
 Usage: scripts/run-consumer-workloads.sh [options]
 
 Options:
-  --consumer NAME   Consumer workload to run. Currently supports: fake.
+  --consumer NAME   Consumer workload to run. Currently supports: fake, nexiq.
   --backend NAME    Backend under test, such as sqlite or postgres.
-  --mode MODE       Gate mode: pr, nightly, or release. Defaults to pr.
+  --mode MODE       Gate/workload mode: pr, nightly, release, contract, or e2e. Defaults to pr.
   --dry-run         Write and print the commands/env without executing them.
   --self-test       Run the fake workload and built-in classifier checks.
   --run-dir PATH    Evidence directory. Defaults under target/consumer-workloads.
@@ -142,8 +144,8 @@ parse_args() {
 
 validate_options() {
   case "$MODE" in
-    pr|nightly|release) ;;
-    *) die "--mode must be pr, nightly, or release" ;;
+    pr|nightly|release|contract|e2e) ;;
+    *) die "--mode must be pr, nightly, release, contract, or e2e" ;;
   esac
 
   case "$BACKEND" in
@@ -154,6 +156,17 @@ validate_options() {
   if [[ "$SELF_TEST" -eq 1 ]]; then
     CONSUMER="fake"
   fi
+}
+
+command_env_keys() {
+  case "$CONSUMER" in
+    nexiq)
+      printf '%s' 'AXON_ENDPOINT,AXON_TENANT,AXON_DATABASE,AXON_SCHEMA_HASH,AXON_BACKEND,NEXIQ_AXON_ENDPOINT,NEXIQ_AXON_TENANT,NEXIQ_AXON_DATABASE,NEXIQ_AXON_SCHEMA_HASH'
+      ;;
+    *)
+      printf '%s' 'AXON_ENDPOINT,AXON_TENANT,AXON_DATABASE,AXON_BACKEND'
+      ;;
+  esac
 }
 
 setup_run_dir() {
@@ -201,11 +214,16 @@ append_command_json() {
   COMMAND_STDERR="$stderr_log" \
   COMMAND_EXECUTED_TESTS="$executed_tests" \
   COMMAND_SKIPPED_TESTS="$skipped_tests" \
-  COMMAND_ENV_KEYS="AXON_ENDPOINT,AXON_TENANT,AXON_DATABASE,AXON_BACKEND" \
+  COMMAND_ENV_KEYS="$(command_env_keys)" \
   AXON_ENDPOINT="$ENDPOINT" \
   AXON_TENANT="$TENANT" \
   AXON_DATABASE="$DATABASE" \
+  AXON_SCHEMA_HASH="$SCHEMA_HASH" \
   AXON_BACKEND="$BACKEND" \
+  NEXIQ_AXON_ENDPOINT="$ENDPOINT" \
+  NEXIQ_AXON_TENANT="$TENANT" \
+  NEXIQ_AXON_DATABASE="$DATABASE" \
+  NEXIQ_AXON_SCHEMA_HASH="$SCHEMA_HASH" \
   python3 - <<'PY'
 import json
 import os
@@ -324,6 +342,28 @@ build_fake_workload() {
   COMMAND_SHELLS=("printf '%s\n' 'fake consumer workload executed' \"consumer=\${AXON_CONSUMER_NAME:-fake}\" \"backend=\${AXON_BACKEND:-sqlite}\" \"endpoint=\${AXON_ENDPOINT}\" \"\${AXON_FAKE_WORKLOAD_MARKER:-executed_tests=1 skipped_tests=0}\"; exit \"\${AXON_FAKE_WORKLOAD_EXIT:-0}\"")
 }
 
+build_nexiq_workload() {
+  if [[ ! -d "$NEXIQ_WORKLOAD_PATH" && "$DRY_RUN" -ne 1 ]]; then
+    STATUS="missing"
+    CLASSIFICATION="missing_workload"
+    FAILURE_MESSAGE="Nexiq workload checkout is missing at ${NEXIQ_WORKLOAD_PATH}"
+    return 1
+  fi
+
+  case "$MODE" in
+    pr|contract)
+      COMMAND_NAMES=("nexiq-contract")
+      COMMAND_CWDS=("$NEXIQ_WORKLOAD_PATH")
+      COMMAND_SHELLS=("RUN_INTEGRATION=1 bun test tests/contract/axon-contract.spec.ts")
+      ;;
+    nightly|release|e2e)
+      COMMAND_NAMES=("nexiq-e2e")
+      COMMAND_CWDS=("$NEXIQ_WORKLOAD_PATH")
+      COMMAND_SHELLS=("bun run scripts/run-e2e-real-axon.ts")
+      ;;
+  esac
+}
+
 build_workload() {
   COMMAND_NAMES=()
   COMMAND_CWDS=()
@@ -333,6 +373,10 @@ build_workload() {
     fake)
       build_fake_workload
       return 0
+      ;;
+    nexiq)
+      build_nexiq_workload
+      return "$?"
       ;;
     *)
       STATUS="missing"
@@ -367,6 +411,111 @@ PY
   printf '%s' "$value"
 }
 
+detect_executed_tests() {
+  local stdout_log="$1"
+  local stderr_log="$2"
+  local value
+
+  value="$(detect_test_count 'executed_tests=([0-9]+)' "$stdout_log" "$stderr_log")"
+  if [[ -n "$value" ]]; then
+    printf '%s' "$value"
+    return 0
+  fi
+
+  value="$(python3 - "$stdout_log" "$stderr_log" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = ""
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    if path.exists():
+        text += path.read_text(encoding="utf-8", errors="replace") + "\n"
+
+lower = text.lower()
+if re.search(r"\b(no tests? (?:found|ran|run)|0 tests? (?:found|ran|run)|ran\s+0\s+tests?)\b", lower):
+    print("0")
+    raise SystemExit
+
+pass_counts = [int(match.group(1)) for match in re.finditer(r"(?m)^\s*(\d+)\s+pass(?:ed)?\b", lower)]
+if pass_counts:
+    print(str(sum(pass_counts)))
+    raise SystemExit
+
+match = re.search(r"\b(\d+)\s+tests?\s+passed\b", lower)
+if match:
+    print(match.group(1))
+    raise SystemExit
+
+match = re.search(r"\bpassed\s+(\d+)\s+tests?\b", lower)
+if match:
+    print(match.group(1))
+PY
+)"
+  printf '%s' "$value"
+}
+
+detect_skipped_tests() {
+  local stdout_log="$1"
+  local stderr_log="$2"
+  local value
+
+  value="$(detect_test_count 'skipped_tests=([0-9]+)' "$stdout_log" "$stderr_log")"
+  if [[ -n "$value" ]]; then
+    printf '%s' "$value"
+    return 0
+  fi
+
+  value="$(python3 - "$stdout_log" "$stderr_log" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = ""
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    if path.exists():
+        text += path.read_text(encoding="utf-8", errors="replace") + "\n"
+
+lower = text.lower()
+skip_counts = [int(match.group(1)) for match in re.finditer(r"(?m)^\s*(\d+)\s+skip(?:ped)?\b", lower)]
+skip_counts.extend(
+    int(match.group(1))
+    for match in re.finditer(r"\b(\d+)\s+tests?\s+skipped\b", lower)
+)
+if skip_counts:
+    print(str(sum(skip_counts)))
+elif re.search(r"\bskip(?:ped|s|ping)?\b", lower):
+    print("1")
+PY
+)"
+  printf '%s' "$value"
+}
+
+logs_report_no_tests() {
+  local stdout_log="$1"
+  local stderr_log="$2"
+
+  python3 - "$stdout_log" "$stderr_log" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = ""
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    if path.exists():
+        text += path.read_text(encoding="utf-8", errors="replace") + "\n"
+
+lower = text.lower()
+if re.search(r"\b(no tests? (?:found|ran|run)|0 tests? (?:found|ran|run)|ran\s+0\s+tests?)\b", lower):
+    print("1")
+else:
+    print("0")
+PY
+}
+
 classify_command_result() {
   local exit_code="$1"
   local stdout_log="$2"
@@ -381,7 +530,7 @@ classify_command_result() {
   combined="$(cat "$stdout_log" "$stderr_log" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
   if [[ "$combined" == *"missing_workload"* ]]; then
     printf 'missing_workload'
-  elif [[ "$combined" == *"contract_gap"* || "$combined" == *"fake transport"* || "$combined" == *"skipped"* ]]; then
+  elif [[ "$combined" == *"contract_gap"* || "$combined" == *"fake transport"* || "$combined" == *"skipped"* || "$combined" == *"no tests"* || "$combined" == *"0 tests"* ]]; then
     printf 'contract_gap'
   elif [[ "$combined" == *"axon_defect"* || "$combined" == *"axon panic"* || "$combined" == *"axon error"* ]]; then
     printf 'axon_defect'
@@ -406,7 +555,7 @@ status_for_classification() {
 gate_exit_code() {
   case "${STATUS}:${CLASSIFICATION}:${MODE}" in
     passed:none:*) printf '0' ;;
-    missing:missing_workload:release) printf '1' ;;
+    missing:missing_workload:release|missing:missing_workload:contract|missing:missing_workload:e2e) printf '1' ;;
     missing:missing_workload:*) printf '0' ;;
     blocked:contract_gap:pr) printf '0' ;;
     *) printf '1' ;;
@@ -448,7 +597,14 @@ record_dry_run_plan() {
     printf 'env AXON_ENDPOINT=%s\n' "$ENDPOINT"
     printf 'env AXON_TENANT=%s\n' "$TENANT"
     printf 'env AXON_DATABASE=%s\n' "$DATABASE"
+    printf 'env AXON_SCHEMA_HASH=%s\n' "$SCHEMA_HASH"
     printf 'env AXON_BACKEND=%s\n' "$BACKEND"
+    if [[ "$CONSUMER" == "nexiq" ]]; then
+      printf 'env NEXIQ_AXON_ENDPOINT=%s\n' "$ENDPOINT"
+      printf 'env NEXIQ_AXON_TENANT=%s\n' "$TENANT"
+      printf 'env NEXIQ_AXON_DATABASE=%s\n' "$DATABASE"
+      printf 'env NEXIQ_AXON_SCHEMA_HASH=%s\n' "$SCHEMA_HASH"
+    fi
     printf 'command=%s\n' "$shell_cmd"
   } > "$stdout_log"
   : > "$stderr_log"
@@ -480,9 +636,14 @@ run_one_command() {
     AXON_ENDPOINT="$ENDPOINT" \
     AXON_TENANT="$TENANT" \
     AXON_DATABASE="$DATABASE" \
+    AXON_SCHEMA_HASH="$SCHEMA_HASH" \
     AXON_BACKEND="$BACKEND" \
+    NEXIQ_AXON_ENDPOINT="$ENDPOINT" \
+    NEXIQ_AXON_TENANT="$TENANT" \
+    NEXIQ_AXON_DATABASE="$DATABASE" \
+    NEXIQ_AXON_SCHEMA_HASH="$SCHEMA_HASH" \
     AXON_CONSUMER_NAME="$CONSUMER" \
-    bash -lc "$shell_cmd"
+    bash -c "$shell_cmd"
   ) >"$stdout_log" 2>"$stderr_log" &
 
   local pid="$!"
@@ -498,16 +659,71 @@ run_one_command() {
 
   local executed_tests
   local skipped_tests
-  executed_tests="$(detect_test_count 'executed_tests=([0-9]+)' "$stdout_log" "$stderr_log")"
-  skipped_tests="$(detect_test_count 'skipped_tests=([0-9]+)' "$stdout_log" "$stderr_log")"
+  executed_tests="$(detect_executed_tests "$stdout_log" "$stderr_log")"
+  skipped_tests="$(detect_skipped_tests "$stdout_log" "$stderr_log")"
 
   append_command_json "$name" "$cwd" "$shell_cmd" "completed" "$command_started_at" "$command_finished_at" "$command_exit" "$duration_ms" "$stdout_log" "$stderr_log" "$executed_tests" "$skipped_tests"
   return "$command_exit"
 }
 
+validate_successful_command() {
+  local idx="$1"
+  local name="$2"
+  local shell_cmd="$3"
+  local stdout_log="$4"
+  local stderr_log="$5"
+
+  if [[ "$CONSUMER" != "nexiq" ]]; then
+    return 0
+  fi
+
+  case "$MODE" in
+    pr|contract) ;;
+    *) return 0 ;;
+  esac
+
+  if [[ "$shell_cmd" != *"RUN_INTEGRATION=1"* ]]; then
+    STATUS="failed"
+    CLASSIFICATION="contract_gap"
+    FAILURE_MESSAGE="command '${name}' did not force RUN_INTEGRATION=1"
+    return 1
+  fi
+
+  local executed_tests
+  local skipped_tests
+  executed_tests="$(detect_executed_tests "$stdout_log" "$stderr_log")"
+  skipped_tests="$(detect_skipped_tests "$stdout_log" "$stderr_log")"
+
+  if [[ "$(logs_report_no_tests "$stdout_log" "$stderr_log")" == "1" ]]; then
+    STATUS="failed"
+    CLASSIFICATION="contract_gap"
+    FAILURE_MESSAGE="command '${name}' reported that no integration tests ran"
+    return 1
+  fi
+
+  if [[ -n "$skipped_tests" && "$skipped_tests" -gt 0 ]]; then
+    STATUS="failed"
+    CLASSIFICATION="contract_gap"
+    FAILURE_MESSAGE="command '${name}' reported skipped integration tests"
+    return 1
+  fi
+
+  if [[ -z "$executed_tests" || "$executed_tests" -eq 0 ]]; then
+    STATUS="failed"
+    CLASSIFICATION="contract_gap"
+    FAILURE_MESSAGE="command '${name}' did not provide evidence of executed integration tests"
+    return 1
+  fi
+
+  printf '%s\n' "validated ${name}: executed_tests=${executed_tests} skipped_tests=${skipped_tests:-0}" >&2
+  return 0
+}
+
 run_commands() {
   local first_failure_classification="none"
   local idx
+  local stdout_log
+  local stderr_log
 
   for idx in "${!COMMAND_NAMES[@]}"; do
     if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -517,11 +733,17 @@ run_commands() {
 
     run_one_command "$idx" "${COMMAND_NAMES[$idx]}" "${COMMAND_CWDS[$idx]}" "${COMMAND_SHELLS[$idx]}"
     local command_exit="$?"
+    stdout_log="${LOG_DIR}/${idx}-$(safe_name "${COMMAND_NAMES[$idx]}").stdout.log"
+    stderr_log="${LOG_DIR}/${idx}-$(safe_name "${COMMAND_NAMES[$idx]}").stderr.log"
     if [[ "$command_exit" -ne 0 ]]; then
-      first_failure_classification="$(classify_command_result "$command_exit" "${LOG_DIR}/${idx}-$(safe_name "${COMMAND_NAMES[$idx]}").stdout.log" "${LOG_DIR}/${idx}-$(safe_name "${COMMAND_NAMES[$idx]}").stderr.log")"
+      first_failure_classification="$(classify_command_result "$command_exit" "$stdout_log" "$stderr_log")"
       CLASSIFICATION="$first_failure_classification"
       STATUS="$(status_for_classification "$CLASSIFICATION")"
       FAILURE_MESSAGE="command '${COMMAND_NAMES[$idx]}' failed"
+      return 1
+    fi
+
+    if ! validate_successful_command "$idx" "${COMMAND_NAMES[$idx]}" "${COMMAND_SHELLS[$idx]}" "$stdout_log" "$stderr_log"; then
       return 1
     fi
   done

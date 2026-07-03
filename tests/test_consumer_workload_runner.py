@@ -44,6 +44,22 @@ class ConsumerWorkloadRunnerTests(unittest.TestCase):
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         return result, summary, run_dir
 
+    def make_fake_nexiq(self, bun_body: str) -> tuple[Path, Path]:
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, ignore_errors=True)
+        nexiq_dir = temp_dir / "nexiq"
+        bin_dir = temp_dir / "bin"
+        nexiq_dir.mkdir()
+        bin_dir.mkdir()
+
+        bun = bin_dir / "bun"
+        bun.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n" + bun_body,
+            encoding="utf-8",
+        )
+        bun.chmod(0o755)
+        return nexiq_dir, bin_dir
+
     def test_bash_syntax_is_valid(self) -> None:
         result = subprocess.run(
             ["bash", "-n", str(SCRIPT)],
@@ -107,6 +123,150 @@ class ConsumerWorkloadRunnerTests(unittest.TestCase):
         self.assertEqual(command["state"], "planned")
         self.assertIsNone(command["exit_code"])
         self.assertEqual(command["env"]["AXON_ENDPOINT"], "http://127.0.0.1:0")
+
+    def test_nexiq_contract_dry_run_records_command_and_endpoint_env(self) -> None:
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "nexiq",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            "--dry-run",
+            env={
+                "AXON_ENDPOINT": "http://127.0.0.1:18181",
+                "AXON_TENANT": "tenant-a",
+                "AXON_DATABASE": "db-a",
+                "AXON_SCHEMA_HASH": "schema-a",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "RUN_INTEGRATION=1 bun test tests/contract/axon-contract.spec.ts",
+            result.stdout,
+        )
+        self.assertIn("env AXON_ENDPOINT=http://127.0.0.1:18181", result.stdout)
+        self.assertIn("env NEXIQ_AXON_ENDPOINT=http://127.0.0.1:18181", result.stdout)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["classification"], "none")
+
+        command = summary["commands"][0]
+        self.assertEqual(command["name"], "nexiq-contract")
+        self.assertEqual(command["state"], "planned")
+        self.assertEqual(
+            command["shell"],
+            "RUN_INTEGRATION=1 bun test tests/contract/axon-contract.spec.ts",
+        )
+        self.assertEqual(command["env"]["AXON_ENDPOINT"], "http://127.0.0.1:18181")
+        self.assertEqual(
+            command["env"]["NEXIQ_AXON_ENDPOINT"], "http://127.0.0.1:18181"
+        )
+        self.assertEqual(command["env"]["NEXIQ_AXON_TENANT"], "tenant-a")
+        self.assertEqual(command["env"]["NEXIQ_AXON_DATABASE"], "db-a")
+        self.assertEqual(command["env"]["NEXIQ_AXON_SCHEMA_HASH"], "schema-a")
+
+    def test_nexiq_e2e_dry_run_records_real_axon_script(self) -> None:
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "nexiq",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "e2e",
+            "--dry-run",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("bun run scripts/run-e2e-real-axon.ts", result.stdout)
+        command = summary["commands"][0]
+        self.assertEqual(command["name"], "nexiq-e2e")
+        self.assertEqual(command["shell"], "bun run scripts/run-e2e-real-axon.ts")
+
+    def test_nexiq_contract_missing_checkout_is_missing_workload(self) -> None:
+        missing_nexiq = Path(tempfile.mkdtemp()) / "not-present"
+        self.addCleanup(shutil.rmtree, missing_nexiq.parent, ignore_errors=True)
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "nexiq",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            env={"NEXIQ_WORKLOAD_PATH": str(missing_nexiq)},
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(summary["status"], "missing")
+        self.assertEqual(summary["classification"], "missing_workload")
+        self.assertEqual(summary["commands"], [])
+        self.assertNotEqual(summary["status"], "passed")
+
+    def test_nexiq_contract_skipped_tests_are_contract_gap(self) -> None:
+        nexiq_dir, bin_dir = self.make_fake_nexiq(
+            """
+if [[ "${RUN_INTEGRATION:-}" != "1" ]]; then
+  echo "RUN_INTEGRATION missing"
+  exit 65
+fi
+if [[ "$*" != "test tests/contract/axon-contract.spec.ts" ]]; then
+  echo "unexpected bun args: $*"
+  exit 66
+fi
+printf '%s\\n' '0 pass' '1 skip' 'Ran 1 tests across 1 files.'
+"""
+        )
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "nexiq",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            env={
+                "NEXIQ_WORKLOAD_PATH": str(nexiq_dir),
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            },
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["classification"], "contract_gap")
+        self.assertIn("skipped integration tests", summary["failure"]["message"])
+        command = summary["commands"][0]
+        self.assertEqual(command["exit_code"], 0)
+        self.assertEqual(command["executed_tests"], 0)
+        self.assertEqual(command["skipped_tests"], 1)
+
+    def test_nexiq_contract_no_tests_is_contract_gap(self) -> None:
+        nexiq_dir, bin_dir = self.make_fake_nexiq(
+            """
+printf '%s\\n' 'No tests found!'
+"""
+        )
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "nexiq",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            env={
+                "NEXIQ_WORKLOAD_PATH": str(nexiq_dir),
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            },
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["classification"], "contract_gap")
+        self.assertIn("no integration tests ran", summary["failure"]["message"])
+        command = summary["commands"][0]
+        self.assertEqual(command["exit_code"], 0)
+        self.assertEqual(command["executed_tests"], 0)
 
     def test_fake_failure_is_classified_from_command_evidence(self) -> None:
         result, summary, _run_dir = self.run_runner(

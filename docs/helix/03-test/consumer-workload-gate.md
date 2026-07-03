@@ -39,6 +39,12 @@ The gate mode decides whether that result exits successfully.
 The default mode is `pr`. Operators must request `nightly` or `release`
 explicitly with a runner flag or environment variable.
 
+The runner also accepts workload-selector modes for direct consumer execution:
+`contract` runs the lightweight consumer contract workload, and `e2e` runs the
+consumer's real-Axon end-to-end workload. These modes are strict execution
+modes, not optional discovery gates: missing consumer source is
+`missing_workload` and exits nonzero.
+
 ## Source Acquisition
 
 Consumer source resolution is deterministic:
