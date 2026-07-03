@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260703T072039-02e98445",
+  "bead_id": "axon-8d2b9e99",
+  "base_rev": "8df05ab96cc8973740f44cd6e80fe34404a1bb27",
+  "created_at": "2026-07-03T07:20:45.053556078Z",
+  "requested": {
+    "prompt": "synthesized",
+    "min_power": 10
+  },
+  "bead": {
+    "id": "axon-8d2b9e99",
+    "title": "Represent DDx and Cayce workload gaps honestly",
+    "description": "Add explicit DDx and Cayce workload slots to the consumer-workload runner without creating fake green tests.\n\nDDx context:\n- /home/erik/Projects/ddx exists, but its own docs say the Axon backend is experimental/not production-ready: production `bead.backend: axon` has no real wire calls, schema/operation mismatch exists, whole-corpus JSONL-shaped writes remain, and zero tests run the backend against real Axon/Postgres.\n- Axon's runner should classify DDx as contract_gap or blocked for real-backend mode until a real endpoint/transport/import path exists. It may support dry-run commands, but it must not count fake transports as a passing real workload.\n\nCayce context:\n- No /home/erik/Projects/cayce checkout was found during plan review.\n- The runner should include a Cayce slot whose missing source is reported as missing_workload according to the status matrix. Do not invent marketing fixtures.\n\nRequired behavior:\n- `--consumer ddx --dry-run` prints the intended future proof steps and marks real execution as contract_gap/blocked unless an explicit real-DDx workload contract exists.\n- `--consumer cayce` reports missing_workload when the repo/export is absent.\n- PR/nightly/release semantics for these classifications follow docs/helix/03-test/consumer-workload-gate.md.\n- The summary output must make it impossible to mistake DDx fake-transport tests or missing Cayce source for success.\n\nIn-scope files:\n- scripts/run-consumer-workloads.sh\n- tests/test_consumer_workload_runner.py or adjacent test fixtures\n- docs/helix/03-test/consumer-workload-gate.md if classification language needs tightening\n\nOut of scope:\n- Editing ../ddx or implementing DDx's real Axon backend.\n- Creating Cayce schemas/fixtures without a real source artifact.\n- Adding CI workflow wiring.",
+    "acceptance": "1. `python3 tests/test_consumer_workload_runner.py` passes with DDx and Cayce classification coverage.\n2. `scripts/run-consumer-workloads.sh --consumer cayce --backend sqlite --mode contract` emits summary.json with `classification` equal to `missing_workload` when `../cayce` is absent and exits according to the documented gate mode.\n3. `scripts/run-consumer-workloads.sh --consumer ddx --backend sqlite --mode contract --dry-run` exits 0 and reports DDx real-backend execution as not yet a passing real workload unless an explicit real workload contract is configured.",
+    "parent": "axon-fbf542da",
+    "labels": [
+      "area:testing",
+      "kind:task",
+      "consumer:ddx",
+      "consumer:cayce",
+      "plan-consumer-workloads"
+    ]
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260703T072039-02e98445",
+    "prompt": ".ddx/executions/20260703T072039-02e98445/prompt.md",
+    "manifest": ".ddx/executions/20260703T072039-02e98445/manifest.json",
+    "result": ".ddx/executions/20260703T072039-02e98445/result.json",
+    "checks": ".ddx/executions/20260703T072039-02e98445/checks.json",
+    "usage": ".ddx/executions/20260703T072039-02e98445/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-8d2b9e99-20260703T072039-02e98445"
+  },
+  "prompt_sha": "0100683aecf0ed647e400506b06887a80714c864503643d1d9003e5d7d10669a"
+}
