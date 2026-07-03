@@ -229,8 +229,28 @@ PR jobs should run the runner self-test and cheap dry-runs. They may run Nexiq
 contract mode only when source acquisition is configured and the command cannot
 silently skip.
 
-Nightly jobs may run full Nexiq SQLite and Postgres workloads and upload the
-run directory as an artifact.
+The GitHub PR workflow runs:
+
+- `scripts/run-consumer-workloads.sh --self-test`
+- Nexiq contract mode when a local `NEXIQ_WORKLOAD_PATH` checkout is present,
+  otherwise a Nexiq contract dry-run
+- DDx PR dry-run, which must report `blocked` / `contract_gap` until a real
+  Axon wire-call contract is configured
+- Cayce PR missing-workload probe, which must report `missing` /
+  `missing_workload` when no source/export is configured
+
+The PR workflow uploads `target/consumer-workloads/pr-*` as the
+`consumer-workload-pr` artifact. It also prints the DDx and Cayce
+status/classification pairs so those pass-with-warning states are visible in
+GitHub Actions logs instead of being silently green.
+
+Nightly and `workflow_dispatch` jobs run a Nexiq workload matrix for `sqlite`
+and `postgres` backends and upload each run directory as an artifact. Scheduled
+runs can check out Nexiq by setting repository variable
+`AXON_NEXIQ_REPOSITORY`; manual runs can pass `nexiq_repository` and
+`nexiq_ref` inputs. If no checkout is configured, the runner emits `missing` /
+`missing_workload` per the status matrix and still uploads the summary/log
+directory.
 
 Release qualification must fail on `missing_workload`, `contract_gap`,
 `unknown`, and any `failed` status.

@@ -9,6 +9,14 @@ on:
         description: 'Number of simulation seeds (default 1000)'
         required: false
         default: '1000'
+      nexiq_repository:
+        description: 'Optional owner/repo to check out into ./nexiq for real consumer workloads'
+        required: false
+        default: ''
+      nexiq_ref:
+        description: 'Nexiq git ref when nexiq_repository is set'
+        required: false
+        default: 'main'
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,6 +36,117 @@ jobs:
         env:
           AXON_SIM_SEEDS: ${{ github.event.inputs.sim_seeds || '1000' }}
         run: scripts/run-sim-seeds.sh
+
+  consumer-workloads:
+    name: Consumer Workloads (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AXON_ENDPOINT: http://127.0.0.1:4170
+      AXON_TENANT: nexiq-ci
+      AXON_DATABASE: default
+      AXON_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres
+      NEXIQ_WORKLOAD_PATH: ${{ github.workspace }}/nexiq
+      NEXIQ_REPOSITORY: ${{ github.event.inputs.nexiq_repository || vars.AXON_NEXIQ_REPOSITORY || '' }}
+      NEXIQ_REF: ${{ github.event.inputs.nexiq_ref || vars.AXON_NEXIQ_REF || 'main' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Checkout Nexiq workload
+        if: env.NEXIQ_REPOSITORY != ''
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.NEXIQ_REPOSITORY }}
+          ref: ${{ env.NEXIQ_REF }}
+          path: nexiq
+          token: ${{ secrets.AXON_NEXIQ_TOKEN || github.token }}
+      - name: Install Nexiq dependencies
+        if: ${{ hashFiles('nexiq/package.json') != '' }}
+        working-directory: nexiq
+        run: bun install
+      - name: Build Axon server
+        if: ${{ hashFiles('nexiq/**') != '' }}
+        run: cargo build -p axon-cli
+      - name: Start Axon for consumer workload
+        if: ${{ hashFiles('nexiq/**') != '' }}
+        env:
+          BACKEND: ${{ matrix.backend }}
+          RUN_DIR: target/consumer-workloads/nightly-nexiq-${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUN_DIR/logs"
+          if [[ "$BACKEND" == "postgres" ]]; then
+            nohup env \
+              AXON_STORAGE=postgres \
+              AXON_POSTGRES_DSN="$AXON_POSTGRES_DSN" \
+              AXON_CONTROL_PLANE_PATH="$RUN_DIR/axon-control-plane.db" \
+              target/debug/axon serve --http-port 4170 --no-auth > "$RUN_DIR/logs/axon-server.log" 2>&1 &
+          else
+            nohup env \
+              AXON_STORAGE=sqlite \
+              AXON_SQLITE_PATH="$RUN_DIR/axon.db" \
+              AXON_CONTROL_PLANE_PATH="$RUN_DIR/axon-control-plane.db" \
+              target/debug/axon serve --http-port 4170 --no-auth > "$RUN_DIR/logs/axon-server.log" 2>&1 &
+          fi
+          echo "AXON_PID=$!" >> "$GITHUB_ENV"
+          for _ in {1..60}; do
+            if curl -fsS "$AXON_ENDPOINT/health" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUN_DIR/logs/axon-server.log"
+          exit 1
+      - name: Run Nexiq consumer workload
+        env:
+          BACKEND: ${{ matrix.backend }}
+          RUN_DIR: target/consumer-workloads/nightly-nexiq-${{ matrix.backend }}
+        run: scripts/run-consumer-workloads.sh --consumer nexiq --backend "$BACKEND" --mode nightly --run-dir "$RUN_DIR"
+      - name: Print consumer workload summary
+        if: always()
+        env:
+          SUMMARY_PATH: target/consumer-workloads/nightly-nexiq-${{ matrix.backend }}/summary.json
+        run: |
+          if [[ -f "$SUMMARY_PATH" ]]; then
+            python3 -m json.tool "$SUMMARY_PATH"
+          else
+            echo "summary.json not found at $SUMMARY_PATH" >&2
+            exit 1
+          fi
+      - name: Stop Axon
+        if: always()
+        run: |
+          if [[ -n "${AXON_PID:-}" ]] && kill -0 "$AXON_PID" 2>/dev/null; then
+            kill "$AXON_PID"
+          fi
+      - name: Upload consumer workload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: consumer-workload-nexiq-${{ matrix.backend }}
+          path: target/consumer-workloads/nightly-nexiq-${{ matrix.backend }}
+          if-no-files-found: error
 
   benchmarks:
     name: L5 Criterion benchmarks (BM-001..BM-010)

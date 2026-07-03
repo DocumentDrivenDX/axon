@@ -35,6 +35,70 @@ jobs:
       - run: python3 scripts/check_covers_traceability_test.py
       - run: python3 scripts/check_covers_traceability.py --format text
 
+  consumer-workload-gate:
+    name: Consumer Workload Gate (PR)
+    runs-on: ubuntu-latest
+    env:
+      NEXIQ_WORKLOAD_PATH: ${{ github.workspace }}/../nexiq
+      CAYCE_WORKLOAD_PATH: ${{ github.workspace }}/target/consumer-workloads/missing-cayce
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - name: Run consumer workload runner self-test
+        run: scripts/run-consumer-workloads.sh --self-test --run-dir target/consumer-workloads/pr-self-test
+      - name: Run Nexiq contract smoke when source is present
+        run: |
+          if [[ -d "$NEXIQ_WORKLOAD_PATH" ]]; then
+            scripts/run-consumer-workloads.sh --consumer nexiq --backend sqlite --mode contract --run-dir target/consumer-workloads/pr-nexiq-contract
+          else
+            scripts/run-consumer-workloads.sh --consumer nexiq --backend sqlite --mode contract --dry-run --run-dir target/consumer-workloads/pr-nexiq-contract
+          fi
+      - name: Run DDx contract-gap dry-run
+        run: scripts/run-consumer-workloads.sh --consumer ddx --backend sqlite --mode pr --dry-run --run-dir target/consumer-workloads/pr-ddx
+      - name: Run Cayce missing-workload probe
+        run: scripts/run-consumer-workloads.sh --consumer cayce --backend sqlite --mode pr --dry-run --run-dir target/consumer-workloads/pr-cayce
+      - name: Report PR status matrix outcomes
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("target/consumer-workloads")
+          for summary_path in sorted(root.glob("pr-*/summary.json")):
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              print(
+                  f"{summary['consumer']}: "
+                  f"status={summary['status']} "
+                  f"classification={summary['classification']} "
+                  f"exit_code={summary['exit_code']} "
+                  f"summary={summary_path}"
+              )
+
+          required = {
+              "pr-ddx": ("ddx", "blocked", "contract_gap"),
+              "pr-cayce": ("cayce", "missing", "missing_workload"),
+          }
+          for directory, expected in required.items():
+              summary_path = root / directory / "summary.json"
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              actual = (
+                  summary["consumer"],
+                  summary["status"],
+                  summary["classification"],
+              )
+              if actual != expected:
+                  raise SystemExit(
+                      f"{directory} expected {expected}, got {actual}"
+                  )
+          PY
+      - name: Upload consumer workload PR artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: consumer-workload-pr
+          path: target/consumer-workloads/pr-*
+          if-no-files-found: error
+
   test-kafka:
     name: Test (kafka feature)
     runs-on: ubuntu-latest
