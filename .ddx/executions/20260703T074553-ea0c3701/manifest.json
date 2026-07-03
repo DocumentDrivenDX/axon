@@ -1,0 +1,33 @@
+{
+  "attempt_id": "20260703T074553-ea0c3701",
+  "bead_id": "axon-a377d54c",
+  "base_rev": "bb97181a7cacadc0e56cae1434dc70371f19d875",
+  "created_at": "2026-07-03T07:45:57.677989532Z",
+  "requested": {
+    "prompt": "synthesized",
+    "min_power": 10
+  },
+  "bead": {
+    "id": "axon-a377d54c",
+    "title": "Wire consumer workload gate into automation",
+    "description": "Wire the consumer-workload runner into Axon's automated gates after the contract, core runner, Nexiq adapter, and DDx/Cayce status slots exist.\n\nRequired behavior:\n- Add a cheap PR-safe check only if it cannot require sibling repos or long browser runs. Prefer runner self-test and Nexiq dry-run/contract-smoke gating when the local source is available.\n- Add a nightly or workflow_dispatch job that can run the real Nexiq workload against Axon SQLite and Postgres, preserving artifacts.\n- DDx and Cayce must not be silently green in CI. Missing or contract-gap statuses must be reported according to the status matrix from docs/helix/03-test/consumer-workload-gate.md.\n- The workflow must upload summary.json/log artifacts or otherwise make them available in GitHub Actions.\n- Avoid hardcoding /home/erik paths in GitHub Actions; use checkout paths, environment variables, or an explicit documented local-only mode.\n\nIn-scope files:\n- .github/workflows/ci.yml and/or .github/workflows/nightly.yml\n- scripts/run-consumer-workloads.sh only for small CI option adjustments\n- docs/helix/03-test/consumer-workload-gate.md if the CI mode semantics need clarification\n\nOut of scope:\n- Changing release publishing.\n- Editing sibling projects.\n- Making full Nexiq Playwright E2E a required per-PR gate if it is too expensive for normal CI.",
+    "acceptance": "1. `rg -n \"run-consumer-workloads|consumer workload\" .github/workflows scripts docs/helix/03-test/consumer-workload-gate.md` exits 0.\n2. `scripts/run-consumer-workloads.sh --self-test` passes.\n3. `cargo fmt --check` passes.",
+    "parent": "axon-fbf542da",
+    "labels": [
+      "area:ci",
+      "area:testing",
+      "kind:task",
+      "plan-consumer-workloads"
+    ]
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260703T074553-ea0c3701",
+    "prompt": ".ddx/executions/20260703T074553-ea0c3701/prompt.md",
+    "manifest": ".ddx/executions/20260703T074553-ea0c3701/manifest.json",
+    "result": ".ddx/executions/20260703T074553-ea0c3701/result.json",
+    "checks": ".ddx/executions/20260703T074553-ea0c3701/checks.json",
+    "usage": ".ddx/executions/20260703T074553-ea0c3701/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-a377d54c-20260703T074553-ea0c3701"
+  },
+  "prompt_sha": "e3e16b461d72c47a548324e76cd035cf6ede24f2c420cc53c4fc108fbaa1a47a"
+}
