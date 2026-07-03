@@ -4,6 +4,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_NEXIQ_WORKLOAD_PATH="$(cd "${REPO_ROOT}/.." && pwd)/nexiq"
+DEFAULT_DDX_WORKLOAD_PATH="$(cd "${REPO_ROOT}/.." && pwd)/ddx"
+DEFAULT_CAYCE_WORKLOAD_PATH="$(cd "${REPO_ROOT}/.." && pwd)/cayce"
 
 CONSUMER="fake"
 BACKEND="sqlite"
@@ -25,10 +27,18 @@ TENANT="${AXON_TENANT:-${NEXIQ_AXON_TENANT:-consumer-workload}}"
 DATABASE="${AXON_DATABASE:-${NEXIQ_AXON_DATABASE:-default}}"
 SCHEMA_HASH="${AXON_SCHEMA_HASH:-${NEXIQ_AXON_SCHEMA_HASH:-}}"
 NEXIQ_WORKLOAD_PATH="${NEXIQ_WORKLOAD_PATH:-${AXON_NEXIQ_PATH:-${DEFAULT_NEXIQ_WORKLOAD_PATH}}}"
+DDX_WORKLOAD_PATH="${DDX_WORKLOAD_PATH:-${AXON_DDX_PATH:-${DEFAULT_DDX_WORKLOAD_PATH}}}"
+DDX_REAL_AXON_WORKLOAD_COMMAND="${DDX_REAL_AXON_WORKLOAD_COMMAND:-}"
+CAYCE_WORKLOAD_PATH="${CAYCE_WORKLOAD_PATH:-${AXON_CAYCE_PATH:-${DEFAULT_CAYCE_WORKLOAD_PATH}}}"
+CAYCE_WORKLOAD_COMMAND="${CAYCE_WORKLOAD_COMMAND:-}"
 
 STATUS="unknown"
 CLASSIFICATION="unknown"
 FAILURE_MESSAGE=""
+FORCE_RESULT_AFTER_PLAN=0
+FORCED_STATUS=""
+FORCED_CLASSIFICATION=""
+FORCED_FAILURE_MESSAGE=""
 
 declare -a CHILD_PIDS=()
 declare -a COMMAND_NAMES=()
@@ -40,7 +50,7 @@ usage() {
 Usage: scripts/run-consumer-workloads.sh [options]
 
 Options:
-  --consumer NAME   Consumer workload to run. Currently supports: fake, nexiq.
+  --consumer NAME   Consumer workload to run. Currently supports: fake, nexiq, ddx, cayce.
   --backend NAME    Backend under test, such as sqlite or postgres.
   --mode MODE       Gate/workload mode: pr, nightly, release, contract, or e2e. Defaults to pr.
   --dry-run         Write and print the commands/env without executing them.
@@ -163,6 +173,12 @@ command_env_keys() {
     nexiq)
       printf '%s' 'AXON_ENDPOINT,AXON_TENANT,AXON_DATABASE,AXON_SCHEMA_HASH,AXON_BACKEND,NEXIQ_AXON_ENDPOINT,NEXIQ_AXON_TENANT,NEXIQ_AXON_DATABASE,NEXIQ_AXON_SCHEMA_HASH'
       ;;
+    ddx)
+      printf '%s' 'AXON_ENDPOINT,AXON_TENANT,AXON_DATABASE,AXON_SCHEMA_HASH,AXON_BACKEND,DDX_AXON_ENDPOINT,DDX_AXON_TENANT,DDX_AXON_DATABASE,DDX_AXON_SCHEMA_HASH'
+      ;;
+    cayce)
+      printf '%s' 'AXON_ENDPOINT,AXON_TENANT,AXON_DATABASE,AXON_SCHEMA_HASH,AXON_BACKEND,CAYCE_AXON_ENDPOINT,CAYCE_AXON_TENANT,CAYCE_AXON_DATABASE,CAYCE_AXON_SCHEMA_HASH'
+      ;;
     *)
       printf '%s' 'AXON_ENDPOINT,AXON_TENANT,AXON_DATABASE,AXON_BACKEND'
       ;;
@@ -224,6 +240,14 @@ append_command_json() {
   NEXIQ_AXON_TENANT="$TENANT" \
   NEXIQ_AXON_DATABASE="$DATABASE" \
   NEXIQ_AXON_SCHEMA_HASH="$SCHEMA_HASH" \
+  DDX_AXON_ENDPOINT="$ENDPOINT" \
+  DDX_AXON_TENANT="$TENANT" \
+  DDX_AXON_DATABASE="$DATABASE" \
+  DDX_AXON_SCHEMA_HASH="$SCHEMA_HASH" \
+  CAYCE_AXON_ENDPOINT="$ENDPOINT" \
+  CAYCE_AXON_TENANT="$TENANT" \
+  CAYCE_AXON_DATABASE="$DATABASE" \
+  CAYCE_AXON_SCHEMA_HASH="$SCHEMA_HASH" \
   python3 - <<'PY'
 import json
 import os
@@ -364,6 +388,59 @@ build_nexiq_workload() {
   esac
 }
 
+build_ddx_workload() {
+  if [[ -n "$DDX_REAL_AXON_WORKLOAD_COMMAND" ]]; then
+    if [[ ! -d "$DDX_WORKLOAD_PATH" && "$DRY_RUN" -ne 1 ]]; then
+      STATUS="missing"
+      CLASSIFICATION="missing_workload"
+      FAILURE_MESSAGE="DDx workload checkout is missing at ${DDX_WORKLOAD_PATH}"
+      return 1
+    fi
+
+    COMMAND_NAMES=("ddx-real-axon-contract")
+    COMMAND_CWDS=("$DDX_WORKLOAD_PATH")
+    COMMAND_SHELLS=("$DDX_REAL_AXON_WORKLOAD_COMMAND")
+    return 0
+  fi
+
+  STATUS="blocked"
+  CLASSIFICATION="contract_gap"
+  FAILURE_MESSAGE="DDx real-Axon workload contract is not configured; existing DDx Axon paths are experimental and fake transports, in-process emulation, or JSONL-shaped writes are not passing real workloads"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    FORCE_RESULT_AFTER_PLAN=1
+    FORCED_STATUS="$STATUS"
+    FORCED_CLASSIFICATION="$CLASSIFICATION"
+    FORCED_FAILURE_MESSAGE="$FAILURE_MESSAGE"
+    COMMAND_NAMES=("ddx-future-real-axon-proof")
+    COMMAND_CWDS=("$DDX_WORKLOAD_PATH")
+    COMMAND_SHELLS=("printf '%s\n' 'future proof: configure DDX_REAL_AXON_WORKLOAD_COMMAND with a DDx command that targets the injected AXON_ENDPOINT' 'future proof: prove real Axon wire calls with real_axon_wire_calls=1 or equivalent captured request-log evidence' 'future proof: require nonzero executed tests or an explicit postcondition query' 'contract_gap: fake GraphQL transports, in-process emulation, JSONL-shaped writes, and skipped backend tests do not count as success'")
+    return 0
+  fi
+
+  return 1
+}
+
+build_cayce_workload() {
+  if [[ ! -e "$CAYCE_WORKLOAD_PATH" ]]; then
+    STATUS="missing"
+    CLASSIFICATION="missing_workload"
+    FAILURE_MESSAGE="Cayce workload source or export is missing at ${CAYCE_WORKLOAD_PATH}"
+    return 1
+  fi
+
+  if [[ -z "$CAYCE_WORKLOAD_COMMAND" ]]; then
+    STATUS="blocked"
+    CLASSIFICATION="contract_gap"
+    FAILURE_MESSAGE="Cayce workload source exists at ${CAYCE_WORKLOAD_PATH}, but no real workload command is configured; refusing to synthesize fixtures"
+    return 1
+  fi
+
+  COMMAND_NAMES=("cayce-contract")
+  COMMAND_CWDS=("$CAYCE_WORKLOAD_PATH")
+  COMMAND_SHELLS=("$CAYCE_WORKLOAD_COMMAND")
+}
+
 build_workload() {
   COMMAND_NAMES=()
   COMMAND_CWDS=()
@@ -376,6 +453,14 @@ build_workload() {
       ;;
     nexiq)
       build_nexiq_workload
+      return "$?"
+      ;;
+    ddx)
+      build_ddx_workload
+      return "$?"
+      ;;
+    cayce)
+      build_cayce_workload
       return "$?"
       ;;
     *)
@@ -558,6 +643,7 @@ gate_exit_code() {
     missing:missing_workload:release|missing:missing_workload:contract|missing:missing_workload:e2e) printf '1' ;;
     missing:missing_workload:*) printf '0' ;;
     blocked:contract_gap:pr) printf '0' ;;
+    blocked:contract_gap:contract) [[ "$DRY_RUN" -eq 1 ]] && printf '0' || printf '1' ;;
     *) printf '1' ;;
   esac
 }
@@ -604,6 +690,21 @@ record_dry_run_plan() {
       printf 'env NEXIQ_AXON_TENANT=%s\n' "$TENANT"
       printf 'env NEXIQ_AXON_DATABASE=%s\n' "$DATABASE"
       printf 'env NEXIQ_AXON_SCHEMA_HASH=%s\n' "$SCHEMA_HASH"
+    elif [[ "$CONSUMER" == "ddx" ]]; then
+      printf 'env DDX_AXON_ENDPOINT=%s\n' "$ENDPOINT"
+      printf 'env DDX_AXON_TENANT=%s\n' "$TENANT"
+      printf 'env DDX_AXON_DATABASE=%s\n' "$DATABASE"
+      printf 'env DDX_AXON_SCHEMA_HASH=%s\n' "$SCHEMA_HASH"
+      if [[ "$FORCE_RESULT_AFTER_PLAN" -eq 1 ]]; then
+        printf 'classification=%s\n' "$FORCED_CLASSIFICATION"
+        printf 'status=%s\n' "$FORCED_STATUS"
+        printf 'note=%s\n' "$FORCED_FAILURE_MESSAGE"
+      fi
+    elif [[ "$CONSUMER" == "cayce" ]]; then
+      printf 'env CAYCE_AXON_ENDPOINT=%s\n' "$ENDPOINT"
+      printf 'env CAYCE_AXON_TENANT=%s\n' "$TENANT"
+      printf 'env CAYCE_AXON_DATABASE=%s\n' "$DATABASE"
+      printf 'env CAYCE_AXON_SCHEMA_HASH=%s\n' "$SCHEMA_HASH"
     fi
     printf 'command=%s\n' "$shell_cmd"
   } > "$stdout_log"
@@ -642,6 +743,14 @@ run_one_command() {
     NEXIQ_AXON_TENANT="$TENANT" \
     NEXIQ_AXON_DATABASE="$DATABASE" \
     NEXIQ_AXON_SCHEMA_HASH="$SCHEMA_HASH" \
+    DDX_AXON_ENDPOINT="$ENDPOINT" \
+    DDX_AXON_TENANT="$TENANT" \
+    DDX_AXON_DATABASE="$DATABASE" \
+    DDX_AXON_SCHEMA_HASH="$SCHEMA_HASH" \
+    CAYCE_AXON_ENDPOINT="$ENDPOINT" \
+    CAYCE_AXON_TENANT="$TENANT" \
+    CAYCE_AXON_DATABASE="$DATABASE" \
+    CAYCE_AXON_SCHEMA_HASH="$SCHEMA_HASH" \
     AXON_CONSUMER_NAME="$CONSUMER" \
     bash -c "$shell_cmd"
   ) >"$stdout_log" 2>"$stderr_log" &
@@ -673,26 +782,42 @@ validate_successful_command() {
   local stdout_log="$4"
   local stderr_log="$5"
 
-  if [[ "$CONSUMER" != "nexiq" ]]; then
-    return 0
-  fi
-
-  case "$MODE" in
-    pr|contract) ;;
-    *) return 0 ;;
-  esac
-
-  if [[ "$shell_cmd" != *"RUN_INTEGRATION=1"* ]]; then
-    STATUS="failed"
-    CLASSIFICATION="contract_gap"
-    FAILURE_MESSAGE="command '${name}' did not force RUN_INTEGRATION=1"
-    return 1
-  fi
-
   local executed_tests
   local skipped_tests
   executed_tests="$(detect_executed_tests "$stdout_log" "$stderr_log")"
   skipped_tests="$(detect_skipped_tests "$stdout_log" "$stderr_log")"
+
+  if [[ "$CONSUMER" == "nexiq" ]]; then
+    case "$MODE" in
+      pr|contract) ;;
+      *) return 0 ;;
+    esac
+
+    if [[ "$shell_cmd" != *"RUN_INTEGRATION=1"* ]]; then
+      STATUS="failed"
+      CLASSIFICATION="contract_gap"
+      FAILURE_MESSAGE="command '${name}' did not force RUN_INTEGRATION=1"
+      return 1
+    fi
+  elif [[ "$CONSUMER" == "ddx" ]]; then
+    local combined
+    combined="$(cat "$stdout_log" "$stderr_log" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    if [[ "$combined" == *"fake transport"* || "$combined" == *"fake graphql"* || "$combined" == *"in-process emulation"* || "$combined" == *"jsonl-shaped"* ]]; then
+      STATUS="failed"
+      CLASSIFICATION="contract_gap"
+      FAILURE_MESSAGE="command '${name}' used fake transport or local emulation evidence"
+      return 1
+    fi
+
+    if [[ "$combined" != *"real_axon_wire_calls=1"* && "$combined" != *"axon_request_log=1"* ]]; then
+      STATUS="failed"
+      CLASSIFICATION="contract_gap"
+      FAILURE_MESSAGE="command '${name}' did not provide evidence of real Axon wire calls"
+      return 1
+    fi
+  else
+    return 0
+  fi
 
   if [[ "$(logs_report_no_tests "$stdout_log" "$stderr_log")" == "1" ]]; then
     STATUS="failed"
@@ -771,6 +896,12 @@ main() {
   fi
 
   run_commands || true
+
+  if [[ "$FORCE_RESULT_AFTER_PLAN" -eq 1 ]]; then
+    STATUS="$FORCED_STATUS"
+    CLASSIFICATION="$FORCED_CLASSIFICATION"
+    FAILURE_MESSAGE="$FORCED_FAILURE_MESSAGE"
+  fi
 
   local final_exit
   final_exit="$(gate_exit_code)"

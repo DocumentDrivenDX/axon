@@ -60,6 +60,13 @@ class ConsumerWorkloadRunnerTests(unittest.TestCase):
         bun.chmod(0o755)
         return nexiq_dir, bin_dir
 
+    def make_fake_consumer_dir(self, name: str) -> Path:
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, ignore_errors=True)
+        consumer_dir = temp_dir / name
+        consumer_dir.mkdir()
+        return consumer_dir
+
     def test_bash_syntax_is_valid(self) -> None:
         result = subprocess.run(
             ["bash", "-n", str(SCRIPT)],
@@ -202,6 +209,108 @@ class ConsumerWorkloadRunnerTests(unittest.TestCase):
         self.assertEqual(summary["classification"], "missing_workload")
         self.assertEqual(summary["commands"], [])
         self.assertNotEqual(summary["status"], "passed")
+
+    def test_cayce_contract_missing_source_is_missing_workload(self) -> None:
+        missing_cayce = Path(tempfile.mkdtemp()) / "not-present"
+        self.addCleanup(shutil.rmtree, missing_cayce.parent, ignore_errors=True)
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "cayce",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            env={"CAYCE_WORKLOAD_PATH": str(missing_cayce)},
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(summary["consumer"], "cayce")
+        self.assertEqual(summary["status"], "missing")
+        self.assertEqual(summary["classification"], "missing_workload")
+        self.assertEqual(summary["commands"], [])
+        self.assertNotEqual(summary["status"], "passed")
+        self.assertIn("Cayce workload source", summary["failure"]["message"])
+
+    def test_ddx_contract_dry_run_is_blocked_contract_gap_without_contract(self) -> None:
+        missing_ddx = Path(tempfile.mkdtemp()) / "not-present"
+        self.addCleanup(shutil.rmtree, missing_ddx.parent, ignore_errors=True)
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "ddx",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            "--dry-run",
+            env={"DDX_WORKLOAD_PATH": str(missing_ddx)},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("future proof", result.stdout)
+        self.assertIn("classification=contract_gap", result.stdout)
+        self.assertEqual(summary["consumer"], "ddx")
+        self.assertEqual(summary["status"], "blocked")
+        self.assertEqual(summary["classification"], "contract_gap")
+        self.assertEqual(summary["exit_code"], 0)
+        self.assertNotEqual(summary["status"], "passed")
+        self.assertIn("not configured", summary["failure"]["message"])
+
+        command = summary["commands"][0]
+        self.assertEqual(command["name"], "ddx-future-real-axon-proof")
+        self.assertEqual(command["state"], "planned")
+        self.assertEqual(command["env"]["DDX_AXON_ENDPOINT"], "http://127.0.0.1:0")
+
+    def test_ddx_configured_fake_transport_is_contract_gap(self) -> None:
+        ddx_dir = self.make_fake_consumer_dir("ddx")
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "ddx",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            env={
+                "DDX_WORKLOAD_PATH": str(ddx_dir),
+                "DDX_REAL_AXON_WORKLOAD_COMMAND": (
+                    "printf '%s\\n' 'fake transport passed' "
+                    "'executed_tests=1 skipped_tests=0' 'real_axon_wire_calls=1'"
+                ),
+            },
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["classification"], "contract_gap")
+        self.assertNotEqual(summary["status"], "passed")
+        self.assertIn("fake transport", summary["failure"]["message"])
+        self.assertEqual(summary["commands"][0]["exit_code"], 0)
+
+    def test_ddx_explicit_real_contract_can_pass_with_wire_evidence(self) -> None:
+        ddx_dir = self.make_fake_consumer_dir("ddx")
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "ddx",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            env={
+                "DDX_WORKLOAD_PATH": str(ddx_dir),
+                "DDX_REAL_AXON_WORKLOAD_COMMAND": (
+                    "printf '%s\\n' 'real_axon_wire_calls=1' "
+                    "'executed_tests=1 skipped_tests=0'"
+                ),
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["classification"], "none")
+        self.assertEqual(summary["commands"][0]["name"], "ddx-real-axon-contract")
 
     def test_nexiq_contract_skipped_tests_are_contract_gap(self) -> None:
         nexiq_dir, bin_dir = self.make_fake_nexiq(

@@ -207,12 +207,21 @@ passing real workload until it performs real wire calls against a runner-owned
 Axon endpoint. Fake GraphQL transports and local JSONL emulation classify as
 `contract_gap`, not pass.
 
+Until that contract exists, DDx dry-runs print the intended future proof steps
+and write `blocked` / `contract_gap` to `summary.json`. A passing DDx workload
+requires an explicit real command contract, injected runner endpoint variables,
+nonzero execution evidence, and proof of real Axon wire calls such as captured
+request-log evidence. The runner must reject fake transports, in-process
+emulation, JSONL-shaped writes, and skipped backend tests as `contract_gap`.
+
 ### Cayce
 
 No local Cayce checkout or exported workload is currently required for PR
-runs. In release mode, absent Cayce source emits `missing_workload` and fails
-the release gate until a real source checkout or exported marketing-control
-workload is configured.
+runs. If the Cayce source checkout or exported workload path is absent, the
+runner emits `missing` / `missing_workload` and never synthesizes marketing
+fixtures. In release mode and strict workload-selector modes, absent Cayce
+source exits nonzero until a real source checkout or exported workload is
+configured.
 
 ## CI Use
 
