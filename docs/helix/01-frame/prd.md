@@ -14,10 +14,10 @@ kind: product
 
 # Product Requirements Document: Axon
 
-**Version**: 0.7.1
+**Version**: 0.4.x (pilot)
 **Date**: 2026-04-04
-**Revised**: 2026-06-14
-**Status**: Release-aligned draft
+**Revised**: 2026-07-06
+**Status**: Pilot-aligned draft
 **Author**: Erik LaBianca
 
 > **Variant guidance.** This is a product PRD. Data-product variant sections
@@ -25,12 +25,19 @@ kind: product
 
 ## Release Alignment
 
-This PRD is aligned to the operator-requested Axon **0.7.1** release target as
-of 2026-06-14. The release target is a documentation and planning authority:
-the repository evidence available during alignment showed local and
-`origin` Git tags ending at `v0.2.8`, and `Cargo.toml` still declaring workspace
-version `0.2.8`. Therefore, this PRD does not by itself prove that a `v0.7.1`
-GitHub release, package version, or binary artifact has been published. Any
+**Release target disposition (2026-07-06, decision owner: Erik LaBianca,
+operator/product owner)**: this PRD's earlier operator-requested Axon
+**0.7.1** release target (recorded 2026-06-14) is **revoked**. The **0.4.x**
+pilot target is **confirmed** as the release target this PRD aligns to,
+because it is the target actual repository evidence supports: `Cargo.toml`
+declares workspace version `0.4.0`, and local/`origin` Git tags now reach
+`v0.4.0` — past the `v0.2.8` evidence ceiling recorded when `0.7.1` was
+requested, but never reaching `0.7.1` itself. Full disposition, evidence, and
+decision owner are recorded in
+[`../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`](../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md).
+The release target remains a documentation and planning authority: this PRD
+does not by itself prove that a `v0.4.x` GitHub release, package version, or
+binary artifact beyond the current `v0.4.0` has been published. Any
 release/tag/package promotion must be handled by release workflow work outside
 this PRD.
 
@@ -500,9 +507,38 @@ feature specs without embedding implementation design.
 - [x] **Resolved 2026-06-10 (product owner)**: The BYOC fleet control plane is
       committed product scope at P1 (FR-27): customer-hosted deployments must
       be manageable without the control plane reading tenant data.
-- [ ] Which audit retention and erasure guarantees are required for the first
-      regulated customer? This blocks compliance and storage-retention design;
-      ask the first target customer and product owner.
+- [x] **Resolved 2026-07-06 (decision owner: Erik LaBianca, operator/product
+      owner) — DEFERRED**: which audit retention and erasure guarantees are
+      required for the first regulated customer? V1 retains all audit data
+      with no erasure/crypto-shredding path (existing FEAT-003 scope); the
+      ADR-019 §10 encryption-key + crypto-shredding + erasure-tombstone
+      design remains a sketch, not committed V1 scope. Revisit when a named
+      regulated customer presents a concrete retention/erasure obligation V1
+      cannot satisfy. Full disposition:
+      [`../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`](../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md)
+      §2 (security-requirements.md SR-13, B-9).
+- [x] **Resolved 2026-07-06 (decision owner: Erik LaBianca, operator/product
+      owner) — OUT OF SCOPE for V1**: should the audit log adopt a
+      tamper-evident hash chain (security-requirements.md SR-16), a scope
+      change from FEAT-003's current Out of Scope listing for audit tamper
+      detection/cryptographic chaining? Not ratified: FEAT-003's Out of
+      Scope framing stands, and the audit log continues to enforce
+      append-only behavior at the API layer without storage-level
+      cryptographic tamper evidence. Revisit if a serious adopter or
+      compliance requirement demands verifiable proof against a compromised
+      storage-level writer. Full disposition:
+      [`../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`](../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md)
+      §3 (security-requirements.md SR-16, B-1).
+- [x] **Resolved 2026-07-06 (decision owner: Erik LaBianca, operator/product
+      owner) — NONE DEFERRED**: are any whole-consumer workloads (Nexiq, DDx,
+      Cayce) dropped from the pilot readiness gate? No. All three remain
+      required for release qualification per
+      `docs/helix/03-test/consumer-workload-gate.md`'s status matrix; PR/nightly
+      `missing`/`blocked` allowances for DDx and Cayce are transitional
+      convenience states only, not a release-scope deferral. Full
+      disposition:
+      [`../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`](../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md)
+      §4.
 
 ## Success Criteria
 

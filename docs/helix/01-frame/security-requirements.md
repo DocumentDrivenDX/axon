@@ -177,10 +177,14 @@ there map to SRs here.
   coexist with erasure: the field/tenant encryption-key + crypto-shredding +
   erasure-tombstone design sketched in ADR-019 §10 becomes a committed
   requirement before the first regulated customer, and policy explanations
-  must not reveal redacted values post-erasure. **[PO-decision-pending —
-  the PRD open question on retention/erasure guarantees for the first
-  regulated customer blocks this; until decided, V1 retains all audit data
-  (FEAT-003) with no erasure path.]**
+  must not reveal redacted values post-erasure. **[Resolved 2026-07-06,
+  decision owner Erik LaBianca (operator/product owner) — DEFERRED. The PRD
+  open question on retention/erasure guarantees for the first regulated
+  customer is decided: V1 retains all audit data (FEAT-003) with no erasure
+  path; the ADR-019 §10 design stays a sketch until a named regulated
+  customer presents a concrete obligation. See
+  `docs/helix/06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`
+  §2.]**
 
 ### Input Validation
 
@@ -209,11 +213,16 @@ there map to SRs here.
   tamper-evident against a storage-level writer: each entry carries a hash
   chained over its predecessor (or an equivalent verifiable structure),
   with a verification command and a documented anchor/checkpoint practice.
-  **[ASSUMPTION — no existing artifact commits to tamper evidence;
-  FEAT-003 currently lists "audit tamper detection / cryptographic
-  chaining" as Out of Scope, so adopting this SR is an explicit scope
-  change requiring product-owner ratification (threat TM-T-002).]**
-  *Acceptance*: mutate-one-row-in-storage test makes verification fail.
+  **[Resolved 2026-07-06, decision owner Erik LaBianca (operator/product
+  owner) — OUT OF SCOPE for V1. FEAT-003's "audit tamper detection /
+  cryptographic chaining" Out of Scope listing stands; this SR is not
+  ratified and no storage-level hash-chaining ships in V1 (threat TM-T-002
+  accepted). Revisit if a serious adopter or compliance requirement demands
+  verifiable proof against a compromised storage-level writer. See
+  `docs/helix/06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`
+  §3.]**
+  *Acceptance*: not required for V1; would be a mutate-one-row-in-storage
+  test making verification fail if this SR is later ratified.
 - **SR-17 — Complete, attributable capture.** Every mutation produces
   exactly one audit entry with actor, delegated authority, tool/API origin,
   policy decision, approval context, versions, and before/after state
@@ -237,10 +246,10 @@ there map to SRs here.
 | SR-10 | Intent flood caps; tokens never logged; HMAC secret rotation | TM-S-001/TM-D-001 **[ASSUMPTION]** | Medium | Flood + log-scrub tests |
 | SR-11 | Tenant isolation across data plane, CDC, control plane, audit, limiter | ADR-018/011; TM-I-003 | Critical | Cross-tenant channel suite |
 | SR-12 | Redacted fields unrecoverable via aggregate/filter/sort/projection | FR-13, ACL-12; TM-I-001 | High | Side-channel fixture suite |
-| SR-13 | Erasure/crypto-shredding design before first regulated customer | ADR-019 §10; PRD open question **[PO-pending]** | Medium | Design review gate |
+| SR-13 | Erasure/crypto-shredding design before first regulated customer | ADR-019 §10; PRD open question **[Resolved 2026-07-06 — DEFERRED]** | Medium | Design review gate |
 | SR-14 | All evaluation errors fail closed | FEAT-029 NFR, FEAT-022, CONTRACT-004 | High | Fault-injection deny tests |
 | SR-15 | Caller-influenced audit/intent content treated as untrusted in operator surfaces | TM-T-003/TM-R-001 | High | Injection-corpus rendering tests |
-| SR-16 | Audit log tamper-evident (hash chain or equivalent) | TM-T-002 **[ASSUMPTION — scope change vs FEAT-003]** | High | Storage-tamper verification test |
+| SR-16 | Audit log tamper-evident (hash chain or equivalent) | TM-T-002 **[Resolved 2026-07-06 — OUT OF SCOPE for V1]** | High | Storage-tamper verification test |
 | SR-17 | 100% attributable audit capture incl. rejections | FR-15–17, CONTRACT-005 | Critical | Audit-coverage contract suite |
 | SR-18 | Supply-chain hygiene: vetted deps, lockfiles, provenance | Workspace conventions | Medium | CI policy checks |
 
@@ -248,7 +257,11 @@ there map to SRs here.
 
 **Applicable Regulations**: None committed yet. The PRD's open question on
 audit retention and erasure guarantees for the first regulated customer is
-the gating decision **[PO-decision-pending]**.
+resolved as deferred (2026-07-06, decision owner Erik LaBianca): V1 retains
+all audit data with no erasure path until a regulated customer presents a
+concrete obligation. See
+`docs/helix/06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`
+§2.
 **Applicable Standards**: OWASP ASVS is the engineering verification anchor
 for the controls above (per the security-requirements catalog references);
 no certification target is committed for V1.
@@ -306,7 +319,7 @@ no certification target is committed for V1.
 
 | # | Accepted-for-V1 boundary | Source | Status |
 |---|--------------------------|--------|--------|
-| B-1 | No cryptographic audit tamper evidence (storage layer trusted) unless SR-16 is ratified | FEAT-003 Out of Scope | PO-decision-pending |
+| B-1 | No cryptographic audit tamper evidence (storage layer trusted); SR-16 not ratified | FEAT-003 Out of Scope | Resolved 2026-07-06 — out of scope for V1 |
 | B-2 | FEAT-022 rate/scope guardrails are P1 — until shipped, agents are bounded only by policy envelopes and intents | FEAT-022, FR-9 | PO-decision-pending |
 | B-3 | Grant divergence after demotion within the 24 h credential TTL (absent SR-2 revoke-on-demotion) | ADR-018 §4 | PO-decision-pending |
 | B-4 | MCP stdio transport is unauthenticated (local `--no-auth` trust boundary) | CONTRACT-003, FEAT-016 | PO-decision-pending |
@@ -314,7 +327,7 @@ no certification target is committed for V1.
 | B-6 | Semantic validation of mutation content deferred (innocuous-preview residual stands) | FEAT-022 Out of Scope / parking lot | PO-decision-pending |
 | B-7 | Rate limiting is per-server, not fleet-coordinated | CONTRACT-001, ADR-024, FEAT-022 | PO-decision-pending |
 | B-8 | Signing-key rotation protocol deferred to a future ADR (hard gate before v1.0) | ADR-018 Implementation Notes | PO-decision-pending |
-| B-9 | No erasure/crypto-shredding path in V1; all audit data retained | FEAT-003, PRD open question | PO-decision-pending |
+| B-9 | No erasure/crypto-shredding path in V1; all audit data retained | FEAT-003, PRD open question | Resolved 2026-07-06 — deferred |
 
 ## Assumptions and Dependencies
 

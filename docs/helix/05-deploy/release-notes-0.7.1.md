@@ -16,6 +16,15 @@ ddx:
 
 # Release Notes - Axon 0.7.1
 
+> **Superseded 2026-07-06 (decision owner: Erik LaBianca, operator/product
+> owner).** The `0.7.1` release target recorded below is **revoked**; the
+> confirmed release target disposition is **0.4.x**, backed by `Cargo.toml`
+> (`version = "0.4.0"`) and Git tags reaching `v0.4.0`. See
+> `docs/helix/06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`
+> §1 for the full disposition and evidence. This file is retained as a
+> historical record of the prior target; `axon-72b6f0b4` aligns the rest of
+> the release/readiness doc set to the confirmed `0.4.x` target.
+
 ## Release Scope
 
 - Release identifier or version: Axon 0.7.1

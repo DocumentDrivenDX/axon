@@ -17,6 +17,13 @@ source checkout or exported workload exists, records durable evidence, and
 refuses to treat skipped tests, fake transports, or missing repositories as a
 green result.
 
+**Decision of record (2026-07-06, decision owner: Erik LaBianca,
+operator/product owner)**: no whole-consumer workload (Nexiq, DDx, Cayce) is
+deferred out of pilot release scope. All three remain required for release
+qualification per the status matrix below; see
+`docs/helix/06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`
+§4 for the full disposition.
+
 This document is the contract for `scripts/run-consumer-workloads.sh` and the
 CI/nightly jobs that call it.
 
