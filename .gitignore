@@ -28,3 +28,7 @@ collections
 .ddx/tsnet/
 .ddx/attachments/
 .ddx/dirty-root-guard.json
+
+# Ephemeral lock-contention metrics — untracked to avoid the pre-land
+# checkpoint committing it in a loop (see ddx land checkpoint). Per-machine.
+.ddx/metrics/locks.jsonl
