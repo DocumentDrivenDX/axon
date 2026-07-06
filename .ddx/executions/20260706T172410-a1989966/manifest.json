@@ -1,0 +1,59 @@
+{
+  "attempt_id": "20260706T172410-a1989966",
+  "bead_id": "axon-cfd4ae4f",
+  "base_rev": "ac739b3453e282e8f8be74d0612a77af50f71279",
+  "created_at": "2026-07-06T17:24:15.131775185Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-cfd4ae4f",
+    "title": "Add release-readiness claim inventory gate",
+    "description": "Context: The readiness plan converged only after making release/readiness/version claims mechanically visible before any docs sweep. Current evidence is inconsistent: Cargo is 0.4.0 while PRD and release artifacts discuss 0.7.1. Add or update a repo-local check that inventories release target claims, ready-to-use claims, PRD success criteria, p99 claims, deferred decisions, and DDx frontmatter/hash implications across HELIX docs.\n\nIn-scope files: tests or scripts for the inventory check; docs/helix only as fixtures or documented scope.\n\nOut-of-scope: deciding the release target, changing product claims, or fixing every inventory result in this bead.",
+    "acceptance": "1. `python3 tests/test_release_readiness_claims.py --format text` passes.\n2. `python3 tests/test_release_readiness_claims.py --format json` exits 0 and emits the claim inventory.\n3. `ddx doc validate` passes.",
+    "parent": "axon-01b14163",
+    "labels": [
+      "area:helix",
+      "kind:task",
+      "plan-2026-07-06"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"project root mutation rejected\",\"fingerprint\":\"14dfad3e8360df050ef8e97beebd6d35f6bab18d3a57e1a8d7acdc94828e3b7f\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"14dfad3e8360df050ef8e97beebd6d35f6bab18d3a57e1a8d7acdc94828e3b7f\"}",
+          "created_at": "2026-07-06T17:18:36.906056353Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        },
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"project root mutation rejected\",\"fingerprint\":\"14dfad3e8360df050ef8e97beebd6d35f6bab18d3a57e1a8d7acdc94828e3b7f\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"14dfad3e8360df050ef8e97beebd6d35f6bab18d3a57e1a8d7acdc94828e3b7f\"}",
+          "created_at": "2026-07-06T17:23:05.650799021Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ],
+      "spec-id": "helix.prd"
+    }
+  },
+  "governing": [
+    {
+      "id": "helix.prd",
+      "path": "docs/helix/01-frame/prd.md",
+      "title": "Product Requirements Document: Axon"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260706T172410-a1989966",
+    "prompt": ".ddx/executions/20260706T172410-a1989966/prompt.md",
+    "manifest": ".ddx/executions/20260706T172410-a1989966/manifest.json",
+    "result": ".ddx/executions/20260706T172410-a1989966/result.json",
+    "checks": ".ddx/executions/20260706T172410-a1989966/checks.json",
+    "usage": ".ddx/executions/20260706T172410-a1989966/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-cfd4ae4f-20260706T172410-a1989966"
+  },
+  "prompt_sha": "38c9b27a183b68937311cb3f25bcaa08d3bafc604f247f0af900df81d18923dd"
+}
