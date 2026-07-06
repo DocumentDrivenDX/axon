@@ -46,3 +46,11 @@ deferred backlog.
 
 Do not add new rows here. New coverage mapping goes into the owning STP; new
 layer-allocation decisions go into Test Plan §3.
+
+`tests/test_feature_story_traceability.py` no longer enforces a per-feature row
+in this document or inline `E2E:`/`Test:` citations on feature checklists —
+both belonged to the model this review superseded. It only guards that every
+feature keeps a `## User Stories` section and that any story links it declares
+resolve to real files under `docs/helix/01-frame/user-stories/`. Executable
+AC↔test coverage is enforced separately by `scripts/check_covers_traceability.py`
+against the `@covers` citations and the STPs' planned AC IDs.
