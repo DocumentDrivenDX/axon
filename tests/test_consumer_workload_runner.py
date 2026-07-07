@@ -440,7 +440,9 @@ printf '%s\\n' 'No tests found!'
             "--mode",
             "release",
             env={
-                "AXON_FAKE_WORKLOAD_MARKER": '{"executed_tests":1,"skipped_tests":0}',
+                "AXON_FAKE_WORKLOAD_MARKER": (
+                    'real_axon_wire_calls=1\n{"executed_tests":1,"skipped_tests":0}'
+                ),
             },
         )
 
@@ -451,6 +453,47 @@ printf '%s\\n' 'No tests found!'
         self.assertEqual(command["executed_tests"], 1)
         self.assertEqual(command["skipped_tests"], 0)
         self.assertEqual(command["test_counts_source"], "native")
+
+    def test_release_mode_rejects_command_that_ignores_axon_endpoint(self) -> None:
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "fake",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "release",
+            env={
+                "AXON_FAKE_WORKLOAD_MARKER": '{"executed_tests":1,"skipped_tests":0}',
+            },
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["classification"], "contract_gap")
+        failure_message = summary["failure"]["message"].lower()
+        self.assertIn("real axon traffic", failure_message)
+        self.assertIn("ignores axon_endpoint", failure_message)
+
+    def test_release_mode_honors_explicit_phase0_traffic_proof_exception(self) -> None:
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "fake",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "release",
+            env={
+                "AXON_FAKE_WORKLOAD_MARKER": '{"executed_tests":1,"skipped_tests":0}',
+                "AXON_RELEASE_TRAFFIC_PROOF_EXCEPTION": "fake",
+                "AXON_RELEASE_TRAFFIC_PROOF_EXCEPTION_REASON": (
+                    "unit test exercising the documented Phase-0 exception path"
+                ),
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["classification"], "none")
 
     def test_release_mode_rejects_marker_only_test_counts(self) -> None:
         result, summary, _run_dir = self.run_runner(

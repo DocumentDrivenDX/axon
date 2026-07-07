@@ -144,6 +144,28 @@ The following never count as pass:
 - missing consumer source; or
 - missing `summary.json`.
 
+### Release-Mode Traffic Proof
+
+Passing native test counts is necessary but not sufficient in release mode. A
+command can still be lying about exercising Axon at all — it can read
+`AXON_ENDPOINT` and never call it. Release qualification additionally requires
+one of, for every consumer, not only DDx:
+
+1. captured Axon request traffic, evidenced by a `real_axon_wire_calls=1` or
+   `axon_request_log=1` marker in the command's stdout/stderr;
+2. a workload-specific postcondition query confirming the expected writes
+   landed in Axon, evidenced by an `axon_postcondition_query=1` marker; or
+3. an explicit Phase-0 exception, set via
+   `AXON_RELEASE_TRAFFIC_PROOF_EXCEPTION=<consumer>` together with a non-empty
+   `AXON_RELEASE_TRAFFIC_PROOF_EXCEPTION_REASON`. No consumer currently has
+   this exception configured in CI; any future exception must be recorded in
+   the consumer disposition artifact and mirrored here before it can affect
+   release verdicts.
+
+A command that ignores `AXON_ENDPOINT` (or otherwise fails to leave any of the
+above evidence) is classified `contract_gap` and cannot pass release
+qualification, even if it reports nonzero native `executed_tests`.
+
 ## Failure Classification
 
 Classification is rule-based and conservative:

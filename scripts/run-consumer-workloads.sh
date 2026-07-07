@@ -810,6 +810,39 @@ run_one_command() {
   return "$command_exit"
 }
 
+release_traffic_exception_applies() {
+  local exception_consumer="${AXON_RELEASE_TRAFFIC_PROOF_EXCEPTION:-}"
+  local exception_reason="${AXON_RELEASE_TRAFFIC_PROOF_EXCEPTION_REASON:-}"
+
+  [[ -n "$exception_consumer" && "$exception_consumer" == "$CONSUMER" && -n "$exception_reason" ]]
+}
+
+validate_release_traffic_proof() {
+  local name="$1"
+  local stdout_log="$2"
+  local stderr_log="$3"
+
+  if [[ "$MODE" != "release" ]]; then
+    return 0
+  fi
+
+  if release_traffic_exception_applies; then
+    return 0
+  fi
+
+  local combined
+  combined="$(cat "$stdout_log" "$stderr_log" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+
+  if [[ "$combined" == *"real_axon_wire_calls=1"* || "$combined" == *"axon_request_log=1"* || "$combined" == *"axon_postcondition_query=1"* ]]; then
+    return 0
+  fi
+
+  STATUS="failed"
+  CLASSIFICATION="contract_gap"
+  FAILURE_MESSAGE="command '${name}' did not provide release-mode proof of real Axon traffic (captured request log, postcondition query, or an explicit Phase-0 exception); a command that ignores AXON_ENDPOINT cannot pass release qualification"
+  return 1
+}
+
 validate_successful_command() {
   local idx="$1"
   local name="$2"
@@ -859,6 +892,10 @@ validate_successful_command() {
     STATUS="failed"
     CLASSIFICATION="contract_gap"
     FAILURE_MESSAGE="command '${name}' did not provide native machine-readable test counts in release mode"
+    return 1
+  fi
+
+  if ! validate_release_traffic_proof "$name" "$stdout_log" "$stderr_log"; then
     return 1
   fi
 
