@@ -71,6 +71,8 @@ ddx:
 | Database list: embedded/server storage enumerates databases | Release owner | After start, before full rollout | Hold the rollout and investigate storage enumeration before promoting | `axon database list`; `.ddx/executions/<release-bundle>/verify/database-list.log` | embedded/server storage | [pending] |
 | TLS (if enabled): HTTPS handshake succeeds with the reachable hostname | Release owner | After TLS enablement and before public exposure | Replace cert/key or SAN config before serving TLS traffic | `curl -fsS https://<reachable-name>:4170/health`; `.ddx/executions/<release-bundle>/verify/tls-handshake.log` | TLS termination | [pending] |
 
+- Fresh-machine Linux proof harness: `scripts/test-linux-installer-service.sh` validates the release binary install, `axon doctor` behavior, `axon server install|start|stop|restart|status|uninstall`, service log routing, and uninstall cleanup in a Docker-like Linux container. Use its output as the reproducible baseline before qualifying a release on a new host.
+
 ## Rollback Triggers
 
 | Trigger | Threshold or Condition | Immediate Action | Owner | Evidence artifact / log path | Result |

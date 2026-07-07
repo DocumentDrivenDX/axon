@@ -172,6 +172,7 @@ ddx:
 
 ## References
 
+- Fresh-machine Linux installer/service harness: `scripts/test-linux-installer-service.sh`
 - Deployment checklist: `docs/helix/05-deploy/deployment-checklist.md`
 - CLI and config contract: `docs/helix/02-design/contracts/CONTRACT-008-cli-and-config.md`
 - Architecture: `docs/helix/02-design/architecture.md`
