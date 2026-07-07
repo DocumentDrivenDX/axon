@@ -43,6 +43,10 @@ contracts, and technical spikes.
 - [ADR-029: Persisted Byte-Keyed Secondary Indexes — Backend Parity & Query Performance](adr/ADR-029-persisted-sql-secondary-indexes.md) (persisted EAV byte-key indexes in SQLite + PostgreSQL keyed by the canonical encoding; supersedes ADR-028's deferral; consistency stance superseded by ADR-030; FEAT-013)
 - [ADR-030: Storage Owns Index Maintenance — Atomic by Construction](adr/ADR-030-storage-owns-index-maintenance.md) (write primitives maintain indexes atomically; closes the single-mutation entity↔index residual + the "caller forgot" bug class; audit atomicity / ADR-004 INV-003 still open; FEAT-013)
 
+### Security Readiness
+
+- [Security Architecture and Threat-Model Readiness](security-architecture.md) — cross-tenant leakage, policy bypass, credential misuse, audit tampering, retention/erasure, and approval boundaries, with the Phase-0 dispositions recorded in `../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`.
+
 ### Contracts
 
 Normative shared interface surface lives exclusively in the contract suite:
