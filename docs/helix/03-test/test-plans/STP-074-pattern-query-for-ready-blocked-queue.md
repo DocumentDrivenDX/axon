@@ -33,8 +33,8 @@ ddx:
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
 | US-074-AC1 | `ready_beads` returns exactly the open beads with no non-closed deps, one round-trip | `ddx_ready_query_returns_open_beads_whose_deps_are_all_closed`; `sqlite_ddx_ready_query_returns_open_beads_whose_deps_are_all_closed`; `scn_006_issue_dependency_dag_and_ready_queue` | Exact ready set on both backends | `@covers US-074-AC1` present on the DDx integration, SQLite parity, and business scenario tests | COVERED | L2 scenario | `crates/axon-cypher/tests/ddx_integration.rs`, `crates/axon-cypher/tests/sqlite_parity.rs`, `crates/axon-api/tests/business_scenarios.rs` |
 | US-074-AC2 | `blocked_beads` returns exactly the open beads excluded from ready | `ddx_blocked_query_returns_open_beads_with_at_least_one_non_closed_dep`; `sqlite_…` twin | Exact complement asserted | `@covers US-074-AC2` present on the DDx integration and SQLite parity tests | COVERED | L2 scenario | `crates/axon-cypher/tests/ddx_integration.rs`, `crates/axon-cypher/tests/sqlite_parity.rs` |
-| US-074-AC3 | 1K beads (~500 open): ready under 100 ms p99 | none | n/a | deferred - L5 benchmark ratchet out of scope for the current readiness verdict | DEFERRED (ratchet) | L5 benchmark | planned `criterion` bench |
-| US-074-AC4 | 10K beads: ready under 500 ms p99 | none | n/a | deferred - L5 benchmark ratchet out of scope for the current readiness verdict | DEFERRED (ratchet) | L5 benchmark | planned `criterion` bench |
+| US-074-AC3 | 1K beads (~500 open): ready under 100 ms p99 | `ddx_ready_blocked_queue_benchmark` | Ready/blocked partition on a 1K seeded fixture | `@covers US-074-AC3` present on `crates/axon-cypher/benches/ddx_benchmark.rs` | COVERED | L5 benchmark | `crates/axon-cypher/benches/ddx_benchmark.rs` |
+| US-074-AC4 | 10K beads: ready under 500 ms p99 | `ddx_ready_blocked_queue_benchmark` | Ready/blocked partition on a 10K seeded fixture | `@covers US-074-AC4` present on `crates/axon-cypher/benches/ddx_benchmark.rs` | COVERED | L5 benchmark | `crates/axon-cypher/benches/ddx_benchmark.rs` |
 | US-074-AC5 | Active subscription on `ready_beads` delivers updates on result-set change (QRY-12) | `named_query_subscription_updates_on_entity_add` | Ready-beads subscription emits on result-set change | `@covers US-074-AC5` present on the ready-beads subscription update test | COVERED | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
 
 ## Executable Proof
@@ -46,13 +46,13 @@ cargo test -p axon-cypher
 cargo test -p axon-api --test business_scenarios
 ```
 
-### Planned Test Files
+### Benchmark Files
 
-- `criterion` benchmarks at 1K/10K bead scale (AC3/AC4, deferred)
+- `crates/axon-cypher/benches/ddx_benchmark.rs` `ddx_ready_blocked_queue_benchmark` at 1K/10K bead scale
 
 ### Coverage Focus
 
-- P0: AC1/AC2 exactness and AC5 subscription semantics are covered; AC3/AC4 remain ratcheted.
+- P0: AC1/AC2 exactness, AC3/AC4 latency, and AC5 subscription semantics are covered.
 
 ## Data and Setup
 
@@ -70,13 +70,13 @@ cargo test -p axon-api --test business_scenarios
 
 **Implementation Order**
 1. Citation pass on AC1/AC2/AC5 (both backends and subscription).
-2. Benchmarks AC3/AC4.
+2. Benchmarks AC3/AC4. — done via `ddx_ready_blocked_queue_benchmark`
 
 **Constraints**
 - CONTRACT-007 named-query semantics; identical results across backends.
 
 **Done When**
-- [x] AC1/AC2/AC5 passing with citations; AC3/AC4 recorded as ratcheted benchmarks
+- [x] AC1/AC2/AC5 passing with citations; AC3/AC4 backed by benchmark evidence
 
 ## Review Checklist
 

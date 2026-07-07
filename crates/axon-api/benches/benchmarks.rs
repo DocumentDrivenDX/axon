@@ -6,7 +6,7 @@
     unused_must_use
 )]
 
-//! L5 Performance Benchmarks (BM-001 through BM-010)
+//! L5 Performance Benchmarks (BM-001 through BM-012)
 //!
 //! All benchmarks use criterion and run against the in-memory storage backend.
 //! Targets from the test plan (p99 latency):
@@ -20,6 +20,8 @@
 //!   BM-008: Concurrent writers (100)  — linear scaling
 //!   BM-009: Schema validation         < 1 ms
 //!   BM-010: Audit query               < 100 ms
+//!   BM-011: Link candidates (10K targets, indexed predicate) < 50 ms
+//!   BM-012: Neighbors (99 links, mixed directions) < 20 ms
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use serde_json::json;
@@ -29,6 +31,7 @@ use axon_api::request::*;
 use axon_api::transaction::Transaction;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
+use axon_schema::schema::{Cardinality, CollectionSchema, IndexDef, IndexType, LinkTypeDef};
 use axon_schema::EsfDocument;
 use axon_storage::adapter::StorageAdapter;
 use axon_storage::memory::MemoryStorageAdapter;
@@ -39,6 +42,149 @@ fn col(name: &str) -> CollectionId {
 
 fn eid(id: &str) -> EntityId {
     EntityId::new(id)
+}
+
+fn seeded_link_candidate_handler() -> AxonHandler<MemoryStorageAdapter> {
+    let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+
+    let source_collection = col("bench_sources");
+    let target_collection = col("bench_targets");
+
+    let mut source_schema = CollectionSchema::new(source_collection.clone());
+    source_schema.link_types.insert(
+        "depends-on".to_string(),
+        LinkTypeDef {
+            target_collection: target_collection.to_string(),
+            cardinality: Cardinality::ManyToMany,
+            required: false,
+            metadata_schema: None,
+        },
+    );
+    h.create_collection(CreateCollectionRequest {
+        name: source_collection.clone(),
+        schema: source_schema,
+        actor: Some("bench".into()),
+    })
+    .unwrap();
+
+    let mut target_schema = CollectionSchema::new(target_collection.clone());
+    target_schema.indexes = vec![IndexDef {
+        field: "bucket".into(),
+        index_type: IndexType::String,
+        unique: false,
+    }];
+    h.create_collection(CreateCollectionRequest {
+        name: target_collection.clone(),
+        schema: target_schema,
+        actor: Some("bench".into()),
+    })
+    .unwrap();
+
+    h.create_entity(CreateEntityRequest {
+        collection: source_collection,
+        id: eid("source-001"),
+        data: json!({"name": "source"}),
+        actor: Some("bench".into()),
+        audit_metadata: None,
+        attribution: None,
+    })
+    .unwrap();
+
+    for i in 0..10_000 {
+        let bucket = format!("bucket-{:02}", i % 100);
+        h.create_entity(CreateEntityRequest {
+            collection: target_collection.clone(),
+            id: eid(&format!("target-{i:05}")),
+            data: json!({
+                "bucket": bucket,
+                "name": format!("Target {i}"),
+            }),
+            actor: Some("bench".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+    }
+
+    for i in 0..128 {
+        h.create_link(CreateLinkRequest {
+            source_collection: col("bench_sources"),
+            source_id: eid("source-001"),
+            target_collection: target_collection.clone(),
+            target_id: eid(&format!("target-{i:05}")),
+            link_type: "depends-on".into(),
+            metadata: json!(null),
+            actor: Some("bench".into()),
+            attribution: None,
+        })
+        .unwrap();
+    }
+
+    h
+}
+
+fn seeded_neighbor_handler() -> AxonHandler<MemoryStorageAdapter> {
+    let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+
+    h.create_entity(CreateEntityRequest {
+        collection: col("bench_neighbors"),
+        id: eid("hub"),
+        data: json!({"kind": "hub"}),
+        actor: Some("bench".into()),
+        audit_metadata: None,
+        attribution: None,
+    })
+    .unwrap();
+
+    for i in 0..50 {
+        let id = format!("out-{i:03}");
+        h.create_entity(CreateEntityRequest {
+            collection: col("bench_neighbors"),
+            id: eid(&id),
+            data: json!({"kind": "outbound"}),
+            actor: Some("bench".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+        h.create_link(CreateLinkRequest {
+            source_collection: col("bench_neighbors"),
+            source_id: eid("hub"),
+            target_collection: col("bench_neighbors"),
+            target_id: eid(&id),
+            link_type: "depends-on".into(),
+            metadata: json!(null),
+            actor: Some("bench".into()),
+            attribution: None,
+        })
+        .unwrap();
+    }
+
+    for i in 0..49 {
+        let id = format!("in-{i:03}");
+        h.create_entity(CreateEntityRequest {
+            collection: col("bench_neighbors"),
+            id: eid(&id),
+            data: json!({"kind": "inbound"}),
+            actor: Some("bench".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+        h.create_link(CreateLinkRequest {
+            source_collection: col("bench_neighbors"),
+            source_id: eid(&id),
+            target_collection: col("bench_neighbors"),
+            target_id: eid("hub"),
+            link_type: "assigned-to".into(),
+            metadata: json!(null),
+            actor: Some("bench".into()),
+            attribution: None,
+        })
+        .unwrap();
+    }
+
+    h
 }
 
 // ── BM-001: Single entity read ──────────────────────────────────────────────
@@ -554,6 +700,57 @@ fn bm_010_audit_query(c: &mut Criterion) {
     });
 }
 
+// @covers US-070-AC5
+fn bm_011_find_link_candidates(c: &mut Criterion) {
+    let h = seeded_link_candidate_handler();
+    let request = FindLinkCandidatesRequest {
+        source_collection: col("bench_sources"),
+        source_id: eid("source-001"),
+        link_type: "depends-on".into(),
+        filter: Some(FilterNode::Field(FieldFilter {
+            field: "bucket".into(),
+            op: FilterOp::Eq,
+            value: json!("bucket-42"),
+        })),
+        limit: Some(100),
+    };
+
+    let warmup = h.find_link_candidates(request.clone()).unwrap();
+    assert_eq!(warmup.target_collection, "bench_targets");
+    assert_eq!(warmup.existing_link_count, 128);
+    assert_eq!(warmup.candidates.len(), 100);
+    assert!(warmup
+        .candidates
+        .iter()
+        .any(|candidate| candidate.already_linked));
+
+    c.bench_function(
+        "BM-011: link candidates (10K targets, indexed predicate)",
+        |b| {
+            b.iter(|| black_box(h.find_link_candidates(request.clone()).unwrap()));
+        },
+    );
+}
+
+// @covers US-071-AC4
+fn bm_012_list_neighbors(c: &mut Criterion) {
+    let h = seeded_neighbor_handler();
+    let request = ListNeighborsRequest {
+        collection: col("bench_neighbors"),
+        id: eid("hub"),
+        link_type: None,
+        direction: None,
+    };
+
+    let warmup = h.list_neighbors(request.clone()).unwrap();
+    assert_eq!(warmup.total_count, 99);
+    assert_eq!(warmup.groups.len(), 2);
+
+    c.bench_function("BM-012: neighbors (99 links, mixed directions)", |b| {
+        b.iter(|| black_box(h.list_neighbors(request.clone()).unwrap()));
+    });
+}
+
 criterion_group!(
     benches,
     bm_001_single_entity_read,
@@ -566,5 +763,7 @@ criterion_group!(
     bm_008_concurrent_writers,
     bm_009_schema_validation,
     bm_010_audit_query,
+    bm_011_find_link_candidates,
+    bm_012_list_neighbors,
 );
 criterion_main!(benches);

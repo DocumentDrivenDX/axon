@@ -254,8 +254,10 @@ fn ddx_ready_blocked_queue_benchmark(c: &mut Criterion) {
     assert_eq!(ready_beads(&ten_thousand_beads).len(), 2_500);
     assert_eq!(blocked_beads(&ten_thousand_beads).len(), 2_500);
 
+    // @covers US-074-AC3
     assert_p99_gate("ready_beads", 1_000, 100, &thousand_beads, ready_beads);
     assert_p99_gate("blocked_beads", 1_000, 100, &thousand_beads, blocked_beads);
+    // @covers US-074-AC4
     assert_p99_gate("ready_beads", 10_000, 500, &ten_thousand_beads, ready_beads);
     assert_p99_gate(
         "blocked_beads",

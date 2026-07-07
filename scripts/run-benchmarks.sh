@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the Axon L5 criterion benchmarks (BM-001..BM-010).
+# Run the Axon L5 criterion benchmarks (BM-001..BM-012).
 #
 # Usage:
 #   scripts/run-benchmarks.sh              # run all benchmarks
@@ -17,7 +17,7 @@ set -euo pipefail
 
 FILTER="${1:-}"
 
-echo "Running axon-api benchmarks (BM-001..BM-010)..."
+echo "Running axon-api benchmarks (BM-001..BM-012)..."
 if [[ -n "${FILTER}" ]]; then
     cargo bench -p axon-api -- "${FILTER}"
 else

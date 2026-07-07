@@ -94,7 +94,7 @@ not duplicate those rows.
 | Business workflow over a live embedded store (graph traversal, BOM, ready queue, merges) | `US-023-AC1`, `US-024-AC1`, `US-074-AC1` | L2 scenario (`crates/axon-api/tests/`, `crates/axon-cypher/tests/`) | User-meaningful outcome over real storage; backend-parameterized via L4 |
 | API-surface decision semantics (policy allow/deny/redaction envelopes, intent preview/approve/commit vocabulary, GraphQL connection shapes, MCP tool envelopes) | `US-101-AC1..4`, `US-105-AC1..6`, `US-108-AC1..5` | L6 contract (GraphQL/MCP) + shared policy-fixture suite | The contract — not the implementation — is the promise; parity across surfaces is a PRD success metric |
 | User-observable browser workflows ("…in the web UI") | `US-113-AC1..6` … `US-119-AC1..4` | L7 E2E (Playwright) | Only a browser run proves the rendered, no-DOM-leak outcome |
-| Latency / throughput criteria | `US-070-AC5`, `US-071-AC4`, `US-074-AC3/4` | L5 benchmarks (`criterion`, ratcheted) | Timing claims need controlled, ratcheted measurement, not assertions in functional tests |
+| Latency / throughput criteria | `US-070-AC5`, `US-071-AC4`, `US-074-AC3/4` | L5 benchmarks (`criterion`, ratcheted); current artifacts live in `crates/axon-api/benches/benchmarks.rs` and `crates/axon-cypher/benches/ddx_benchmark.rs` | Timing claims need controlled, ratcheted measurement, not assertions in functional tests |
 
 **Allocation rule**: every P0 acceptance criterion from an in-scope story maps to
 exactly one primary layer here and to concrete tests in its STP. No P0 criterion
@@ -785,7 +785,7 @@ Every StorageAdapter implementation must pass the **identical** test suite. Test
 | SCN-011 through SCN-016 | Required | Required | Required | Required |
 | PROP-001 through PROP-005 | Required | Required | Required | Required |
 | PROP-009 through PROP-011 | Required | Required | Required | Required |
-| BM-001 through BM-010 | Required | Required | Required | N/A (memory not benchmarked) |
+| BM-001 through BM-012 | Required | Required | Required | N/A (memory not benchmarked) |
 
 If a backend cannot pass any invariant, it is not shipped.
 
@@ -807,6 +807,8 @@ From technical requirements. All benchmarks use `criterion` and are ratcheted.
 | BM-008: Concurrent writers (100) | Linear throughput scaling | 100 agents writing to different entities |
 | BM-009: Schema validation | < 1 ms | Validate typical entity (20 fields, 2 levels nesting) |
 | BM-010: Audit query (single entity) | < 100 ms | Retrieve all audit entries for one entity (100 mutations) |
+| BM-011: Link candidates (10K targets, indexed predicate) | < 50 ms | 10K target collection with indexed filter and existing links |
+| BM-012: Neighbors (99 links, mixed directions) | < 20 ms | Single-hop neighbor listing over inbound and outbound links |
 
 ---
 

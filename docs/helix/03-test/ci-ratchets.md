@@ -25,7 +25,7 @@ how to run each gate locally.
 | `@covers` scanner (AC citation format) | Malformed → 0 | Every commit (CI) | `python3 scripts/check_covers_traceability.py --format text` |
 | Correctness seeds (L1 invariants, 10 seeds) | Pass-count ↑ | Every commit (CI) | `scripts/run-sim-seeds.sh` (default 10 seeds) |
 | Correctness seeds (L1 invariants, 1 000 seeds) | Pass-count ↑ | Nightly | `AXON_SIM_SEEDS=1000 scripts/run-sim-seeds.sh` |
-| Performance p99 (BM-001..BM-010) | Latency ↓ or stable | Nightly / manual | `scripts/run-benchmarks.sh` |
+| Performance p99 (BM-001..BM-012) | Latency ↓ or stable | Nightly / manual | `scripts/run-benchmarks.sh` |
 | Line coverage (axon-core + axon-api ≥ 90%) | % ↑ | Per-release review | `cargo llvm-cov --package axon-core --package axon-api` |
 | Workspace line coverage (≥ 80%) | % ↑ | Per-release review | `cargo llvm-cov --workspace` |
 | Audit gap count | Count → 0 | Every commit (CI, via `cargo test`) | `cargo test -p axon-sim -- audit` |
@@ -86,10 +86,12 @@ AXON_SIM_SEEDS=1000 scripts/run-sim-seeds.sh
 # or via workflow_dispatch: set sim_seeds input
 ```
 
-### L5 Criterion benchmarks (BM-001..BM-010)
+### L5 Criterion benchmarks (BM-001..BM-012)
 
-Benchmarks are defined in `crates/axon-api/benches/benchmarks.rs` and measure
-the targets from TP-001 §9. They are not ratcheted automatically yet — a
+Benchmarks are defined in `crates/axon-api/benches/benchmarks.rs` and
+`crates/axon-cypher/benches/ddx_benchmark.rs`; together they measure the
+targets from TP-001 §9 plus the graph and DDx named-query workloads now
+captured in the story test plans. They are not ratcheted automatically yet — a
 failing seed or regression in benchmark output should be investigated before
 merging the offending change.
 
