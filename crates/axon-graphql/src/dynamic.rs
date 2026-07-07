@@ -11000,10 +11000,19 @@ mod tests {
     use super::*;
     use axon_api::test_fixtures::seed_procurement_fixture;
     use axon_api::transaction::{IsolationLevel, Transaction};
-    use axon_core::id::CollectionId;
+    use axon_audit::entry::AuditEntry;
+    use axon_audit::log::{AuditPage, AuditQuery};
+    use axon_core::auth::{
+        CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole,
+        User, UserId,
+    };
+    use axon_core::id::{CollectionId, Namespace, QualifiedCollectionId};
     use axon_schema::access_control::AccessControlPolicy;
-    use axon_storage::MemoryStorageAdapter;
+    use axon_storage::{CompoundKey, IndexValue, MemoryStorageAdapter};
     use serde_json::json;
+    use std::ops::Bound;
+    use std::sync::atomic::AtomicUsize;
+    use uuid::Uuid;
 
     fn test_schema() -> CollectionSchema {
         CollectionSchema {
@@ -11298,6 +11307,644 @@ mod tests {
     /// Create a shared handler with the given collection schemas registered.
     async fn make_handler(schemas: &[CollectionSchema]) -> SharedHandler<MemoryStorageAdapter> {
         let storage = MemoryStorageAdapter::default();
+        let handler = AxonHandler::new(storage);
+        let handler = Arc::new(Mutex::new(handler));
+
+        {
+            let mut guard = handler.lock().await;
+            for s in schemas {
+                let _ = guard.put_schema(s.clone());
+            }
+        }
+
+        handler
+    }
+
+    /// Test-only `StorageAdapter` wrapper that counts every call made
+    /// through it (US-072-AC2). Delegates every method to the wrapped
+    /// adapter unchanged, so behavior is byte-for-byte identical to using
+    /// the inner adapter directly (no fallback semantics are altered) —
+    /// only an `Arc<AtomicUsize>` call counter is added.
+    struct CountingStorageAdapter<S: StorageAdapter> {
+        inner: S,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl<S: StorageAdapter> CountingStorageAdapter<S> {
+        fn new(inner: S, calls: Arc<AtomicUsize>) -> Self {
+            Self { inner, calls }
+        }
+
+        fn record(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl<S: StorageAdapter> StorageAdapter for CountingStorageAdapter<S> {
+        fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
+            self.record();
+            self.inner.get(collection, id)
+        }
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.record();
+            self.inner.put(entity)
+        }
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.record();
+            self.inner.delete(collection, id)
+        }
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.record();
+            self.inner.count(collection)
+        }
+        fn structural_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+            self.record();
+            self.inner.structural_version(collection)
+        }
+        fn content_version(&self, collection: &CollectionId) -> Result<u64, AxonError> {
+            self.record();
+            self.inner.content_version(collection)
+        }
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.record();
+            self.inner.range_scan(collection, start, end, limit)
+        }
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.record();
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.record();
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
+        fn begin_tx(&mut self) -> Result<(), AxonError> {
+            self.record();
+            self.inner.begin_tx()
+        }
+        fn commit_tx(&mut self) -> Result<(), AxonError> {
+            self.record();
+            self.inner.commit_tx()
+        }
+        fn abort_tx(&mut self) -> Result<(), AxonError> {
+            self.record();
+            self.inner.abort_tx()
+        }
+        fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+            self.record();
+            self.inner.append_audit_entry(entry)
+        }
+        fn supports_durable_audit(&self) -> bool {
+            self.record();
+            self.inner.supports_durable_audit()
+        }
+        fn owns_audit_log(&self) -> bool {
+            self.record();
+            self.inner.owns_audit_log()
+        }
+        fn audit_entries(&self) -> Result<Vec<AuditEntry>, AxonError> {
+            self.record();
+            self.inner.audit_entries()
+        }
+        fn audit_len(&self) -> Result<usize, AxonError> {
+            self.record();
+            self.inner.audit_len()
+        }
+        fn find_audit_by_id(&self, id: u64) -> Result<Option<AuditEntry>, AxonError> {
+            self.record();
+            self.inner.find_audit_by_id(id)
+        }
+        fn query_audit_by_entity(
+            &self,
+            collection: &CollectionId,
+            entity_id: &EntityId,
+        ) -> Result<Vec<AuditEntry>, AxonError> {
+            self.record();
+            self.inner.query_audit_by_entity(collection, entity_id)
+        }
+        fn query_audit_by_time_range(
+            &self,
+            start_ns: u64,
+            end_ns: u64,
+        ) -> Result<Vec<AuditEntry>, AxonError> {
+            self.record();
+            self.inner.query_audit_by_time_range(start_ns, end_ns)
+        }
+        fn query_audit_by_actor(&self, actor: &str) -> Result<Vec<AuditEntry>, AxonError> {
+            self.record();
+            self.inner.query_audit_by_actor(actor)
+        }
+        fn query_audit_by_operation(
+            &self,
+            operation: &axon_audit::entry::MutationType,
+        ) -> Result<Vec<AuditEntry>, AxonError> {
+            self.record();
+            self.inner.query_audit_by_operation(operation)
+        }
+        fn query_audit_by_transaction_id(
+            &self,
+            transaction_id: &str,
+        ) -> Result<Vec<AuditEntry>, AxonError> {
+            self.record();
+            self.inner.query_audit_by_transaction_id(transaction_id)
+        }
+        fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+            self.record();
+            self.inner.query_audit_paginated(query)
+        }
+        fn known_audit_collections(&self) -> Result<HashSet<CollectionId>, AxonError> {
+            self.record();
+            self.inner.known_audit_collections()
+        }
+        fn create_mutation_intent(&mut self, intent: &MutationIntent) -> Result<(), AxonError> {
+            self.record();
+            self.inner.create_mutation_intent(intent)
+        }
+        fn get_mutation_intent(
+            &self,
+            tenant_id: &str,
+            database_id: &str,
+            intent_id: &str,
+        ) -> Result<Option<MutationIntent>, AxonError> {
+            self.record();
+            self.inner.get_mutation_intent(tenant_id, database_id, intent_id)
+        }
+        fn list_pending_mutation_intents(
+            &self,
+            tenant_id: &str,
+            database_id: &str,
+            now_ns: u64,
+            limit: Option<usize>,
+        ) -> Result<Vec<MutationIntent>, AxonError> {
+            self.record();
+            self.inner
+                .list_pending_mutation_intents(tenant_id, database_id, now_ns, limit)
+        }
+        fn list_expired_mutation_intents(
+            &self,
+            tenant_id: &str,
+            database_id: &str,
+            now_ns: u64,
+            limit: Option<usize>,
+        ) -> Result<Vec<MutationIntent>, AxonError> {
+            self.record();
+            self.inner
+                .list_expired_mutation_intents(tenant_id, database_id, now_ns, limit)
+        }
+        fn list_mutation_intents_by_state(
+            &self,
+            tenant_id: &str,
+            database_id: &str,
+            approval_state: ApprovalState,
+            limit: Option<usize>,
+        ) -> Result<Vec<MutationIntent>, AxonError> {
+            self.record();
+            self.inner
+                .list_mutation_intents_by_state(tenant_id, database_id, approval_state, limit)
+        }
+        fn update_mutation_intent_state(
+            &mut self,
+            tenant_id: &str,
+            database_id: &str,
+            intent_id: &str,
+            expected: ApprovalState,
+            new_state: ApprovalState,
+        ) -> Result<MutationIntent, AxonError> {
+            self.record();
+            self.inner.update_mutation_intent_state(
+                tenant_id,
+                database_id,
+                intent_id,
+                expected,
+                new_state,
+            )
+        }
+        fn create_database(&mut self, name: &str) -> Result<(), AxonError> {
+            self.record();
+            self.inner.create_database(name)
+        }
+        fn list_databases(&self) -> Result<Vec<String>, AxonError> {
+            self.record();
+            self.inner.list_databases()
+        }
+        fn drop_database(&mut self, name: &str) -> Result<(), AxonError> {
+            self.record();
+            self.inner.drop_database(name)
+        }
+        fn create_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+            self.record();
+            self.inner.create_namespace(namespace)
+        }
+        fn list_namespaces(&self, database: &str) -> Result<Vec<String>, AxonError> {
+            self.record();
+            self.inner.list_namespaces(database)
+        }
+        fn drop_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+            self.record();
+            self.inner.drop_namespace(namespace)
+        }
+        fn list_namespace_collections(
+            &self,
+            namespace: &Namespace,
+        ) -> Result<Vec<CollectionId>, AxonError> {
+            self.record();
+            self.inner.list_namespace_collections(namespace)
+        }
+        fn resolve_collection_key(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<QualifiedCollectionId, AxonError> {
+            self.record();
+            self.inner.resolve_collection_key(collection)
+        }
+        fn purge_links_for_collections(
+            &mut self,
+            collections: &[QualifiedCollectionId],
+        ) -> Result<(), AxonError> {
+            self.record();
+            self.inner.purge_links_for_collections(collections)
+        }
+        fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+            self.record();
+            self.inner.put_schema(schema)
+        }
+        fn get_schema(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionSchema>, AxonError> {
+            self.record();
+            self.inner.get_schema(collection)
+        }
+        fn get_schema_version(
+            &self,
+            collection: &CollectionId,
+            version: u32,
+        ) -> Result<Option<CollectionSchema>, AxonError> {
+            self.record();
+            self.inner.get_schema_version(collection, version)
+        }
+        fn list_schema_versions(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Vec<(u32, u64)>, AxonError> {
+            self.record();
+            self.inner.list_schema_versions(collection)
+        }
+        fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+            self.record();
+            self.inner.delete_schema(collection)
+        }
+        fn put_collection_view(
+            &mut self,
+            view: &CollectionView,
+        ) -> Result<CollectionView, AxonError> {
+            self.record();
+            self.inner.put_collection_view(view)
+        }
+        fn get_collection_view(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionView>, AxonError> {
+            self.record();
+            self.inner.get_collection_view(collection)
+        }
+        fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+            self.record();
+            self.inner.delete_collection_view(collection)
+        }
+        fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+            self.record();
+            self.inner.register_collection(collection)
+        }
+        fn register_collection_in_namespace(
+            &mut self,
+            collection: &CollectionId,
+            namespace: &Namespace,
+        ) -> Result<(), AxonError> {
+            self.record();
+            self.inner
+                .register_collection_in_namespace(collection, namespace)
+        }
+        fn collection_registered_in_namespace(
+            &self,
+            collection: &CollectionId,
+            namespace: &Namespace,
+        ) -> Result<bool, AxonError> {
+            self.record();
+            self.inner
+                .collection_registered_in_namespace(collection, namespace)
+        }
+        fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+            self.record();
+            self.inner.unregister_collection(collection)
+        }
+        fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
+            self.record();
+            self.inner.list_collections()
+        }
+        fn collection_numeric_id(&self, collection: &CollectionId) -> Result<Option<u64>, AxonError> {
+            self.record();
+            self.inner.collection_numeric_id(collection)
+        }
+        fn collection_by_numeric_id(
+            &self,
+            numeric_id: u64,
+        ) -> Result<Option<CollectionId>, AxonError> {
+            self.record();
+            self.inner.collection_by_numeric_id(numeric_id)
+        }
+        fn index_lookup(
+            &self,
+            collection: &CollectionId,
+            field: &str,
+            value: &IndexValue,
+        ) -> Result<Vec<EntityId>, AxonError> {
+            self.record();
+            self.inner.index_lookup(collection, field, value)
+        }
+        fn index_range(
+            &self,
+            collection: &CollectionId,
+            field: &str,
+            lower: Bound<&IndexValue>,
+            upper: Bound<&IndexValue>,
+        ) -> Result<Vec<EntityId>, AxonError> {
+            self.record();
+            self.inner.index_range(collection, field, lower, upper)
+        }
+        fn index_unique_conflict(
+            &self,
+            collection: &CollectionId,
+            field: &str,
+            value: &IndexValue,
+            exclude_entity: &EntityId,
+        ) -> Result<bool, AxonError> {
+            self.record();
+            self.inner
+                .index_unique_conflict(collection, field, value, exclude_entity)
+        }
+        fn drop_indexes(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+            self.record();
+            self.inner.drop_indexes(collection)
+        }
+        fn compound_index_lookup(
+            &self,
+            collection: &CollectionId,
+            index_idx: usize,
+            key: &CompoundKey,
+        ) -> Result<Vec<EntityId>, AxonError> {
+            self.record();
+            self.inner.compound_index_lookup(collection, index_idx, key)
+        }
+        fn compound_index_prefix(
+            &self,
+            collection: &CollectionId,
+            index_idx: usize,
+            prefix: &CompoundKey,
+        ) -> Result<Vec<EntityId>, AxonError> {
+            self.record();
+            self.inner
+                .compound_index_prefix(collection, index_idx, prefix)
+        }
+        fn put_link(&mut self, link: &axon_core::types::Link) -> Result<(), AxonError> {
+            self.record();
+            self.inner.put_link(link)
+        }
+        fn delete_link(
+            &mut self,
+            source_collection: &CollectionId,
+            source_id: &EntityId,
+            link_type: &str,
+            target_collection: &CollectionId,
+            target_id: &EntityId,
+        ) -> Result<(), AxonError> {
+            self.record();
+            self.inner.delete_link(
+                source_collection,
+                source_id,
+                link_type,
+                target_collection,
+                target_id,
+            )
+        }
+        fn get_link(
+            &self,
+            source_collection: &CollectionId,
+            source_id: &EntityId,
+            link_type: &str,
+            target_collection: &CollectionId,
+            target_id: &EntityId,
+        ) -> Result<Option<axon_core::types::Link>, AxonError> {
+            self.record();
+            self.inner.get_link(
+                source_collection,
+                source_id,
+                link_type,
+                target_collection,
+                target_id,
+            )
+        }
+        fn list_outbound_links(
+            &self,
+            source_collection: &CollectionId,
+            source_id: &EntityId,
+            link_type: Option<&str>,
+        ) -> Result<Vec<axon_core::types::Link>, AxonError> {
+            self.record();
+            self.inner
+                .list_outbound_links(source_collection, source_id, link_type)
+        }
+        fn list_inbound_links(
+            &self,
+            target_collection: &CollectionId,
+            target_id: &EntityId,
+            link_type: Option<&str>,
+        ) -> Result<Vec<axon_core::types::Link>, AxonError> {
+            self.record();
+            self.inner
+                .list_inbound_links(target_collection, target_id, link_type)
+        }
+
+        fn is_jti_revoked(&self, jti: Uuid) -> Result<bool, AxonError> {
+            self.record();
+            self.inner.is_jti_revoked(jti)
+        }
+
+        fn get_user(&self, user_id: UserId) -> Result<Option<User>, AxonError> {
+            self.record();
+            self.inner.get_user(user_id)
+        }
+
+        fn get_tenant_member(
+            &self,
+            tenant_id: TenantId,
+            user_id: UserId,
+        ) -> Result<Option<TenantMember>, AxonError> {
+            self.record();
+            self.inner.get_tenant_member(tenant_id, user_id)
+        }
+
+        fn upsert_user_identity(
+            &self,
+            provider: &str,
+            external_id: &str,
+            display_name: &str,
+            email: Option<&str>,
+        ) -> Result<User, AxonError> {
+            self.record();
+            self.inner
+                .upsert_user_identity(provider, external_id, display_name, email)
+        }
+
+        fn create_user(
+            &self,
+            id: &UserId,
+            display_name: &str,
+            email: Option<&str>,
+        ) -> Result<User, AxonError> {
+            self.record();
+            self.inner.create_user(id, display_name, email)
+        }
+
+        fn list_users(&self) -> Result<Vec<User>, AxonError> {
+            self.record();
+            self.inner.list_users()
+        }
+
+        fn suspend_user(&self, id: &UserId) -> Result<bool, AxonError> {
+            self.record();
+            self.inner.suspend_user(id)
+        }
+
+        fn upsert_tenant_member(
+            &self,
+            tenant_id: TenantId,
+            user_id: UserId,
+            role: TenantRole,
+        ) -> Result<TenantMember, AxonError> {
+            self.record();
+            self.inner.upsert_tenant_member(tenant_id, user_id, role)
+        }
+
+        fn remove_tenant_member(
+            &self,
+            tenant_id: TenantId,
+            user_id: UserId,
+        ) -> Result<bool, AxonError> {
+            self.record();
+            self.inner.remove_tenant_member(tenant_id, user_id)
+        }
+
+        fn list_tenant_members(&self, tenant_id: TenantId) -> Result<Vec<TenantMember>, AxonError> {
+            self.record();
+            self.inner.list_tenant_members(tenant_id)
+        }
+
+        fn count_tenants(&self) -> Result<usize, AxonError> {
+            self.record();
+            self.inner.count_tenants()
+        }
+
+        fn upsert_default_tenant(&self, name: &str) -> Result<TenantId, AxonError> {
+            self.record();
+            self.inner.upsert_default_tenant(name)
+        }
+
+        fn get_retention_policy(
+            &self,
+            tenant_id: TenantId,
+        ) -> Result<Option<RetentionPolicy>, AxonError> {
+            self.record();
+            self.inner.get_retention_policy(tenant_id)
+        }
+
+        fn set_retention_policy(
+            &self,
+            tenant_id: TenantId,
+            policy: &RetentionPolicy,
+        ) -> Result<(), AxonError> {
+            self.record();
+            self.inner.set_retention_policy(tenant_id, policy)
+        }
+
+        fn list_tenant_databases(
+            &self,
+            tenant_id: TenantId,
+        ) -> Result<Vec<TenantDatabase>, AxonError> {
+            self.record();
+            self.inner.list_tenant_databases(tenant_id)
+        }
+
+        fn create_tenant_database(
+            &self,
+            tenant_id: TenantId,
+            name: &str,
+        ) -> Result<TenantDatabase, AxonError> {
+            self.record();
+            self.inner.create_tenant_database(tenant_id, name)
+        }
+
+        fn delete_tenant_database(&self, tenant_id: TenantId, name: &str) -> Result<bool, AxonError> {
+            self.record();
+            self.inner.delete_tenant_database(tenant_id, name)
+        }
+
+        fn track_credential_issuance(
+            &self,
+            jti: Uuid,
+            user_id: UserId,
+            tenant_id: TenantId,
+            issued_at_ms: i64,
+            expires_at_ms: i64,
+            grants_json: &str,
+        ) -> Result<(), AxonError> {
+            self.record();
+            self.inner.track_credential_issuance(
+                jti,
+                user_id,
+                tenant_id,
+                issued_at_ms,
+                expires_at_ms,
+                grants_json,
+            )
+        }
+
+        fn list_credentials(
+            &self,
+            tenant_id: TenantId,
+            user_filter: Option<UserId>,
+        ) -> Result<Vec<CredentialMetadata>, AxonError> {
+            self.record();
+            self.inner.list_credentials(tenant_id, user_filter)
+        }
+
+        fn revoke_credential(&self, jti: Uuid, revoked_by: UserId) -> Result<(), AxonError> {
+            self.record();
+            self.inner.revoke_credential(jti, revoked_by)
+        }
+    }
+
+    /// Create a shared handler wired to a [`CountingStorageAdapter`] so
+    /// tests can assert on the number of storage-adapter calls a named
+    /// query execution performs (US-072-AC2).
+    async fn make_counting_handler(
+        schemas: &[CollectionSchema],
+        calls: Arc<AtomicUsize>,
+    ) -> SharedHandler<CountingStorageAdapter<MemoryStorageAdapter>> {
+        let storage = CountingStorageAdapter::new(MemoryStorageAdapter::default(), calls);
         let handler = AxonHandler::new(storage);
         let handler = Arc::new(Mutex::new(handler));
 
@@ -12392,6 +13039,14 @@ mod tests {
         assert!(args.contains(&"owner"));
     }
 
+    /// @covers US-072-AC1
+    ///
+    /// Proves the activated `ready_beads` named query is queryable as a
+    /// typed GraphQL connection: `totalCount`, `pageInfo`, and `edges { node
+    /// { ... } }` are populated by one real execution against a live
+    /// handler (not just SDL presence), and the result reflects the
+    /// multi-hop `NOT EXISTS` traversal, per-row policy redaction (`secret`
+    /// nulled for the `Read` role), and row-owner scoping in a single pass.
     #[tokio::test(flavor = "multi_thread")]
     async fn named_query_ready_beads_executes_with_connection_policy_and_redaction() {
         let schema_def = ddx_beads_named_query_schema();
@@ -12486,6 +13141,189 @@ mod tests {
         assert_eq!(ids, vec!["ready", "dep-open"]);
         assert!(nodes.iter().all(|node| node["owner"] == "consultant"));
         assert!(nodes.iter().all(|node| node["secret"].is_null()));
+    }
+
+    /// @covers US-072-AC2
+    ///
+    /// `named_query_field`'s resolver (dynamic.rs) computes the whole
+    /// connection page — `totalCount`, `pageInfo`, and every `edges.node`
+    /// field — in a single `execute_named_query_connection` call per
+    /// request; there is no per-connection-field or per-row resolver that
+    /// re-executes the multi-hop `ready_beads` match. Prove this by
+    /// counting storage-adapter calls for a minimal selection (`edges {
+    /// node { id } }`) against a maximal one (`totalCount` + `pageInfo` +
+    /// every scalar on every row): if the connection re-ran the named
+    /// query per requested field or per row (N+1), the maximal selection
+    /// would cost strictly more storage calls. It does not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_ready_beads_connection_is_one_planned_execution() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_counting_handler(std::slice::from_ref(&schema_def), calls.clone()).await;
+
+        {
+            let mut guard = handler.lock().await;
+            for i in 0..5 {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("ddx_beads"),
+                        id: EntityId::new(format!("ready-{i}")),
+                        data: json!({
+                            "title": format!("ready-{i}"),
+                            "status": "open",
+                            "owner": "consultant",
+                            "priority": i,
+                            "secret": format!("secret-{i}")
+                        }),
+                        actor: None,
+                        audit_metadata: None,
+                        attribution: None,
+                    })
+                    .expect("bead should seed");
+            }
+        }
+
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
+
+        let run = |query: &'static str| {
+            let schema = schema.schema.clone();
+            async move {
+                let request = async_graphql::Request::new(query).data(CallerIdentity::new(
+                    "consultant",
+                    axon_core::auth::Role::Read,
+                ));
+                let result = schema.execute(request).await;
+                assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+            }
+        };
+
+        calls.store(0, Ordering::SeqCst);
+        run("{ ready_beads(first: 10) { edges { node { id } } } }").await;
+        let minimal_calls = calls.load(Ordering::SeqCst);
+        assert!(minimal_calls > 0, "query should touch storage at all");
+
+        calls.store(0, Ordering::SeqCst);
+        run(r#"{
+            ready_beads(first: 10) {
+                totalCount
+                pageInfo { hasNextPage hasPreviousPage }
+                edges { cursor node { id title status owner priority secret } }
+            }
+        }"#)
+        .await;
+        let maximal_calls = calls.load(Ordering::SeqCst);
+
+        assert_eq!(
+            maximal_calls, minimal_calls,
+            "requesting totalCount/pageInfo and every row field must not add storage calls \
+             beyond the single planned execution (would indicate per-field or per-row N+1)"
+        );
+    }
+
+    /// @covers US-072-AC4
+    ///
+    /// CONTRACT-002's connection pagination is cursor-forward (`first`/
+    /// `after`) with `pageInfo` reporting `hasPreviousPage`/`startCursor`
+    /// so a client can detect it is not on the first page (CONTRACT-002
+    /// defines no `last`/`before` arguments for any connection, named-query
+    /// or otherwise). Proves a named-query connection pages forward across
+    /// three pages with a stable `totalCount`, and that `hasPreviousPage`/
+    /// `startCursor` correctly flip once paging has advanced past the
+    /// first page — the same contract already proven for entity
+    /// connections, here proven for `ready_beads`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_ready_beads_connection_paginates_forward() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            for (id, priority) in [("b0", 4), ("b1", 3), ("b2", 2), ("b3", 1), ("b4", 0)] {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("ddx_beads"),
+                        id: EntityId::new(id),
+                        data: json!({
+                            "title": id,
+                            "status": "open",
+                            "owner": "consultant",
+                            "priority": priority,
+                            "secret": "s"
+                        }),
+                        actor: None,
+                        audit_metadata: None,
+                        attribution: None,
+                    })
+                    .expect("bead should seed");
+            }
+        }
+
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
+
+        async fn page(
+            schema: &async_graphql::dynamic::Schema,
+            args: &str,
+        ) -> serde_json::Value {
+            let query = format!(
+                r#"{{
+                    ready_beads({args}) {{
+                        totalCount
+                        pageInfo {{ hasNextPage hasPreviousPage startCursor endCursor }}
+                        edges {{ node {{ id }} }}
+                    }}
+                }}"#
+            );
+            let request = async_graphql::Request::new(query).data(CallerIdentity::new(
+                "consultant",
+                axon_core::auth::Role::Read,
+            ));
+            let result = schema.execute(request).await;
+            assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+            result.data.into_json().expect("json")
+        }
+
+        fn ids(connection: &serde_json::Value) -> Vec<&str> {
+            connection["edges"]
+                .as_array()
+                .expect("edges should be a list")
+                .iter()
+                .filter_map(|edge| edge["node"]["id"].as_str())
+                .collect()
+        }
+
+        let data1 = page(&schema.schema, "first: 2").await;
+        let page1 = &data1["ready_beads"];
+        assert_eq!(page1["totalCount"], 5);
+        assert_eq!(ids(page1), vec!["b0", "b1"]);
+        assert_eq!(page1["pageInfo"]["hasNextPage"], true);
+        assert_eq!(page1["pageInfo"]["hasPreviousPage"], false);
+        let cursor1 = page1["pageInfo"]["endCursor"]
+            .as_str()
+            .expect("page 1 should expose an end cursor")
+            .to_string();
+
+        let data2 = page(&schema.schema, &format!(r#"first: 2, after: "{cursor1}""#)).await;
+        let page2 = &data2["ready_beads"];
+        assert_eq!(page2["totalCount"], 5);
+        assert_eq!(ids(page2), vec!["b2", "b3"]);
+        assert_eq!(page2["pageInfo"]["hasNextPage"], true);
+        assert_eq!(
+            page2["pageInfo"]["hasPreviousPage"], true,
+            "page 2 must report hasPreviousPage now that an `after` cursor was consumed"
+        );
+        assert_eq!(page2["pageInfo"]["startCursor"], "b2");
+        let cursor2 = page2["pageInfo"]["endCursor"]
+            .as_str()
+            .expect("page 2 should expose an end cursor")
+            .to_string();
+
+        let data3 = page(&schema.schema, &format!(r#"first: 2, after: "{cursor2}""#)).await;
+        let page3 = &data3["ready_beads"];
+        assert_eq!(page3["totalCount"], 5);
+        assert_eq!(ids(page3), vec!["b4"]);
+        assert_eq!(page3["pageInfo"]["hasNextPage"], false);
+        assert_eq!(page3["pageInfo"]["hasPreviousPage"], true);
     }
 
     #[tokio::test(flavor = "multi_thread")]

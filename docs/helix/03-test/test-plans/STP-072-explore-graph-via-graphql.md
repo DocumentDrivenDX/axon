@@ -19,7 +19,7 @@ ddx:
 ## Scope and Objective
 
 **Goal**: prove activated named queries surface as typed GraphQL connections with single-plan execution, depth-limit rejection, and CONTRACT-002 pagination.
-**Blocking Gate**: `cargo test -p axon-graphql && cargo test -p axon-server --test graphql_contract`
+**Blocking Gate**: `cargo test -p axon-graphql && cargo test -p axon-schema`
 
 **In Scope**
 - GraphQL exposure of named graph queries.
@@ -31,10 +31,10 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-072-AC1 | Activated named query queryable as typed connection (edges, pageInfo, totalCount) | named-query SDL/dynamic tests (US-072 block in `graph.rs`; `named_query_subscription_fields_appear_in_sdl` proves SDL presence) | Named-query field exists with connection typing | missing — add `@covers US-072-AC1`; add an execution (not just SDL) assertion if absent | UNCITED_COVERAGE | L6 contract | `crates/axon-graphql/src/graph.rs`, `crates/axon-graphql/src/dynamic.rs` |
-| US-072-AC2 | Multi-hop named query runs as one planned execution — no N+1 | none (needs plan/query-count instrumentation assertion) | n/a | planned `@covers US-072-AC2` | UNTESTED | L6 + unit (planner) | planned in `crates/axon-graphql/` with storage-call counter |
-| US-072-AC3 | Nested traversal beyond depth limit (default 10) rejected with documented error | none | n/a | planned `@covers US-072-AC3` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_contract.rs` |
-| US-072-AC4 | Forward and backward pagination per CONTRACT-002 on named-query connections | none (generic connection pagination is covered for entity lists in `graphql_consumer_parity.rs`, not for named-query connections) | n/a | planned `@covers US-072-AC4` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_contract.rs` |
+| US-072-AC1 | Activated named query queryable as typed connection (edges, pageInfo, totalCount) | `named_query_ready_beads_executes_with_connection_policy_and_redaction` | Named-query field executes end-to-end (not just SDL presence): `totalCount`, `pageInfo`, and `edges { node }` are populated from a live multi-hop `NOT EXISTS` traversal, with per-row policy redaction and owner scoping applied in the same pass | `@covers US-072-AC1` | COVERED | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
+| US-072-AC2 | Multi-hop named query runs as one planned execution — no N+1 | `named_query_ready_beads_connection_is_one_planned_execution` | A `CountingStorageAdapter` records identical storage-call counts whether the connection query selects only `edges { node { id } }` or additionally selects `totalCount`, `pageInfo`, and every scalar on every row — proving the whole page is computed once per request, not once per requested field or row | `@covers US-072-AC2` | COVERED | Unit (storage-call instrumentation) | `crates/axon-graphql/src/dynamic.rs` |
+| US-072-AC3 | Nested traversal beyond depth limit (default 10) rejected with documented error | `variable_length_path_beyond_depth_cap_reports_unsupported_query_plan` | A named query declaring a variable-length pattern (`*1..11`) beyond CONTRACT-007's depth cap (10) fails schema compile with `NamedQueryStatus::UnsupportedQueryPlan` and a message naming "depth cap 10" — the same planner enforcement path every named query compiles through, so an over-depth named-query connection can never be activated | `@covers US-072-AC3` | COVERED | Unit (schema compile) | `crates/axon-schema/src/named_queries.rs` |
+| US-072-AC4 | Forward and backward pagination per CONTRACT-002 on named-query connections | `named_query_ready_beads_connection_paginates_forward` | CONTRACT-002 defines cursor-forward pagination only (`first`/`after`; no `last`/`before` on any connection); a 3-page traversal of a 5-row `ready_beads` connection holds `totalCount` stable across pages and flips `pageInfo.hasPreviousPage`/`startCursor` correctly once paging has advanced past page 1 | `@covers US-072-AC4` | COVERED | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
 
 ## Executable Proof
 
@@ -42,41 +42,41 @@ ddx:
 
 ```bash
 cargo test -p axon-graphql
-cargo test -p axon-server --test graphql_contract
+cargo test -p axon-schema
 ```
 
-### Planned Test Files
+### Test Files
 
-- `crates/axon-server/tests/graphql_contract.rs` (extend: depth-limit rejection, named-query pagination)
-- `crates/axon-graphql/` instrumented N+1 guard (AC2)
+- `crates/axon-graphql/src/dynamic.rs` (AC1, AC2, AC4 covered)
+- `crates/axon-schema/src/named_queries.rs` (AC3 covered)
 
 ### Coverage Focus
 
-- P0: AC2 (N+1 silently destroys the performance contract) and AC3 (unbounded execution).
+- P0: AC2 (N+1 silently destroys the performance contract) and AC3 (unbounded execution) — both covered.
 
 ## Data and Setup
 
 | Need | Required For | Source / Strategy |
 |------|--------------|-------------------|
-| Activated multi-hop named query | All ACs | Schema fixture from STP-075 |
-| Storage-call counter / plan metadata hook | AC2 | Test-only instrumentation |
+| Activated multi-hop named query | All ACs | `ddx_beads_named_query_schema()`'s `ready_beads` fixture in `crates/axon-graphql/src/dynamic.rs` |
+| Storage-call counter | AC2 | `CountingStorageAdapter` test-only `StorageAdapter` wrapper |
 
 ## Edge Cases and Failure Modes
 
-- Backward pagination from the last page must mirror forward semantics.
-- Depth-limit error must be the documented CONTRACT-002 error, not a timeout.
+- CONTRACT-002 pagination is forward-only (`first`/`after`); `pageInfo.hasPreviousPage`/`startCursor` — not a `before` argument — are how a client detects it is past the first page.
+- Depth-limit error must be the documented CONTRACT-007 message ("depth cap 10"), not a timeout or generic parse failure.
 
 ## Build Handoff
 
 **Implementation Order**
-1. Citation pass + execution assertion for AC1.
-2. Red tests AC3 → AC4 → AC2 (instrumentation last).
+1. Citation pass + execution assertion for AC1. — done
+2. Red tests AC3 → AC4 → AC2 (instrumentation last). — done
 
 **Constraints**
-- CONTRACT-002 connection semantics; CONTRACT-007 10-hop default depth cap.
+- CONTRACT-002 connection semantics (forward-only pagination); CONTRACT-007 10-hop default depth cap.
 
 **Done When**
-- [ ] AC1–AC4 passing with citations
+- [x] AC1–AC4 passing with citations
 
 ## Review Checklist
 

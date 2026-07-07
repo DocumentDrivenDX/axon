@@ -3579,6 +3579,12 @@ mod tests {
 
     #[test]
     fn query_tool_executes_live_handler_queries() {
+        // @covers US-073-AC3
+        // The axon.query tool handler calls axon_graphql::dynamic::execute_axon_query_json,
+        // which delegates straight into execute_axon_query — the same function backing
+        // GraphQL's axonQuery resolver. Asserting the response is keyed
+        // parsed["data"]["axonQuery"] proves the MCP tool rides the identical
+        // parser/planner/policy path rather than a second implementation.
         let handler = make_graph_handler();
         let tool = build_query_tool(Arc::clone(&handler), CallerIdentity::anonymous());
         assert_eq!(tool.name, "axon.query");
@@ -3607,6 +3613,7 @@ mod tests {
 
     #[test]
     fn query_tool_rejects_invalid_cypher_syntax() {
+        // @covers US-073-AC3
         let tool = build_query_tool(make_graph_handler(), CallerIdentity::anonymous());
         let err = invoke_tool_err(
             &tool,
@@ -3619,6 +3626,7 @@ mod tests {
 
     #[test]
     fn query_tool_rejects_unknown_schema_references() {
+        // @covers US-073-AC3
         let tool = build_query_tool(make_graph_handler(), CallerIdentity::anonymous());
         let err = invoke_tool_err(
             &tool,
@@ -3650,6 +3658,8 @@ mod tests {
 
     #[test]
     fn named_query_tools_surface_descriptions_and_execute_graphql_path() {
+        // @covers US-073-AC1
+        // @covers US-073-AC2
         let handler = make_graph_handler();
         let tools =
             build_named_query_tools("tasks", Arc::clone(&handler), CallerIdentity::anonymous())

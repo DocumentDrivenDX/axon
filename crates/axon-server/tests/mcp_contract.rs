@@ -523,7 +523,6 @@ async fn mcp_tools_list_always_includes_axon_query() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_tools_list_includes_crud_after_collection_created() {
-    // @covers US-073-AC1
     let server = test_server();
     seed_collection(&server, "item").await;
 

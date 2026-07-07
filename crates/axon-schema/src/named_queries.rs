@@ -756,6 +756,34 @@ mod tests {
     }
 
     #[test]
+    fn variable_length_path_beyond_depth_cap_reports_unsupported_query_plan() {
+        // @covers US-072-AC3
+        //
+        // CONTRACT-007's variable-length path depth cap (default 10) is
+        // enforced by the same planner a named query compiles through, so a
+        // named query declaring a traversal deeper than the cap must be
+        // rejected at schema-compile time with a documented error — not
+        // accepted and left to fail (or hang) at execution time.
+        let mut schema = bead_schema();
+        schema.queries.insert(
+            "too_deep".into(),
+            named("MATCH (b:DdxBead {status: 'open'})-[:DEPENDS_ON*1..11]->(d:DdxBead) RETURN d"),
+        );
+
+        let report = compile(&schema, 10_000);
+
+        assert_eq!(
+            report.queries[0].status,
+            NamedQueryStatus::UnsupportedQueryPlan
+        );
+        assert!(
+            report.queries[0].message.contains("depth cap 10"),
+            "expected documented depth-cap error, got: {}",
+            report.queries[0].message
+        );
+    }
+
+    #[test]
     fn multiple_named_queries_report_individually_in_name_order() {
         let mut schema = bead_schema();
         schema.queries.insert(

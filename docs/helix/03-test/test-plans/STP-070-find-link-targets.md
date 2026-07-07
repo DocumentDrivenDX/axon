@@ -31,11 +31,11 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-070-AC1 | Invoking with source ID + link type returns target-collection entities | `find_link_candidates_returns_target_entities` (US-070 test block); GraphQL `linkCandidates` leg in `graphql_consumer_parity.rs` | Candidates drawn from the declared target collection | missing — add `@covers US-070-AC1` | UNCITED_COVERAGE | L2/unit | `crates/axon-api/src/handler.rs` (`#[cfg(test)]` block at ~21396), `crates/axon-server/tests/graphql_consumer_parity.rs` |
-| US-070-AC2 | Search text + filters combine in one index-backed match (no client-side filtering) | handler US-070 block may exercise search/filter — verify and cite; the index-backed (plan-level) claim is unasserted | n/a until verified | planned `@covers US-070-AC2` | UNTESTED | Unit + planner | `crates/axon-api/src/handler.rs`; planner assertion planned |
-| US-070-AC3 | Rows carry already-linked indicator via optional matching | verify handler block for an already-linked assertion; otherwise add | n/a until verified | planned `@covers US-070-AC3` | UNTESTED | Unit | `crates/axon-api/src/handler.rs` |
-| US-070-AC4 | Cardinality available as schema metadata (CONTRACT-010), not computed per query | none | n/a | planned `@covers US-070-AC4` | UNTESTED | Unit | planned in `crates/axon-schema/` tests |
-| US-070-AC5 | 10K-entity target collection, indexed predicate: <50 ms p99 | none | n/a | planned `@covers US-070-AC5` | UNTESTED | L5 benchmark | planned `criterion` bench alongside BM-006 |
+| US-070-AC1 | Invoking with source ID + link type returns target-collection entities | `find_link_candidates_returns_target_entities` (US-070 test block); GraphQL `linkCandidates` leg in `graphql_consumer_parity.rs` | Candidates drawn from the declared target collection | `@covers US-070-AC1` present on both the handler test and the parity leg | COVERED | L2/unit | `crates/axon-api/src/handler.rs` (`#[cfg(test)]` block, `find_link_candidates_returns_target_entities`), `crates/axon-server/tests/graphql_consumer_parity.rs` (`@covers US-070-AC1 (linkCandidates leg)`, ~line 292) |
+| US-070-AC2 | Search text + filters combine in one index-backed match (no client-side filtering) | `find_link_candidates_filter_is_index_backed` | `FindLinkCandidatesRequest` has only a `filter: Option<FilterNode>` field (no separate search-text field — confirmed against `request.rs`), so AC2 collapses to: the filter is resolved via the FEAT-013 `try_index_lookup` planner (asserted `Some(..)`) when the target collection declares a matching index, contrasted against the same filter on an unindexed collection (asserted `None`, i.e. full-scan fallback); end-to-end `find_link_candidates` response matches the index-selected rows | `@covers US-070-AC2` | COVERED | Unit | `crates/axon-api/src/handler.rs` |
+| US-070-AC3 | Rows carry already-linked indicator via optional matching | `find_link_candidates_marks_already_linked` | Already-linked target is flagged `already_linked: true`; unlinked target is `false` | `@covers US-070-AC3` | COVERED | Unit | `crates/axon-api/src/handler.rs` |
+| US-070-AC4 | Cardinality available as schema metadata (CONTRACT-010), not computed per query | `find_link_candidates_cardinality_sourced_from_schema` | With an explicit `link_types["depends-on"]` schema entry (`Cardinality::ManyToMany`), the response's `cardinality` field reflects that declared value (`"many-to-many"`) rather than the "unknown" default seen when no `link_types` entry exists | `@covers US-070-AC4` | COVERED | Unit | `crates/axon-api/src/handler.rs` |
+| US-070-AC5 | 10K-entity target collection, indexed predicate: <50 ms p99 | none | n/a | deferred — L5 criterion benchmark out of scope for axon-36f3a756 (broad benchmark ratchets excluded); not required by the not-yet-issued readiness verdict (axon-5744d96b, still open) | DEFERRED (ratchet) | L5 benchmark | planned `criterion` bench alongside BM-006 |
 
 ## Executable Proof
 
@@ -46,14 +46,14 @@ cargo test -p axon-api
 cargo test -p axon-server --test graphql_consumer_parity
 ```
 
-### Planned Test Files
+### Test Files
 
-- `crates/axon-api/src/handler.rs` test block (verify/extend AC2, AC3)
-- `criterion` benchmark for AC5
+- `crates/axon-api/src/handler.rs` test block (AC1–AC4 covered)
+- `criterion` benchmark for AC5 (deferred, not yet written)
 
 ### Coverage Focus
 
-- P0: AC1/AC3 (correct candidates with linked indicators); AC5 is ratcheted, not commit-blocking.
+- P0: AC1–AC4 (correct candidates with linked indicators, index-backed filtering, schema-sourced cardinality) are covered; AC5 is ratcheted, not commit-blocking.
 
 ## Data and Setup
 
@@ -70,14 +70,14 @@ cargo test -p axon-server --test graphql_consumer_parity
 ## Build Handoff
 
 **Implementation Order**
-1. Citation pass on AC1; verify-and-cite or extend AC2/AC3.
-2. Schema-metadata test (AC4); benchmark (AC5) last.
+1. Citation pass on AC1; verify-and-cite or extend AC2/AC3. — done
+2. Schema-metadata test (AC4); benchmark (AC5) last. — AC4 done; AC5 deferred (ratchet, out of scope for axon-36f3a756)
 
 **Constraints**
 - CONTRACT-010 cardinality metadata location; no client-side filtering.
 
 **Done When**
-- [ ] AC1–AC4 passing with citations; AC5 benchmark recorded in the ratchet file
+- [x] AC1–AC4 passing with citations; AC5 benchmark deferred (ratchet) — see AC5 row for rationale
 
 ## Review Checklist
 

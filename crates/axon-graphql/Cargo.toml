@@ -26,3 +26,4 @@ tokio-stream = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 axon-api = { path = "../axon-api", features = ["test-fixtures"] }
+uuid = { workspace = true }

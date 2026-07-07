@@ -21854,6 +21854,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
 
     #[test]
     fn list_neighbors_filter_by_direction() {
+        // @covers US-071-AC2
         let h = setup_neighbor_graph();
 
         // Only outbound.
@@ -21872,6 +21873,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
 
     #[test]
     fn list_neighbors_filter_by_link_type() {
+        // @covers US-071-AC3
         let h = setup_neighbor_graph();
 
         let resp = h
@@ -21972,6 +21974,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
 
     #[test]
     fn find_link_candidates_marks_already_linked() {
+        // @covers US-070-AC3
         let h = setup_neighbor_graph();
 
         let resp = h
@@ -22019,6 +22022,183 @@ ORDER BY b.priority DESC, b.updated_at DESC
 
         assert_eq!(resp.candidates.len(), 1);
         assert_eq!(resp.candidates[0].entity.id.as_str(), "t-003");
+    }
+
+    #[test]
+    fn find_link_candidates_filter_is_index_backed() {
+        // @covers US-070-AC2
+        //
+        // `FindLinkCandidatesRequest` has a single `filter: Option<FilterNode>`
+        // field (no separate "search text" field — see request.rs), so the
+        // AC2 claim collapses to: the filter is resolved via the FEAT-013
+        // index-accelerated planner (`try_index_lookup`), not a client-side
+        // full scan, when the target collection declares a matching index.
+        //
+        // `find_link_candidates_with_read_context` calls
+        // `try_index_lookup(&self.storage, &target_collection, req.filter.as_ref(),
+        // target_schema.as_ref())` and only falls back to `range_scan` when
+        // that returns `None`. We exercise the exact same private fn with the
+        // exact same inputs the handler uses, proving the index path is taken.
+        let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+
+        let mut indexed_schema = CollectionSchema::new(CollectionId::new("tasks"));
+        indexed_schema.indexes = vec![IndexDef {
+            field: "title".into(),
+            index_type: IndexType::String,
+            unique: false,
+        }];
+        h.create_collection(CreateCollectionRequest {
+            name: CollectionId::new("tasks"),
+            schema: indexed_schema,
+            actor: Some("test".into()),
+        })
+        .unwrap();
+
+        for (id, title) in &[("t-001", "alpha"), ("t-002", "beta"), ("t-003", "beta")] {
+            h.create_entity(CreateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new(*id),
+                data: json!({"title": title}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap();
+        }
+
+        let filter = FilterNode::Field(FieldFilter {
+            field: "title".into(),
+            op: FilterOp::Eq,
+            value: json!("beta"),
+        });
+
+        // Directly exercise the same planner fn the handler calls: with a
+        // declared index on the filtered field it must resolve via the index
+        // (`Some(..)`), not signal a fall back to a full scan (`None`).
+        let target_schema = h
+            .storage_ref()
+            .get_schema(&CollectionId::new("tasks"))
+            .unwrap();
+        let index_hit = try_index_lookup(
+            h.storage_ref(),
+            &CollectionId::new("tasks"),
+            Some(&filter),
+            target_schema.as_ref(),
+        );
+        let mut hit_ids: Vec<String> = index_hit
+            .expect("filter on an indexed field must be satisfied via the index, not a full scan")
+            .iter()
+            .map(|e| e.to_string())
+            .collect();
+        hit_ids.sort();
+        assert_eq!(hit_ids, vec!["t-002".to_string(), "t-003".to_string()]);
+
+        // End-to-end: find_link_candidates must return exactly the
+        // index-selected rows (no client-side-only filtering divergence).
+        let resp = h
+            .find_link_candidates(crate::request::FindLinkCandidatesRequest {
+                source_collection: CollectionId::new("tasks"),
+                source_id: EntityId::new("t-001"),
+                link_type: "depends-on".into(),
+                filter: Some(filter.clone()),
+                limit: None,
+            })
+            .unwrap();
+        let mut resp_ids: Vec<&str> = resp
+            .candidates
+            .iter()
+            .map(|c| c.entity.id.as_str())
+            .collect();
+        resp_ids.sort();
+        assert_eq!(resp_ids, vec!["t-002", "t-003"]);
+
+        // Contrast: the same filter shape against a collection with no
+        // declared index must fall back to a full scan (`None`) — proving
+        // the index-backed result above is genuinely conditioned on the
+        // schema's declared index, not incidental to the filter/handler path.
+        let bare_schema = CollectionSchema::new(CollectionId::new("tasks_unindexed"));
+        let no_index = try_index_lookup(
+            h.storage_ref(),
+            &CollectionId::new("tasks_unindexed"),
+            Some(&filter),
+            Some(&bare_schema),
+        );
+        assert!(
+            no_index.is_none(),
+            "without a declared index, the planner must fall back to a full scan"
+        );
+    }
+
+    #[test]
+    fn find_link_candidates_cardinality_sourced_from_schema() {
+        // @covers US-070-AC4
+        //
+        // CONTRACT-010: cardinality is schema metadata (`LinkTypeDef.cardinality`),
+        // not computed per query. `setup_neighbor_graph()` declares no
+        // `link_types` entries, so its tests all observe the "unknown"
+        // default (see `cardinality_str` fallback in
+        // `find_link_candidates_with_read_context`). Here we declare an
+        // explicit `link_types["depends-on"]` with `Cardinality::ManyToMany`
+        // and assert the response reflects that schema value verbatim,
+        // proving cardinality is sourced from schema, not derived from the
+        // query/link rows.
+        let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+
+        let mut tasks_schema = CollectionSchema::new(CollectionId::new("tasks"));
+        tasks_schema.link_types.insert(
+            "depends-on".to_string(),
+            LinkTypeDef {
+                target_collection: "tasks".into(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: None,
+            },
+        );
+        h.create_collection(CreateCollectionRequest {
+            name: CollectionId::new("tasks"),
+            schema: tasks_schema,
+            actor: Some("test".into()),
+        })
+        .unwrap();
+
+        for id in &["t-001", "t-002"] {
+            h.create_entity(CreateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new(*id),
+                data: json!({"title": id}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap();
+        }
+
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("tasks"),
+            source_id: EntityId::new("t-001"),
+            target_collection: CollectionId::new("tasks"),
+            target_id: EntityId::new("t-002"),
+            link_type: "depends-on".into(),
+            metadata: serde_json::Value::Null,
+            actor: None,
+            attribution: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .find_link_candidates(crate::request::FindLinkCandidatesRequest {
+                source_collection: CollectionId::new("tasks"),
+                source_id: EntityId::new("t-001"),
+                link_type: "depends-on".into(),
+                filter: None,
+                limit: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            resp.cardinality, "many-to-many",
+            "cardinality must be sourced from the schema's LinkTypeDef, not computed/defaulted"
+        );
     }
 
     #[test]
