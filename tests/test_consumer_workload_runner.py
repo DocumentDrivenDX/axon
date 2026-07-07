@@ -67,6 +67,41 @@ class ConsumerWorkloadRunnerTests(unittest.TestCase):
         consumer_dir.mkdir()
         return consumer_dir
 
+    def make_git_checkout(self, name: str, *, dirty: bool) -> tuple[Path, str]:
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, ignore_errors=True)
+        repo_dir = temp_dir / name
+        repo_dir.mkdir()
+
+        def run_git(*args: str) -> None:
+            subprocess.run(
+                ["git", *args],
+                cwd=repo_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        run_git("init", "-q")
+        run_git("config", "user.email", "test@example.com")
+        run_git("config", "user.name", "Test")
+        (repo_dir / "README.md").write_text("init\n", encoding="utf-8")
+        run_git("add", "README.md")
+        run_git("commit", "-q", "-m", "init")
+
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        if dirty:
+            (repo_dir / "README.md").write_text("dirty\n", encoding="utf-8")
+
+        return repo_dir, sha
+
     def test_bash_syntax_is_valid(self) -> None:
         result = subprocess.run(
             ["bash", "-n", str(SCRIPT)],
@@ -435,6 +470,75 @@ printf '%s\\n' 'No tests found!'
         self.assertEqual(command["executed_tests"], 1)
         self.assertEqual(command["skipped_tests"], 0)
         self.assertEqual(command["test_counts_source"], "heuristic")
+
+    def test_self_test_records_null_consumer_sha_and_clean_dirty_state(self) -> None:
+        _result, summary, _run_dir = self.run_runner("--self-test")
+
+        self.assertIsNone(summary["consumer_path"])
+        self.assertIsNone(summary["consumer_sha"])
+        self.assertFalse(summary["consumer_dirty"])
+
+    def test_dry_run_records_consumer_sha_and_dirty_state_for_git_checkout(self) -> None:
+        nexiq_dir, expected_sha = self.make_git_checkout("nexiq", dirty=False)
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "nexiq",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            "--dry-run",
+            env={"NEXIQ_WORKLOAD_PATH": str(nexiq_dir)},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(summary["consumer_path"], str(nexiq_dir))
+        self.assertEqual(summary["consumer_sha"], expected_sha)
+        self.assertFalse(summary["consumer_dirty"])
+
+    def test_release_mode_fails_on_dirty_consumer_checkout(self) -> None:
+        nexiq_dir, expected_sha = self.make_git_checkout("nexiq", dirty=True)
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "nexiq",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "release",
+            env={"NEXIQ_WORKLOAD_PATH": str(nexiq_dir)},
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["classification"], "consumer_dirty")
+        self.assertEqual(summary["consumer_path"], str(nexiq_dir))
+        self.assertEqual(summary["consumer_sha"], expected_sha)
+        self.assertTrue(summary["consumer_dirty"])
+        self.assertIn("dirty", summary["failure"]["message"].lower())
+        # The dirty gate runs before any workload command, so no command
+        # (e.g. a real bun invocation) is ever attempted.
+        self.assertEqual(summary["commands"], [])
+
+    def test_pr_mode_records_but_does_not_gate_on_dirty_consumer_checkout(self) -> None:
+        nexiq_dir, expected_sha = self.make_git_checkout("nexiq", dirty=True)
+
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "nexiq",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "contract",
+            "--dry-run",
+            env={"NEXIQ_WORKLOAD_PATH": str(nexiq_dir)},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(summary["consumer_sha"], expected_sha)
+        self.assertTrue(summary["consumer_dirty"])
+        self.assertEqual(summary["status"], "passed")
 
     def test_release_mode_fails_missing_consumer_workload(self) -> None:
         result, summary, _run_dir = self.run_runner(

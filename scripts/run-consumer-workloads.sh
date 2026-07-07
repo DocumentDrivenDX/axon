@@ -22,6 +22,9 @@ SUMMARY_PATH=""
 STARTED_AT=""
 FINISHED_AT=""
 AXON_SHA=""
+CONSUMER_PATH=""
+CONSUMER_SHA=""
+CONSUMER_DIRTY=0
 ENDPOINT="${AXON_ENDPOINT:-${NEXIQ_AXON_ENDPOINT:-http://127.0.0.1:0}}"
 TENANT="${AXON_TENANT:-${NEXIQ_AXON_TENANT:-consumer-workload}}"
 DATABASE="${AXON_DATABASE:-${NEXIQ_AXON_DATABASE:-default}}"
@@ -185,6 +188,38 @@ command_env_keys() {
   esac
 }
 
+consumer_checkout_path() {
+  case "$CONSUMER" in
+    nexiq) printf '%s' "$NEXIQ_WORKLOAD_PATH" ;;
+    ddx) printf '%s' "$DDX_WORKLOAD_PATH" ;;
+    cayce) printf '%s' "$CAYCE_WORKLOAD_PATH" ;;
+    *) printf '' ;;
+  esac
+}
+
+resolve_consumer_git_state() {
+  CONSUMER_PATH=""
+  CONSUMER_SHA=""
+  CONSUMER_DIRTY=0
+
+  local path
+  path="$(consumer_checkout_path)"
+  if [[ -z "$path" || ! -d "$path" ]]; then
+    return 0
+  fi
+
+  CONSUMER_PATH="$path"
+
+  if ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+    return 0
+  fi
+
+  CONSUMER_SHA="$(git -C "$path" rev-parse HEAD 2>/dev/null || printf '')"
+  if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]]; then
+    CONSUMER_DIRTY=1
+  fi
+}
+
 setup_run_dir() {
   RUN_ID="consumer-workloads-$(date -u +%Y%m%dT%H%M%SZ)-$$"
   if [[ -n "$RUN_DIR_OVERRIDE" ]]; then
@@ -306,6 +341,9 @@ write_summary() {
   STATUS="$STATUS" \
   CLASSIFICATION="$CLASSIFICATION" \
   AXON_SHA="$AXON_SHA" \
+  CONSUMER_PATH="$CONSUMER_PATH" \
+  CONSUMER_SHA="$CONSUMER_SHA" \
+  CONSUMER_DIRTY="$CONSUMER_DIRTY" \
   ENDPOINT="$ENDPOINT" \
   TENANT="$TENANT" \
   DATABASE="$DATABASE" \
@@ -341,8 +379,9 @@ summary = {
     "status": os.environ["STATUS"],
     "classification": os.environ["CLASSIFICATION"],
     "axon_sha": os.environ["AXON_SHA"],
-    "consumer_sha": None,
-    "consumer_dirty": False,
+    "consumer_path": optional_string(os.environ["CONSUMER_PATH"]),
+    "consumer_sha": optional_string(os.environ["CONSUMER_SHA"]),
+    "consumer_dirty": os.environ["CONSUMER_DIRTY"] == "1",
     "endpoint": os.environ["ENDPOINT"],
     "tenant": os.environ["TENANT"],
     "database": os.environ["DATABASE"],
@@ -887,6 +926,7 @@ main() {
   parse_args "$@"
   validate_options
   setup_run_dir
+  resolve_consumer_git_state
 
   if [[ "$SELF_TEST" -eq 1 ]]; then
     run_classifier_self_test
@@ -897,6 +937,16 @@ main() {
     missing_exit="$(gate_exit_code)"
     write_summary "$missing_exit"
     exit "$missing_exit"
+  fi
+
+  if [[ "$MODE" == "release" && "$CONSUMER_DIRTY" -eq 1 ]]; then
+    STATUS="failed"
+    CLASSIFICATION="consumer_dirty"
+    FAILURE_MESSAGE="consumer checkout at ${CONSUMER_PATH} is dirty; release qualification requires a clean, reproducible checkout"
+    local dirty_exit
+    dirty_exit="$(gate_exit_code)"
+    write_summary "$dirty_exit"
+    exit "$dirty_exit"
   fi
 
   run_commands || true

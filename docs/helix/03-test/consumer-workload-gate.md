@@ -41,6 +41,7 @@ The gate mode decides whether that result exits successfully.
 | `failed` | `infra` | fail | fail | fail | Tooling, dependency installation, ports, Docker, or host resources prevented a valid run. |
 | `missing` | `missing_workload` | pass | pass-with-warning | fail | The consumer source or exported fixture is absent. This is acceptable for ordinary PR/nightly runs but blocks release qualification. |
 | `blocked` | `contract_gap` | pass-with-warning | fail | fail | A known missing integration path prevents a real workload. This is allowed only when the mode explicitly permits known blockers. |
+| `failed` | `consumer_dirty` | pass | pass | fail | The resolved consumer checkout has uncommitted changes, so the run is not reproducible from a recorded SHA. Only release qualification gates on this; PR/nightly runs still record `consumer_dirty: true` in `summary.json`. |
 | `unknown` | `unknown` | fail | fail | fail | The runner cannot classify the result from mechanical evidence. Unknown never passes. |
 
 The default mode is `pr`. Operators must request `nightly` or `release`
@@ -62,9 +63,18 @@ Consumer source resolution is deterministic:
 3. If a checkout URL and revision are configured for CI, clone/fetch into the
    run directory and check out that exact revision.
 4. Capture the resolved path, `git rev-parse HEAD`, and dirty-worktree state
-   for every consumer checkout.
+   for every consumer checkout in `consumer_path`, `consumer_sha`, and
+   `consumer_dirty` on `summary.json`, regardless of mode. A checkout that is
+   not a git working tree records `consumer_sha: null` and
+   `consumer_dirty: false`.
 5. If no checkout or exported workload exists, emit `missing` /
    `missing_workload`; do not synthesize fixtures.
+6. Release qualification fails (`failed` / `consumer_dirty`) when the
+   resolved consumer checkout has uncommitted changes (`git status
+   --porcelain` is non-empty), because a dirty checkout cannot be reproduced
+   from the recorded SHA. This check runs before any workload command
+   executes. PR and nightly modes do not gate on it but still record the
+   dirty state.
 
 GitHub Actions must not hardcode `/home/erik` paths. Local-only sibling paths
 are allowed for developer runs and must be shown in `summary.json`.
@@ -148,6 +158,9 @@ Classification is rule-based and conservative:
 - `missing_workload`: source checkout or exported workload is absent.
 - `infra`: host tooling, ports, Docker, dependency install, browser runtime, or
   network setup prevents a meaningful run.
+- `consumer_dirty`: the resolved consumer checkout has uncommitted changes;
+  release qualification cannot treat the run as reproducible from
+  `consumer_sha` alone.
 - `unknown`: evidence is insufficient or contradictory. Unknown always fails.
 
 When multiple rules match, choose the most actionable non-unknown
@@ -169,6 +182,7 @@ Required top-level fields:
   "status": "passed",
   "classification": "none",
   "axon_sha": "git sha",
+  "consumer_path": "resolved consumer checkout path or null",
   "consumer_sha": "git sha or null",
   "consumer_dirty": false,
   "endpoint": "http://127.0.0.1:4170",
@@ -266,8 +280,9 @@ runs can check out Nexiq by setting repository variable
 directory.
 
 Release qualification must fail on `missing_workload`, `contract_gap`,
-`unknown`, any `failed` status, and any run whose test counts are only
-supported by heuristic stdout markers instead of a native machine-readable
-payload. No consumer currently has a Phase-0 exception that narrows this
-rule; any future exception must be recorded explicitly in the consumer
-disposition artifact and mirrored here before it can affect release verdicts.
+`consumer_dirty`, `unknown`, any `failed` status, and any run whose test
+counts are only supported by heuristic stdout markers instead of a native
+machine-readable payload. No consumer currently has a Phase-0 exception that
+narrows this rule; any future exception must be recorded explicitly in the
+consumer disposition artifact and mirrored here before it can affect release
+verdicts.
