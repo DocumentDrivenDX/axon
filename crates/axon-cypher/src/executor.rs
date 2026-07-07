@@ -1145,6 +1145,7 @@ mod tests {
 
     #[test]
     fn timeout_is_checked_while_rows_are_pulled() {
+        // @covers US-076-AC5
         let schema = test_fixtures::ddx_beads();
         let query = parse("MATCH (b:DdxBead {status: 'open'}) RETURN b.title AS title")
             .expect("query should parse");
@@ -1437,6 +1438,7 @@ mod tests {
 
     #[test]
     fn storage_scan_error_propagates_as_cypher_error_storage() {
+        // @covers US-076-AC5
         let schema = test_fixtures::ddx_beads();
         // Use a filter on an indexed property so the planner accepts the query.
         let query = parse("MATCH (b:DdxBead {status: 'open'}) RETURN b.id AS id")
@@ -1456,6 +1458,7 @@ mod tests {
 
     #[test]
     fn storage_traverse_error_propagates_through_expand() {
+        // @covers US-076-AC5
         let schema = test_fixtures::ddx_beads();
         let query =
             parse("MATCH (b:DdxBead {id: 'bead-a'})-[:DEPENDS_ON]->(d:DdxBead) RETURN d.id AS id")

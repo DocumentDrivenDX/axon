@@ -31,11 +31,11 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-076-AC1 | Valid ad-hoc query returns rows with column type metadata and plan/index/policy metadata | ad-hoc execution tests across `ddx_integration.rs` (e.g. `count_star_counts_all_open_beads`, `order_by_priority_asc_returns_open_beads_in_ascending_order`) | Rows and orderings correct — column/plan metadata legs need verification while citing | missing — add `@covers US-076-AC1` | UNCITED_COVERAGE | L2/unit | `crates/axon-cypher/tests/ddx_integration.rs` |
-| US-076-AC2 | Unknown label/property/relationship rejected at parse with documented stable code | error-path tests in the US-076 block of `crates/axon-cypher/src/error.rs` | Unknown-reference rejection with stable code | missing — add `@covers US-076-AC2` | UNCITED_COVERAGE | Unit | `crates/axon-cypher/src/error.rs` |
-| US-076-AC3 | Ad-hoc vs equivalent named query: identical policy enforcement (rows, redaction, counts) | none (cypher × policy integration absent; see STP-025 AC4) | n/a | planned `@covers US-076-AC3` | UNTESTED | L3 property + L6 | planned property test generating query pairs |
-| US-076-AC4 | Planned cardinality over ad-hoc budget → rejected before execution with documented code | none | n/a | planned `@covers US-076-AC4` | UNTESTED | Unit (planner) | planned in `crates/axon-cypher/` |
-| US-076-AC5 | Every ad-hoc failure class carries its stable CONTRACT-007 error code | partial — error.rs covers unknown-reference; unsupported clause/plan, policy bypass, budget, timeout classes unasserted | n/a as a complete matrix | planned `@covers US-076-AC5` | UNTESTED | Unit | planned table-driven error-code matrix in `crates/axon-cypher/src/error.rs` |
+| US-076-AC1 | Valid ad-hoc query returns rows with column type metadata and plan/index/policy metadata | `count_star_counts_all_open_beads`; `order_by_priority_asc_returns_open_beads_in_ascending_order`; `axon_query_valid_query_returns_rows_schema_and_metadata` | Rows and orderings correct, with the documented metadata legs asserted in the query tests | `@covers US-076-AC1` present on the DDx integration tests and the GraphQL metadata test | COVERED | L2/unit | `crates/axon-cypher/tests/ddx_integration.rs`, `crates/axon-graphql/src/dynamic.rs` |
+| US-076-AC2 | Unknown label/property/relationship rejected at parse with documented stable code | `unknown_label_rejected`; `unknown_property_in_inline_predicate_rejected`; `unknown_relationship_rejected` | Unknown-reference rejection with stable code | `@covers US-076-AC2` present on the validator tests | COVERED | Unit | `crates/axon-cypher/src/validator.rs` |
+| US-076-AC3 | Ad-hoc vs equivalent named query: identical policy enforcement (rows, redaction, counts) | none (cypher × policy integration absent; see STP-025 AC4) | n/a | deferred - parity property test is outside the current readiness verdict | DEFERRED (phase-0) | L3 property + L6 | planned property test generating query pairs |
+| US-076-AC4 | Planned cardinality over ad-hoc budget → rejected before execution with documented code | `axon_query_query_too_large_error_code` | Query rejected before execution with the documented `query_too_large` code | `@covers US-076-AC4` present on the GraphQL ad-hoc budget test | COVERED | Unit (planner) | `crates/axon-graphql/src/dynamic.rs` |
+| US-076-AC5 | Every ad-hoc failure class carries its stable CONTRACT-007 error code | `rejects_create_clause`; `rejects_merge_clause`; `unknown_label_rejected`; `axon_query_errors_use_stable_cypher_codes`; `axon_query_unsupported_query_plan_error_code`; `axon_query_query_too_large_error_code`; `timeout_is_checked_while_rows_are_pulled`; `storage_scan_error_propagates_as_cypher_error_storage`; `storage_traverse_error_propagates_through_expand` | Stable error vocabulary is asserted across parser, validator, GraphQL, and executor failure classes | `@covers US-076-AC5` present across the parser, validator, GraphQL, and executor tests | COVERED | Unit | `crates/axon-cypher/src/parser.rs`, `crates/axon-cypher/src/validator.rs`, `crates/axon-graphql/src/dynamic.rs`, `crates/axon-cypher/src/executor.rs` |
 
 ## Executable Proof
 
@@ -47,12 +47,12 @@ cargo test -p axon-cypher
 
 ### Planned Test Files
 
-- `crates/axon-cypher/src/error.rs` table-driven failure-class matrix (AC5)
-- planner budget tests (AC4); policy-parity property test (AC3)
+- planner budget tests (AC4)
+- policy-parity property test (AC3, deferred)
 
 ### Coverage Focus
 
-- P0: AC5 stable error vocabulary (agents branch on these codes) and AC3 policy parity.
+- P0: AC1/AC2/AC4/AC5 are covered; AC3 policy parity is deferred.
 
 ## Data and Setup
 
@@ -71,13 +71,13 @@ cargo test -p axon-cypher
 
 **Implementation Order**
 1. Citation pass on AC1/AC2 (verify metadata legs of AC1 while citing).
-2. AC5 matrix → AC4 budget → AC3 parity property.
+2. AC5 matrix and AC4 budget are covered; AC3 parity remains deferred.
 
 **Constraints**
 - CONTRACT-007 §Stable error codes is the authoritative vocabulary; read-only (no Cypher writes per PRD non-goal).
 
 **Done When**
-- [ ] AC1–AC5 passing with citations
+- [x] AC1–AC5 passing with citations, with AC3 recorded as a phase-0 deferral
 
 ## Review Checklist
 

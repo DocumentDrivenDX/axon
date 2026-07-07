@@ -638,6 +638,7 @@ mod tests {
 
     #[test]
     fn unknown_label_reports_unknown_identifier() {
+        // @covers US-075-AC2
         let mut schema = bead_schema();
         schema
             .queries
@@ -653,6 +654,7 @@ mod tests {
 
     #[test]
     fn unknown_property_reports_unknown_identifier() {
+        // @covers US-075-AC2
         let mut schema = bead_schema();
         schema.queries.insert(
             "bad_property".into(),
@@ -669,6 +671,7 @@ mod tests {
 
     #[test]
     fn unknown_relationship_reports_unknown_identifier() {
+        // @covers US-075-AC2
         let mut schema = bead_schema();
         schema.queries.insert(
             "bad_rel".into(),
@@ -685,6 +688,7 @@ mod tests {
 
     #[test]
     fn unindexed_plan_on_large_collection_reports_unsupported_query_plan() {
+        // @covers US-075-AC3
         let mut schema = bead_schema();
         schema.queries.insert(
             "scan".into(),
@@ -702,6 +706,7 @@ mod tests {
 
     #[test]
     fn policy_bypass_reports_policy_required_bypass() {
+        // @covers US-075-AC4
         let mut schema = bead_schema();
         schema.access_control = Some(
             serde_json::from_value(json!({

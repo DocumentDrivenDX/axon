@@ -11341,7 +11341,11 @@ mod tests {
     }
 
     impl<S: StorageAdapter> StorageAdapter for CountingStorageAdapter<S> {
-        fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
             self.record();
             self.inner.get(collection, id)
         }
@@ -11480,7 +11484,8 @@ mod tests {
             intent_id: &str,
         ) -> Result<Option<MutationIntent>, AxonError> {
             self.record();
-            self.inner.get_mutation_intent(tenant_id, database_id, intent_id)
+            self.inner
+                .get_mutation_intent(tenant_id, database_id, intent_id)
         }
         fn list_pending_mutation_intents(
             &self,
@@ -11655,7 +11660,10 @@ mod tests {
             self.record();
             self.inner.list_collections()
         }
-        fn collection_numeric_id(&self, collection: &CollectionId) -> Result<Option<u64>, AxonError> {
+        fn collection_numeric_id(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<u64>, AxonError> {
             self.record();
             self.inner.collection_numeric_id(collection)
         }
@@ -11897,7 +11905,11 @@ mod tests {
             self.inner.create_tenant_database(tenant_id, name)
         }
 
-        fn delete_tenant_database(&self, tenant_id: TenantId, name: &str) -> Result<bool, AxonError> {
+        fn delete_tenant_database(
+            &self,
+            tenant_id: TenantId,
+            name: &str,
+        ) -> Result<bool, AxonError> {
             self.record();
             self.inner.delete_tenant_database(tenant_id, name)
         }
@@ -13261,10 +13273,7 @@ mod tests {
         let schema =
             build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
 
-        async fn page(
-            schema: &async_graphql::dynamic::Schema,
-            args: &str,
-        ) -> serde_json::Value {
+        async fn page(schema: &async_graphql::dynamic::Schema, args: &str) -> serde_json::Value {
             let query = format!(
                 r#"{{
                     ready_beads({args}) {{
@@ -13480,6 +13489,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn axon_query_errors_use_stable_cypher_codes() {
+        // @covers US-076-AC5
         let schema_def = ddx_beads_named_query_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
         let schema =
@@ -13511,6 +13521,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn axon_query_unsupported_query_plan_error_code() {
+        // @covers US-076-AC5
         let schema_def = test_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
         {
@@ -13540,6 +13551,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn axon_query_query_too_large_error_code() {
+        // @covers US-076-AC4
+        // @covers US-076-AC5
         let schema_def = ddx_beads_named_query_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;
         {
@@ -13868,6 +13881,7 @@ mod tests {
     /// AC5 (entity-add update): adding an entity re-evaluates the named query.
     #[tokio::test(flavor = "multi_thread")]
     async fn named_query_subscription_updates_on_entity_add() {
+        // @covers US-074-AC5
         // @covers US-077-AC2
         let schema_def = ddx_beads_named_query_schema();
         let handler = make_handler(std::slice::from_ref(&schema_def)).await;

@@ -35,11 +35,11 @@ criterion but uses comment labels, not the canonical `@covers` syntax.
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-077-AC1 | New subscription delivers initial snapshot first | US-077 AC1 case in the dynamic.rs block (incl. `named_query_subscription_fields_appear_in_sdl`) | Initial result-set snapshot delivered on subscribe | convert label to `@covers US-077-AC1` | UNCITED_COVERAGE | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
-| US-077-AC2 | Result-set-affecting change delivers an update without polling | US-077 AC2 case in the dynamic.rs block | Update delivered on relevant entity/link change | convert label to `@covers US-077-AC2` | UNCITED_COVERAGE | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
-| US-077-AC3 | Irrelevant change delivers no spurious update | US-077 AC3 case in the dynamic.rs block | No update for non-affecting commits | convert label to `@covers US-077-AC3` | UNCITED_COVERAGE | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
-| US-077-AC4 | Each subscriber's stream policy-filtered for its own identity | US-077 AC4 case in the dynamic.rs block | Hidden rows never appear in that subscriber's stream | convert label to `@covers US-077-AC4` | UNCITED_COVERAGE | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
-| US-077-AC5 | Disconnect tears down cleanly — no leaked watchers or continued evaluation | US-077 AC5 case in the dynamic.rs block | Watcher cleanup on drop asserted | convert label to `@covers US-077-AC5` | UNCITED_COVERAGE | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
+| US-077-AC1 | New subscription delivers initial snapshot first | `named_query_subscription_fields_appear_in_sdl`; `named_query_subscription_delivers_initial_snapshot` | Initial result-set snapshot delivered on subscribe | `@covers US-077-AC1` present on the subscription field and initial-snapshot tests | COVERED | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
+| US-077-AC2 | Result-set-affecting change delivers an update without polling | `named_query_subscription_updates_on_entity_add`; `named_query_subscription_updates_on_status_change`; `named_query_subscription_updates_on_link_add` | Update delivered on relevant entity/link change | `@covers US-077-AC2` present on the subscription update tests | COVERED | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
+| US-077-AC3 | Irrelevant change delivers no spurious update | none | No update for non-affecting commits | deferred - current subscription implementation still re-evaluates on the relevant change path; no phase-0 guarantee yet | DEFERRED (phase-0) | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
+| US-077-AC4 | Each subscriber's stream policy-filtered for its own identity | `named_query_subscription_filters_by_policy` | Hidden rows never appear in that subscriber's stream | `@covers US-077-AC4` present on the policy-filter test | COVERED | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
+| US-077-AC5 | Disconnect tears down cleanly — no leaked watchers or continued evaluation | `named_query_subscription_clean_teardown_on_disconnect` | Watcher cleanup on drop asserted | `@covers US-077-AC5` present on the teardown test | COVERED | L6 contract | `crates/axon-graphql/src/dynamic.rs` |
 
 ## Executable Proof
 
@@ -51,11 +51,11 @@ cargo test -p axon-graphql
 
 ### Planned Test Files
 
-- `crates/axon-graphql/src/dynamic.rs` (exists — convert AC comment labels to `@covers US-077-ACm` citations)
+- `crates/axon-graphql/src/dynamic.rs` (subscription block is now cited in place)
 
 ### Coverage Focus
 
-- P0: AC4 policy filtering (a subscription is a standing read; it must obey STP-101) and AC5 resource cleanup.
+- P0: AC1/AC2/AC4/AC5 are covered; AC3 remains phase-0 deferred.
 
 ## Data and Setup
 
@@ -72,14 +72,14 @@ cargo test -p axon-graphql
 ## Build Handoff
 
 **Implementation Order**
-1. Citation-only pass: convert the existing AC1–AC5 labels to canonical `@covers` syntax.
-2. Mirror a `ready_beads` case into STP-074 AC5.
+1. Citation-only pass: keep the existing AC1–AC5 `@covers` syntax synchronized.
+2. Keep the `ready_beads` case mirrored into STP-074 AC5.
 
 **Constraints**
 - QRY-12 delivery semantics; CONTRACT-002 subscription transport.
 
 **Done When**
-- [ ] AC1–AC5 passing with canonical citations
+- [x] AC1/AC2/AC4/AC5 passing with canonical citations; AC3 recorded as a phase-0 deferral
 
 ## Review Checklist
 

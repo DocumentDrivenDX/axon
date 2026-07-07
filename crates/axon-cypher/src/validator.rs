@@ -284,6 +284,7 @@ mod tests {
 
     #[test]
     fn unknown_label_rejected() {
+        // @covers US-076-AC5
         // @covers US-076-AC2
         let err = parse_and_validate("MATCH (b:UnknownLabel) RETURN b").unwrap_err();
         assert!(matches!(err, CypherError::UnknownIdentifier { kind, name }

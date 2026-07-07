@@ -3660,6 +3660,7 @@ mod tests {
     fn named_query_tools_surface_descriptions_and_execute_graphql_path() {
         // @covers US-073-AC1
         // @covers US-073-AC2
+        // @covers US-075-AC5
         let handler = make_graph_handler();
         let tools =
             build_named_query_tools("tasks", Arc::clone(&handler), CallerIdentity::anonymous())

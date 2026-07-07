@@ -728,12 +728,14 @@ mod tests {
 
     #[test]
     fn rejects_create_clause() {
+        // @covers US-076-AC5
         let err = parse("CREATE (n:Bead) RETURN n").unwrap_err();
         assert!(matches!(err, CypherError::UnsupportedClause(s) if s == "CREATE"));
     }
 
     #[test]
     fn rejects_merge_clause() {
+        // @covers US-076-AC5
         let err = parse("MERGE (n) RETURN n").unwrap_err();
         assert!(matches!(err, CypherError::UnsupportedClause(_)));
     }

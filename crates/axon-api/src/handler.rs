@@ -17107,6 +17107,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
 
     #[test]
     fn handle_put_schema_dry_run_reports_named_query_errors_without_activation() {
+        // @covers US-075-AC6
         let mut h = handler();
         let col = CollectionId::new("ddx_beads");
         let schema = named_query_schema(col.as_str(), "MATCH (b:DdxBead RETURN b");

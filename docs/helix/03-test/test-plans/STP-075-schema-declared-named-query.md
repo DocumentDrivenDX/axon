@@ -31,12 +31,12 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-075-AC1 | Declaration accepted per CONTRACT-007 grammar on schema save | named-query schema tests (US-075 block in `crates/axon-schema/src/schema.rs:187` area) | Valid declaration round-trips through schema save | missing — add `@covers US-075-AC1` | UNCITED_COVERAGE | Unit | `crates/axon-schema/src/schema.rs` |
-| US-075-AC2 | Unknown label/property/relationship → save fails with type-check diagnostic identifying the reference | none verified (cypher schema validation exists in `crates/axon-cypher/src/schema.rs` — verify a save-time diagnostic test and cite, else add) | n/a until verified | planned `@covers US-075-AC2` | UNTESTED | Unit | `crates/axon-cypher/src/schema.rs`, `crates/axon-schema/` |
-| US-075-AC3 | Unindexed scan above threshold → save fails suggesting an index (QRY-06) | none | n/a | planned `@covers US-075-AC3` | UNTESTED | Unit | planned in `crates/axon-cypher/` planner diagnostics |
-| US-075-AC4 | Policy-bypass-requiring query → save fails with documented policy-compatibility error (QRY-07) | none | n/a | planned `@covers US-075-AC4` | UNTESTED | Unit + L6 | planned alongside policy compile pipeline (STP-109) |
-| US-075-AC5 | Activation exposes typed GraphQL field and MCP tool | `named_query_subscription_fields_appear_in_sdl` (GraphQL leg); MCP named-query tools in `mcp_contract.rs` (STP-073 AC1) | Activated query visible on both surfaces | missing — add `@covers US-075-AC5` | UNCITED_COVERAGE | L6 contract | `crates/axon-graphql/src/dynamic.rs`, `crates/axon-server/tests/mcp_contract.rs` |
-| US-075-AC6 | Schema dry-run returns compile report incl. named-query diagnostics; nothing activated | none (schema dry-run exists — `grpc_put_schema_dry_run` — but named-query diagnostics in the report are unasserted) | n/a | planned `@covers US-075-AC6` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/api_contract.rs` / `graphql_policy_contract.rs` |
+| US-075-AC1 | Declaration accepted per CONTRACT-007 grammar on schema save | `esf_parses_named_queries_block` | Valid declaration round-trips through schema save | `@covers US-075-AC1` present on the schema parser test | COVERED | Unit | `crates/axon-schema/src/schema.rs` |
+| US-075-AC2 | Unknown label/property/relationship → save fails with type-check diagnostic identifying the reference | `unknown_label_reports_unknown_identifier`; `unknown_property_reports_unknown_identifier`; `unknown_relationship_reports_unknown_identifier` | Save-time compile report surfaces the offending reference class | `@covers US-075-AC2` present on the named-query compiler diagnostics tests | COVERED | Unit | `crates/axon-schema/src/named_queries.rs` |
+| US-075-AC3 | Unindexed scan above threshold → save fails suggesting an index (QRY-06) | `unindexed_plan_on_large_collection_reports_unsupported_query_plan` | Compile report suggests the missing index via the documented planner status | `@covers US-075-AC3` present on the named-query compiler diagnostics test | COVERED | Unit | `crates/axon-schema/src/named_queries.rs` |
+| US-075-AC4 | Policy-bypass-requiring query → save fails with documented policy-compatibility error (QRY-07) | `policy_bypass_reports_policy_required_bypass` | Compile report records the policy bypass diagnostic | `@covers US-075-AC4` present on the named-query compiler diagnostics test | COVERED | Unit + L6 | `crates/axon-schema/src/named_queries.rs` |
+| US-075-AC5 | Activation exposes typed GraphQL field and MCP tool | `named_query_subscription_fields_appear_in_sdl`; `named_query_tools_surface_descriptions_and_execute_graphql_path` | Activated query visible on both surfaces | `@covers US-075-AC5` present on the GraphQL field test and the MCP named-query tool test | COVERED | L6 contract | `crates/axon-graphql/src/dynamic.rs`, `crates/axon-mcp/src/handlers.rs` |
+| US-075-AC6 | Schema dry-run returns compile report incl. named-query diagnostics; nothing activated | `handle_put_schema_dry_run_reports_named_query_errors_without_activation` | Dry-run reports named-query diagnostics and leaves the schema inactive | `@covers US-075-AC6` present on the handler dry-run test | COVERED | L6 contract | `crates/axon-api/src/handler.rs` |
 
 ## Executable Proof
 
@@ -50,12 +50,12 @@ cargo test -p axon-server --test mcp_contract
 
 ### Planned Test Files
 
-- `crates/axon-cypher/` save-time diagnostic tests (AC2–AC4)
-- dry-run report extension test (AC6)
+- `crates/axon-schema/src/named_queries.rs` save-time diagnostic tests (AC2–AC4)
+- `crates/axon-api/src/handler.rs` dry-run report coverage (AC6)
 
 ### Coverage Focus
 
-- P0: AC2–AC4 — bad declarations must die at save time, never at agent runtime.
+- P0: AC1–AC6 are covered; the save-time diagnostics remain the primary readiness signal.
 
 ## Data and Setup
 
@@ -73,13 +73,13 @@ cargo test -p axon-server --test mcp_contract
 
 **Implementation Order**
 1. Citation pass on AC1/AC5.
-2. Red tests AC2 → AC3 → AC4 → AC6.
+2. Diagnostics pass on AC2 → AC3 → AC4 → AC6.
 
 **Constraints**
 - CONTRACT-007 grammar + QRY-06/07 diagnostics; CONTRACT-002/003 activation surfaces.
 
 **Done When**
-- [ ] AC1–AC6 passing with citations
+- [x] AC1–AC6 passing with citations
 
 ## Review Checklist
 
