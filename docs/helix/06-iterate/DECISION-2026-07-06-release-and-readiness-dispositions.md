@@ -102,34 +102,47 @@ the current, evidence-backed pilot release target.**
 
 ## 4. Whole-consumer workload deferrals disposition
 
-**Disposition: NONE DEFERRED.** All three named downstream consumers remain
-in scope for release qualification; no whole-consumer workload is dropped
-from the readiness gate.
+**Disposition: DDx PHASE-0 DEFERRED; Nexiq and Cayce remain in scope.**
+DDx is recorded as a Phase-0 deferral because the current DDx checkout still
+uses in-process Axon emulation rather than a real runner-owned wire-call
+workload. Nexiq and Cayce remain required for release qualification; DDx is
+not dropped from the readiness gate, but it is not counted as a passing real
+workload until the DDx-side wire contract lands.
 
 - **Source**: `docs/helix/03-test/consumer-workload-gate.md` already defines
   per-consumer status handling for Nexiq, DDx, and Cayce, and the open
   readiness beads (`axon-3d8dac83`, `axon-46c878f7`, `axon-6026b76b`,
   `axon-89fa770a`, `axon-7503a7ed`, `axon-ab7dea0f`, `axon-bb96959d`,
-  `axon-cf47a0fc`) actively pursue evidence for all three.
+  `axon-cf47a0fc`) actively pursue evidence for all three. The DDx lane now
+  has a recorded Phase-0 disposition backed by the run evidence under
+  `target/consumer-workloads/consumer-workloads-20260707T155913Z-2710277/`
+  and the durable disposition note
+  `.ddx/executions/20260707T155208-9abed957/ddx-phase0-deferral.md`.
 - **Decision**: confirms, at the decision-of-record level, that this
   handling is the operator-approved disposition, not merely a testing
   convenience:
   - **Nexiq** — required now; the first real workload; must pass contract
     and e2e evidence for release qualification.
-  - **DDx** — required for release qualification; PR/nightly runs may show
-    `blocked` / `contract_gap` until a real Axon wire-call contract exists,
-    but release qualification still fails on that status per the gate's
-    status matrix.
+  - **DDx** — Phase-0 deferred. The current checkout at `~/Projects/ddx`
+    records `consumer_sha` `235fbe60f1d56d3e90878d4b0a1546da46017dc2` with a
+    clean worktree, but the release run under
+    `target/consumer-workloads/consumer-workloads-20260707T155913Z-2710277/`
+    still exits `blocked` / `contract_gap` because the consumer does not yet
+    provide real runner-owned Axon wire calls. Target repo / commit
+    expectation: the next DDx commit that replaces the emulated Axon path with
+    real wire calls and captured request-log evidence. Verdict impact:
+    release qualification continues to fail on the DDx lane until that commit
+    lands.
   - **Cayce** — required for release qualification; PR/nightly runs may show
     `missing` / `missing_workload` when no source/export checkout is
     configured, but release qualification still fails on that status per the
     gate's status matrix.
-  - No consumer workload is marked out-of-scope or permanently deferred for
-    the pilot release; "missing" and "blocked" statuses are transitional
-    states for PR/nightly convenience only, never for release qualification.
-- **Revisit trigger**: none required to keep this disposition in force; it
-  would only change if the operator explicitly drops a named consumer from
-  the pilot scope in a future checked-in artifact.
+  - No consumer workload is dropped from the pilot release; DDx is deferred
+    only at Phase-0 until a real wire-call contract lands, and "missing" and
+    "blocked" statuses remain transitional states for PR/nightly convenience
+    only, never for release qualification.
+- **Revisit trigger**: DDx remains deferred until the DDx-side wire-call
+  contract lands and a new real-workload run replaces the Phase-0 evidence.
 - **Decision owner**: Erik LaBianca (operator/product owner).
 
 ## Evidence index
@@ -139,4 +152,4 @@ from the readiness gate.
 | Release target: 0.4.x confirmed, 0.7.1 revoked | `Cargo.toml:22` (`version = "0.4.0"`); `git tag --sort=-v:refname` (newest `v0.4.0`); `git ls-remote --tags origin` (newest `v0.4.0`); prior target record `docs/helix/06-iterate/alignment-reviews/AR-2026-06-14-release-0.7.1-website.md` |
 | Audit retention/erasure: deferred | `docs/helix/01-frame/prd.md` Open Questions; `docs/helix/01-frame/security-requirements.md` SR-13, B-9 |
 | Tamper-evident audit chain: out of scope | `docs/helix/01-frame/security-requirements.md` SR-16, B-1; `docs/helix/01-frame/features/FEAT-003` Out of Scope |
-| Whole-consumer workloads: none deferred | `docs/helix/03-test/consumer-workload-gate.md` |
+| Whole-consumer workloads: DDx Phase-0 deferred | `docs/helix/03-test/consumer-workload-gate.md`; `target/consumer-workloads/consumer-workloads-20260707T155913Z-2710277/summary.json` (`consumer_sha` `235fbe60f1d56d3e90878d4b0a1546da46017dc2`, `consumer_dirty` `false`, `status` `blocked`, `classification` `contract_gap`); `.ddx/executions/20260707T155208-9abed957/ddx-phase0-deferral.md` |

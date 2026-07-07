@@ -274,10 +274,26 @@ No Nexiq whole-consumer or duplicate-ID deferral is recorded or needed.
 
 ### DDx
 
-DDx has a local checkout at `../ddx`, but its current Axon backend is not a
-passing real workload until it performs real wire calls against a runner-owned
-Axon endpoint. Fake GraphQL transports and local JSONL emulation classify as
-`contract_gap`, not pass.
+DDx has a local checkout at `../ddx`, but Axon cannot count it as a passing
+real workload yet. The DDx repo still documents the Axon path as in-process
+emulation with zero wire calls, so release qualification stays
+`blocked` / `contract_gap` until DDx lands a real runner-owned wire-call
+command against the injected Axon endpoint.
+
+Phase-0 disposition:
+
+- owner: Erik LaBianca (operator/product owner)
+- rationale: the current DDx Axon backend is emulation-only, so fake
+  transports, local JSONL writes, and skipped backend tests cannot be treated
+  as real Axon evidence
+- target repo / commit expectation: `~/Projects/ddx`, future commit that
+  replaces the emulated Axon path with real runner-owned wire calls and
+  captured request-log evidence
+- verdict impact: DDx remains out of the green set; release qualification
+  continues to fail on this lane until that DDx commit lands
+
+The durable evidence note for this disposition lives at
+`.ddx/executions/20260707T155208-9abed957/ddx-phase0-deferral.md`.
 
 Until that contract exists, DDx dry-runs print the intended future proof steps
 and write `blocked` / `contract_gap` to `summary.json`. A passing DDx workload
@@ -327,7 +343,7 @@ directory.
 Release qualification must fail on `missing_workload`, `contract_gap`,
 `consumer_dirty`, `unknown`, any `failed` status, and any run whose test
 counts are only supported by heuristic stdout markers instead of a native
-machine-readable payload. No consumer currently has a Phase-0 exception that
-narrows this rule; any future exception must be recorded explicitly in the
-consumer disposition artifact and mirrored here before it can affect release
-verdicts.
+machine-readable payload. DDx's Phase-0 deferral is recorded in the consumer
+disposition artifact and in the run evidence under
+`target/consumer-workloads/`; it explains the DDx lane's non-green verdict but
+does not convert it into a pass.
