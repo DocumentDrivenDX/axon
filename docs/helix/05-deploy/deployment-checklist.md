@@ -14,10 +14,12 @@ ddx:
 - Service or component: `axon` unified binary (HTTP gateway + embedded
   control plane), per FEAT-028 and FEAT-025. The single `axon` binary is the
   only server artifact; no separate server binary ships.
-- Version or commit: Axon 0.7.1 documentation target. **Assumption**: the
-  shipped crate/binary version still reads `0.2.8` and a `v0.7.1` tag/package
-  may not yet exist (see release-notes-0.7.1 "Known Issues"). Confirm the
-  resolved version with `axon doctor` before treating `0.7.1` as published.
+- Version or commit: Axon 0.4.x pilot release target (confirmed 2026-07-06;
+  the earlier 0.7.1 documentation target is revoked — see
+  `docs/helix/06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`
+  §1). `Cargo.toml` declares workspace version `0.4.0` and local/`origin` Git
+  tags reach `v0.4.0`. Confirm the resolved version with `axon doctor` before
+  treating any version beyond `v0.4.0` as published.
 - Deployment window: [date and time — fill in per release]
 - Release owner: [name — fill in per release]
 - Rollback owner: [name — fill in per release]
@@ -25,7 +27,8 @@ ddx:
   (`docs/helix/05-deploy/runbook.md`), CLI/config contract `CONTRACT-008`
   (`docs/helix/02-design/contracts/CONTRACT-008-cli-and-config.md`),
   architecture (`docs/helix/02-design/architecture.md`), release notes
-  (`docs/helix/05-deploy/release-notes-0.7.1.md`).
+  (`docs/helix/05-deploy/release-notes-0.7.1.md` — superseded; historical
+  record of the revoked 0.7.1 target).
 
 ## Pre-Deploy Checks
 
@@ -78,6 +81,7 @@ ddx:
 
 - Decision: [Go / Hold / Roll Back]
 - Decision time: [timestamp]
-- Notes: [exceptions, deferred checks, follow-up — e.g. version/tag caveat from
-  release-notes-0.7.1]
+- Notes: [exceptions, deferred checks, follow-up — e.g. version/tag caveat;
+  see DECISION-2026-07-06-release-and-readiness-dispositions.md §1 for the
+  current 0.4.x release target disposition]
 - Follow-up owner: Release owner

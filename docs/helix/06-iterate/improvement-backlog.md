@@ -5,11 +5,11 @@ ddx:
     - helix.prd
     - helix.implementation-plan
   review:
-    self_hash: 56f5060ac1eb87c3e86b3a20ae42012b3e1aa7690c20b0f35f4476dd664f3a25
+    self_hash: b668168b48418cb12c1ebf14ba91e60908bf27558ad3f54228cc802db560d88e
     deps:
-      helix.implementation-plan: c00ab6585798f23953b7f0a7a496bdd4e6d4c8668cdb0557c40dc2ac40b55c03
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.implementation-plan: 0e148fd35ce924a18f94e43f85ad3ede981ae523021ed942b820d9365aa8ed97
+      helix.prd: b11053b18982ec8f95158d284546dc20773f504bca99ec6c1970d71628f703ad
+    reviewed_at: "2026-07-07T08:49:13Z"
 ---
 # Improvement Backlog
 
@@ -47,9 +47,9 @@ bundle, or explicit notes on the bead).
 | 5 | P1 | Tenant-aware MCP endpoints/resource URIs | CONTRACT-003 (`docs/helix/02-design/contracts/CONTRACT-003-mcp-surface.md`) vs `crates/axon-server/src/mcp_http.rs` | `axon-95b137d0` (closed) | MCP is the agent-native surface; URI shape is contract-bound | high | M | resolved — tenant-aware MCP endpoints/URIs shipped; bead axon-95b137d0 closed (plan slice B-101) |
 | 6 | P1 | Deprecate `Idempotency-Key` header (body field canonical) | CONTRACT-001 (`docs/helix/02-design/contracts/CONTRACT-001-http-api-surface.md`) | `axon-c62971d9` (closed) | Cheap while the contract is fresh; avoids a third idempotency convention | high | S | resolved — `Idempotency-Key` header deprecated; bead axon-c62971d9 closed (plan slice B-101) |
 | 7 | P1 | Tamper-evident audit chain decision (hash-chained audit records) | Security-requirements agent is proposing an SR — `docs/helix/01-frame/security-requirements.md`; FEAT-003 audit immutability scope | Follow-up: frame/design decision (accept SR, then ADR) — no bead until SR lands | Audit log is the product's trust anchor; SR is in flight now | med | M (decision) | open |
-| 8 | P1 | FEAT-028 priority question: spec demoted P0→P1 to match PRD; if unified binary is truly P0, the PRD FR priority must change | FEAT-028 0.6.1 rewrite vs PRD v0.7.1 FR priorities | Follow-up: product owner decision (frame mode, PRD amendment) | Priority disagreement between PRD and spec blocks honest sequencing | high | S | open |
+| 8 | P1 | FEAT-028 priority question: spec demoted P0→P1 to match PRD; if unified binary is truly P0, the PRD FR priority must change | FEAT-028 0.6.1 rewrite vs PRD (0.4.x release target, formerly recorded as v0.7.1 — see `docs/helix/06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md` §1) FR priorities | Follow-up: product owner decision (frame mode, PRD amendment) | Priority disagreement between PRD and spec blocks honest sequencing | high | S | open |
 | 9 | P1 | Story-test-plans pending for remaining features per test-plan §AC allocation (non-guardrail features; exact list owed by sibling agent) | `docs/helix/03-test/test-plan.md`, `feature-story-e2e-traceability.md` | Follow-up: test mode (author STPs); tracked as plan slice B-107 | 0.6.1 specs re-anchored ACs; unallocated ACs are unverifiable | med | L | open |
-| 10 | P1 | 05-deploy artifacts (runbook, release-notes) becoming due — installs, TLS bootstrap, and control plane have shipped | `docs/helix/05-deploy/` now exists with `release-notes-0.7.1.md`; runbook + deployment-checklist still missing; FEAT-025/028 shipped per implementation-plan baseline | Follow-up: deploy mode (author runbook + deployment-checklist) | Operating surface exists; release-notes delivered, runbook still owed | high | M | partial — release-notes delivered (`docs/helix/05-deploy/release-notes-0.7.1.md`); runbook/deployment-checklist outstanding |
+| 10 | P1 | 05-deploy artifacts (runbook, release-notes) becoming due — installs, TLS bootstrap, and control plane have shipped | `docs/helix/05-deploy/` now exists with `release-notes-0.7.1.md` (superseded 2026-07-06; historical record of the revoked 0.7.1 target, see DECISION-2026-07-06); runbook + deployment-checklist delivered | Follow-up: deploy mode (release-notes refresh for the confirmed 0.4.x target) | Operating surface exists; release-notes need a 0.4.x-aligned refresh | high | M | partial — runbook/deployment-checklist delivered; release-notes still reflect the superseded 0.7.1 target |
 | 11 | P2 | DST harness design ADR backfill: `axon-sim` is governed only by 00-discover research (`docs/helix/00-discover/foundationdb-dst-research.md`) | No ADR covers the simulation framework design | Follow-up: design mode (backfill ADR) | Harness gates correctness claims but has no design authority | high | S | open |
 | 12 | P2 | FDB/fjall benchmark question (SPIKE-001 closed as overtaken; storage-backend bake-off never re-run) | `docs/helix/02-design/spikes/`; implementation-plan storage table (FoundationDB not started) | Follow-up: design spike decision (re-open or formally retire) | Cheap to decide; informs FoundationDB backend P2 item | med | S | open |
 | 13 | P2 | FEAT-006 PRD anchor: no FR covers the bead adapter; PO may mint one or leave it as dogfooding | FEAT-006 (`docs/helix/01-frame/features/FEAT-006-bead-storage-adapter.md`) traceability gap | Follow-up: product owner decision (frame mode) | Untraced feature weakens the authority chain | high | S | open |

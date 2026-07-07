@@ -4,11 +4,10 @@ ddx:
   depends_on:
     - helix.prd
   review:
-    # TODO: refresh review stamp (FEAT-032 added, FR-32/FR-33 trace, 2026-06-27)
-    self_hash: e274f95d36a550a5e82c16900412a48e567aed8937e50c3dbe29c59ebfdb531f
+    self_hash: f8c97e4076e20b2f8bfe5d7706689fbad61c1ae22b38cec9920562c974a7412e
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: b11053b18982ec8f95158d284546dc20773f504bca99ec6c1970d71628f703ad
+    reviewed_at: "2026-07-07T08:49:58Z"
 ---
 
 # Feature Registry
@@ -24,13 +23,17 @@ dependencies, and trace links. Full behavior lives in the feature specs under
 
 ## Release Alignment
 
-This registry is aligned to PRD release target **0.7.1** as of 2026-06-14. The
-feature set is FEAT-001 through FEAT-032; FEAT-032 (Local Replica Projection)
-was added on 2026-06-27 to own the re-scoped FR-32 (governed local read
-replica), per the AR-2026-06-27-full-repo.md §2 H1 disposition. Repository
-release evidence still shows local and `origin` tags ending at `v0.2.8`, so
-this registry records the HELIX planning target rather than a published binary
-tag.
+**Release target disposition (2026-07-06)**: this registry's earlier
+operator-requested Axon **0.7.1** release target (recorded 2026-06-14) is
+**revoked**. This registry is now aligned to the confirmed PRD release target
+of **0.4.x** (pilot), per
+[`../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`](../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md).
+Repository release evidence shows `Cargo.toml` at workspace version `0.4.0`
+and local/`origin` Git tags reaching `v0.4.0`.
+
+The feature set is FEAT-001 through FEAT-032; FEAT-032 (Local Replica
+Projection) was added on 2026-06-27 to own the re-scoped FR-32 (governed local
+read replica), per the AR-2026-06-27-full-repo.md §2 H1 disposition.
 
 ## Active Features
 

@@ -5,17 +5,17 @@ ddx:
     - helix.prd
     - TP-001
   review:
-    self_hash: c00ab6585798f23953b7f0a7a496bdd4e6d4c8668cdb0557c40dc2ac40b55c03
+    self_hash: 0e148fd35ce924a18f94e43f85ad3ede981ae523021ed942b820d9365aa8ed97
     deps:
-      TP-001: b2fd65f5c9fee74cac32a456a2eb53e5f492374e51469bbfdfce158ade121821
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      TP-001: 11ebe8dbc3f32b2b1d254c076f87f297f8283d53821440a8fce077a3963815c3
+      helix.prd: b11053b18982ec8f95158d284546dc20773f504bca99ec6c1970d71628f703ad
+    reviewed_at: "2026-07-07T08:49:13Z"
 ---
 # Build Plan: Axon
 
-**Version**: 0.7.1
+**Version**: 0.4.x (pilot)
 **Date**: 2026-04-10
-**Revised**: 2026-06-14
+**Revised**: 2026-07-07
 **Status**: Living document
 
 This is the build sequencing and execution-readiness artifact. It is the one
@@ -27,9 +27,13 @@ artifact in the stack where implementation status belongs; feature-spec
 ## Scope
 
 **Governing Artifacts**:
-- PRD v0.7.1 release target — `docs/helix/01-frame/prd.md`
+- PRD v0.4.x (pilot) release target — `docs/helix/01-frame/prd.md`. The
+  earlier operator-requested 0.7.1 target (recorded 2026-06-14) was revoked
+  and 0.4.x confirmed on 2026-07-06; see
+  [`../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`](../06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md).
 - Feature specifications FEAT-001..031 (all rewritten to helix 0.6.1 on
-  2026-06-10 and release-aligned to the 0.7.1 planning target on 2026-06-14)
+  2026-06-10; briefly release-aligned to a 0.7.1 planning target on
+  2026-06-14, since revoked in favor of 0.4.x)
   — `docs/helix/01-frame/features/`
 - Interface contracts CONTRACT-001..010 —
   `docs/helix/02-design/contracts/`
