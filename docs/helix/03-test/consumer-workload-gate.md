@@ -235,17 +235,28 @@ Playwright artifacts, and any postcondition query output.
 ### Nexiq
 
 Nexiq is the first real workload. The runner uses `../nexiq` by default and
-injects the Nexiq endpoint variables. Contract mode runs:
+injects the Nexiq endpoint variables. Contract mode seeds the Nexiq
+schema/data against the injected Axon endpoint before running the contract
+test, since the contract test does not seed for itself:
 
 ```bash
+bun run scripts/seed-axon-dev.ts --if-empty
 RUN_INTEGRATION=1 bun test tests/contract/axon-contract.spec.ts
 ```
+
+The seed step (`nexiq-seed`) is a setup command, not a test command: it is
+exempt from the executed/skipped-test evidence checks that apply to workload
+commands, and its failure classifies like any other failed command (for
+example, `infra` when it cannot reach the Axon endpoint).
 
 E2E mode runs:
 
 ```bash
 bun run scripts/run-e2e-real-axon.ts
 ```
+
+E2E mode does not need a separate seed command because
+`scripts/run-e2e-real-axon.ts` seeds via its own Playwright global setup.
 
 Dry-run mode must print the exact commands and injected endpoint variables.
 

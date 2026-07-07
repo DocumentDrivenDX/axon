@@ -422,9 +422,9 @@ build_nexiq_workload() {
 
   case "$MODE" in
     pr|contract)
-      COMMAND_NAMES=("nexiq-contract")
-      COMMAND_CWDS=("$NEXIQ_WORKLOAD_PATH")
-      COMMAND_SHELLS=("RUN_INTEGRATION=1 bun test tests/contract/axon-contract.spec.ts")
+      COMMAND_NAMES=("nexiq-seed" "nexiq-contract")
+      COMMAND_CWDS=("$NEXIQ_WORKLOAD_PATH" "$NEXIQ_WORKLOAD_PATH")
+      COMMAND_SHELLS=("bun run scripts/seed-axon-dev.ts --if-empty" "RUN_INTEGRATION=1 bun test tests/contract/axon-contract.spec.ts")
       ;;
     nightly|release|e2e)
       COMMAND_NAMES=("nexiq-e2e")
@@ -849,6 +849,11 @@ validate_successful_command() {
   local shell_cmd="$3"
   local stdout_log="$4"
   local stderr_log="$5"
+
+  if [[ "$name" == *-seed ]]; then
+    printf '%s\n' "validated ${name}: setup command completed" >&2
+    return 0
+  fi
 
   local test_counts
   local test_counts_source

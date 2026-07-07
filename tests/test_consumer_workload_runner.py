@@ -185,6 +185,10 @@ class ConsumerWorkloadRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
+            "bun run scripts/seed-axon-dev.ts --if-empty",
+            result.stdout,
+        )
+        self.assertIn(
             "RUN_INTEGRATION=1 bun test tests/contract/axon-contract.spec.ts",
             result.stdout,
         )
@@ -193,7 +197,19 @@ class ConsumerWorkloadRunnerTests(unittest.TestCase):
         self.assertEqual(summary["status"], "passed")
         self.assertEqual(summary["classification"], "none")
 
-        command = summary["commands"][0]
+        self.assertEqual(len(summary["commands"]), 2)
+        seed_command = summary["commands"][0]
+        self.assertEqual(seed_command["name"], "nexiq-seed")
+        self.assertEqual(seed_command["state"], "planned")
+        self.assertEqual(
+            seed_command["shell"],
+            "bun run scripts/seed-axon-dev.ts --if-empty",
+        )
+        self.assertEqual(
+            seed_command["env"]["NEXIQ_AXON_ENDPOINT"], "http://127.0.0.1:18181"
+        )
+
+        command = summary["commands"][1]
         self.assertEqual(command["name"], "nexiq-contract")
         self.assertEqual(command["state"], "planned")
         self.assertEqual(
@@ -350,6 +366,10 @@ class ConsumerWorkloadRunnerTests(unittest.TestCase):
     def test_nexiq_contract_skipped_tests_are_contract_gap(self) -> None:
         nexiq_dir, bin_dir = self.make_fake_nexiq(
             """
+if [[ "$*" == "run scripts/seed-axon-dev.ts --if-empty" ]]; then
+  printf '%s\\n' 'seeded Axon nexiq-dev/default: 0 created, 0 already existed, 0 links ensured'
+  exit 0
+fi
 if [[ "${RUN_INTEGRATION:-}" != "1" ]]; then
   echo "RUN_INTEGRATION missing"
   exit 65
@@ -379,7 +399,10 @@ printf '%s\\n' '0 pass' '1 skip' 'Ran 1 tests across 1 files.'
         self.assertEqual(summary["status"], "failed")
         self.assertEqual(summary["classification"], "contract_gap")
         self.assertIn("skipped integration tests", summary["failure"]["message"])
-        command = summary["commands"][0]
+        self.assertEqual(summary["commands"][0]["name"], "nexiq-seed")
+        self.assertEqual(summary["commands"][0]["exit_code"], 0)
+        command = summary["commands"][1]
+        self.assertEqual(command["name"], "nexiq-contract")
         self.assertEqual(command["exit_code"], 0)
         self.assertEqual(command["executed_tests"], 0)
         self.assertEqual(command["skipped_tests"], 1)
@@ -408,7 +431,9 @@ printf '%s\\n' 'No tests found!'
         self.assertEqual(summary["status"], "failed")
         self.assertEqual(summary["classification"], "contract_gap")
         self.assertIn("no integration tests ran", summary["failure"]["message"])
-        command = summary["commands"][0]
+        self.assertEqual(summary["commands"][0]["name"], "nexiq-seed")
+        command = summary["commands"][1]
+        self.assertEqual(command["name"], "nexiq-contract")
         self.assertEqual(command["exit_code"], 0)
         self.assertEqual(command["executed_tests"], 0)
 
