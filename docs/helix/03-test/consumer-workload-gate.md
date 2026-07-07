@@ -260,6 +260,18 @@ E2E mode does not need a separate seed command because
 
 Dry-run mode must print the exact commands and injected endpoint variables.
 
+**Duplicate-ID evidence (2026-07-07)**: the 10 duplicate-caller-ID contract
+assertions that were `test.skip`-suppressed pending `axon-27ee5f04` (typed
+GraphQL `createXxx` upsert gap) are re-enabled. `axon-27ee5f04` is closed:
+per ADR-022, typed `createXxx` now enforces strict create and rejects a
+duplicate id with `VERSION_CONFLICT` (`expected: 0`, `actual: <current
+version>`) rather than `already_exists`; the Nexiq client already maps that
+code to `VersionConflictError`, so only the test expectation needed to
+change. Manual contract-mode run against a local `axon serve --no-auth
+--storage sqlite` instance: Nexiq consumer SHA `018dc67bf68c908d0c9d5c79495c9bf552720d3e`,
+33 executed / 0 skipped, `status: passed`, `classification: none`, exit 0.
+No Nexiq whole-consumer or duplicate-ID deferral is recorded or needed.
+
 ### DDx
 
 DDx has a local checkout at `../ddx`, but its current Axon backend is not a
