@@ -216,6 +216,7 @@ append_command_json() {
   local stderr_log="${10}"
   local executed_tests="${11}"
   local skipped_tests="${12}"
+  local test_counts_source="${13}"
 
   COMMANDS_JSONL="$COMMANDS_JSONL" \
   COMMAND_NAME="$name" \
@@ -230,6 +231,7 @@ append_command_json() {
   COMMAND_STDERR="$stderr_log" \
   COMMAND_EXECUTED_TESTS="$executed_tests" \
   COMMAND_SKIPPED_TESTS="$skipped_tests" \
+  COMMAND_TEST_COUNTS_SOURCE="$test_counts_source" \
   COMMAND_ENV_KEYS="$(command_env_keys)" \
   AXON_ENDPOINT="$ENDPOINT" \
   AXON_TENANT="$TENANT" \
@@ -259,6 +261,10 @@ def optional_int(value: str):
     return int(value)
 
 
+def optional_string(value: str):
+    return value if value else None
+
+
 env_keys = [key for key in os.environ["COMMAND_ENV_KEYS"].split(",") if key]
 entry = {
     "name": os.environ["COMMAND_NAME"],
@@ -277,6 +283,7 @@ entry = {
     "stderr_log": os.environ["COMMAND_STDERR"] or None,
     "executed_tests": optional_int(os.environ["COMMAND_EXECUTED_TESTS"]),
     "skipped_tests": optional_int(os.environ["COMMAND_SKIPPED_TESTS"]),
+    "test_counts_source": optional_string(os.environ["COMMAND_TEST_COUNTS_SOURCE"]),
 }
 
 with open(os.environ["COMMANDS_JSONL"], "a", encoding="utf-8") as handle:
@@ -472,107 +479,94 @@ build_workload() {
   esac
 }
 
-detect_test_count() {
-  local pattern="$1"
-  local stdout_log="$2"
-  local stderr_log="$3"
+detect_test_counts() {
+  local stdout_log="$1"
+  local stderr_log="$2"
+  local mode="${3:-$MODE}"
   local value
 
-  value="$(python3 - "$pattern" "$stdout_log" "$stderr_log" <<'PY'
+  value="$(python3 - "$mode" "$stdout_log" "$stderr_log" <<'PY'
+import json
 import re
 import sys
 from pathlib import Path
 
-pattern = re.compile(sys.argv[1])
+mode = sys.argv[1]
 text = ""
 for raw_path in sys.argv[2:]:
     path = Path(raw_path)
     if path.exists():
-        text += path.read_text(encoding="utf-8", errors="replace")
-match = pattern.search(text)
-print(match.group(1) if match else "")
-PY
-)"
-  printf '%s' "$value"
-}
-
-detect_executed_tests() {
-  local stdout_log="$1"
-  local stderr_log="$2"
-  local value
-
-  value="$(detect_test_count 'executed_tests=([0-9]+)' "$stdout_log" "$stderr_log")"
-  if [[ -n "$value" ]]; then
-    printf '%s' "$value"
-    return 0
-  fi
-
-  value="$(python3 - "$stdout_log" "$stderr_log" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-text = ""
-for raw_path in sys.argv[1:]:
-    path = Path(raw_path)
-    if path.exists():
         text += path.read_text(encoding="utf-8", errors="replace") + "\n"
 
-lower = text.lower()
-if re.search(r"\b(no tests? (?:found|ran|run)|0 tests? (?:found|ran|run)|ran\s+0\s+tests?)\b", lower):
-    print("0")
+
+def emit(source: str, executed: str = "", skipped: str = "") -> None:
+    print(f"{source}|{executed}|{skipped}")
+
+
+for raw_line in text.splitlines():
+    line = raw_line.strip()
+    if not line or not line.startswith("{") or not line.endswith("}"):
+        continue
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if not isinstance(payload, dict):
+        continue
+    if "executed_tests" not in payload or "skipped_tests" not in payload:
+        continue
+    try:
+        executed = int(payload["executed_tests"])
+        skipped = int(payload["skipped_tests"])
+    except (TypeError, ValueError):
+        continue
+    emit("native", str(executed), str(skipped))
     raise SystemExit
-
-pass_counts = [int(match.group(1)) for match in re.finditer(r"(?m)^\s*(\d+)\s+pass(?:ed)?\b", lower)]
-if pass_counts:
-    print(str(sum(pass_counts)))
-    raise SystemExit
-
-match = re.search(r"\b(\d+)\s+tests?\s+passed\b", lower)
-if match:
-    print(match.group(1))
-    raise SystemExit
-
-match = re.search(r"\bpassed\s+(\d+)\s+tests?\b", lower)
-if match:
-    print(match.group(1))
-PY
-)"
-  printf '%s' "$value"
-}
-
-detect_skipped_tests() {
-  local stdout_log="$1"
-  local stderr_log="$2"
-  local value
-
-  value="$(detect_test_count 'skipped_tests=([0-9]+)' "$stdout_log" "$stderr_log")"
-  if [[ -n "$value" ]]; then
-    printf '%s' "$value"
-    return 0
-  fi
-
-  value="$(python3 - "$stdout_log" "$stderr_log" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-text = ""
-for raw_path in sys.argv[1:]:
-    path = Path(raw_path)
-    if path.exists():
-        text += path.read_text(encoding="utf-8", errors="replace") + "\n"
 
 lower = text.lower()
-skip_counts = [int(match.group(1)) for match in re.finditer(r"(?m)^\s*(\d+)\s+skip(?:ped)?\b", lower)]
-skip_counts.extend(
-    int(match.group(1))
-    for match in re.finditer(r"\b(\d+)\s+tests?\s+skipped\b", lower)
-)
-if skip_counts:
-    print(str(sum(skip_counts)))
-elif re.search(r"\bskip(?:ped|s|ping)?\b", lower):
-    print("1")
+executed = None
+skipped = None
+
+match = re.search(r"executed_tests=([0-9]+)", text)
+if match:
+    executed = int(match.group(1))
+elif re.search(r"\b(no tests? (?:found|ran|run)|0 tests? (?:found|ran|run)|ran\s+0\s+tests?)\b", lower):
+    executed = 0
+else:
+    pass_counts = [int(match.group(1)) for match in re.finditer(r"(?m)^\s*(\d+)\s+pass(?:ed)?\b", lower)]
+    if pass_counts:
+        executed = sum(pass_counts)
+    else:
+        match = re.search(r"\b(\d+)\s+tests?\s+passed\b", lower)
+        if match:
+            executed = int(match.group(1))
+        else:
+            match = re.search(r"\bpassed\s+(\d+)\s+tests?\b", lower)
+        if match:
+            executed = int(match.group(1))
+
+match = re.search(r"skipped_tests=([0-9]+)", text)
+if match:
+    skipped = int(match.group(1))
+else:
+    skip_counts = [int(match.group(1)) for match in re.finditer(r"(?m)^\s*(\d+)\s+skip(?:ped)?\b", lower)]
+    skip_counts.extend(
+        int(match.group(1))
+        for match in re.finditer(r"\b(\d+)\s+tests?\s+skipped\b", lower)
+    )
+    if skip_counts:
+        skipped = sum(skip_counts)
+    elif re.search(r"\bskip(?:ped|s|ping)?\b", lower):
+        skipped = 1
+
+if executed is None and skipped is None:
+    emit("none")
+else:
+    emit(
+        "heuristic",
+        "" if executed is None else str(executed),
+        "" if skipped is None else str(skipped),
+    )
 PY
 )"
   printf '%s' "$value"
@@ -711,7 +705,7 @@ record_dry_run_plan() {
   : > "$stderr_log"
 
   cat "$stdout_log"
-  append_command_json "$name" "$cwd" "$shell_cmd" "planned" "$now" "$now" "null" "0" "$stdout_log" "$stderr_log" "" ""
+  append_command_json "$name" "$cwd" "$shell_cmd" "planned" "$now" "$now" "null" "0" "$stdout_log" "$stderr_log" "" "" ""
 }
 
 run_one_command() {
@@ -766,12 +760,14 @@ run_one_command() {
   end_epoch="$(date +%s)"
   duration_ms="$(( (end_epoch - start_epoch) * 1000 ))"
 
+  local test_counts
+  local test_counts_source
   local executed_tests
   local skipped_tests
-  executed_tests="$(detect_executed_tests "$stdout_log" "$stderr_log")"
-  skipped_tests="$(detect_skipped_tests "$stdout_log" "$stderr_log")"
+  test_counts="$(detect_test_counts "$stdout_log" "$stderr_log")"
+  IFS='|' read -r test_counts_source executed_tests skipped_tests <<< "$test_counts"
 
-  append_command_json "$name" "$cwd" "$shell_cmd" "completed" "$command_started_at" "$command_finished_at" "$command_exit" "$duration_ms" "$stdout_log" "$stderr_log" "$executed_tests" "$skipped_tests"
+  append_command_json "$name" "$cwd" "$shell_cmd" "completed" "$command_started_at" "$command_finished_at" "$command_exit" "$duration_ms" "$stdout_log" "$stderr_log" "$executed_tests" "$skipped_tests" "$test_counts_source"
   return "$command_exit"
 }
 
@@ -782,10 +778,12 @@ validate_successful_command() {
   local stdout_log="$4"
   local stderr_log="$5"
 
+  local test_counts
+  local test_counts_source
   local executed_tests
   local skipped_tests
-  executed_tests="$(detect_executed_tests "$stdout_log" "$stderr_log")"
-  skipped_tests="$(detect_skipped_tests "$stdout_log" "$stderr_log")"
+  test_counts="$(detect_test_counts "$stdout_log" "$stderr_log")"
+  IFS='|' read -r test_counts_source executed_tests skipped_tests <<< "$test_counts"
 
   if [[ "$CONSUMER" == "nexiq" ]]; then
     case "$MODE" in
@@ -815,11 +813,17 @@ validate_successful_command() {
       FAILURE_MESSAGE="command '${name}' did not provide evidence of real Axon wire calls"
       return 1
     fi
-  else
-    return 0
   fi
 
-  if [[ "$(logs_report_no_tests "$stdout_log" "$stderr_log")" == "1" ]]; then
+  # Release mode only trusts native machine-readable counts, not heuristic stdout markers.
+  if [[ "$MODE" == "release" && "$test_counts_source" != "native" ]]; then
+    STATUS="failed"
+    CLASSIFICATION="contract_gap"
+    FAILURE_MESSAGE="command '${name}' did not provide native machine-readable test counts in release mode"
+    return 1
+  fi
+
+  if [[ "$(logs_report_no_tests "$stdout_log" "$stderr_log")" == "1" && "$test_counts_source" != "native" ]]; then
     STATUS="failed"
     CLASSIFICATION="contract_gap"
     FAILURE_MESSAGE="command '${name}' reported that no integration tests ran"

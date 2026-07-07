@@ -396,6 +396,46 @@ printf '%s\\n' 'No tests found!'
         self.assertEqual(summary["commands"][0]["exit_code"], 9)
         self.assertIn("command 'fake-consumer-contract' failed", str(summary["failure"]))
 
+    def test_release_mode_accepts_native_machine_readable_test_counts(self) -> None:
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "fake",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "release",
+            env={
+                "AXON_FAKE_WORKLOAD_MARKER": '{"executed_tests":1,"skipped_tests":0}',
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["classification"], "none")
+        command = summary["commands"][0]
+        self.assertEqual(command["executed_tests"], 1)
+        self.assertEqual(command["skipped_tests"], 0)
+        self.assertEqual(command["test_counts_source"], "native")
+
+    def test_release_mode_rejects_marker_only_test_counts(self) -> None:
+        result, summary, _run_dir = self.run_runner(
+            "--consumer",
+            "fake",
+            "--backend",
+            "sqlite",
+            "--mode",
+            "release",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["classification"], "contract_gap")
+        self.assertIn("native machine-readable test counts", summary["failure"]["message"])
+        command = summary["commands"][0]
+        self.assertEqual(command["executed_tests"], 1)
+        self.assertEqual(command["skipped_tests"], 0)
+        self.assertEqual(command["test_counts_source"], "heuristic")
+
     def test_release_mode_fails_missing_consumer_workload(self) -> None:
         result, summary, _run_dir = self.run_runner(
             "--consumer",

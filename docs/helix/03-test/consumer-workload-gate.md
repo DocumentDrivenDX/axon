@@ -118,6 +118,9 @@ following proves real execution:
 
 - the command exits 0 and its runner reports nonzero executed test count with
   zero required-test skips;
+- in release mode, those counts come from a native machine-readable payload
+  rather than heuristic stdout markers; the current accepted shape is a JSON
+  object with `executed_tests` and `skipped_tests` fields;
 - the consumer log includes a required marker configured for that workload;
 - Axon request logs show traffic from the consumer during the command; or
 - a workload-specific postcondition query confirms the expected writes in Axon.
@@ -183,7 +186,10 @@ Required top-level fields:
 
 Each command entry records name, working directory, environment keys injected
 by the runner, command argv or shell string, exit code, duration, stdout log,
-stderr log, and skipped/executed test counts when available.
+stderr log, skipped/executed test counts when available, and a
+`test_counts_source` field (`native`, `heuristic`, or `none`) so release
+qualification can distinguish structured evidence from advisory stdout
+markers.
 
 Artifacts include Axon logs, consumer logs, JUnit output when available,
 Playwright artifacts, and any postcondition query output.
@@ -260,4 +266,8 @@ runs can check out Nexiq by setting repository variable
 directory.
 
 Release qualification must fail on `missing_workload`, `contract_gap`,
-`unknown`, and any `failed` status.
+`unknown`, any `failed` status, and any run whose test counts are only
+supported by heuristic stdout markers instead of a native machine-readable
+payload. No consumer currently has a Phase-0 exception that narrows this
+rule; any future exception must be recorded explicitly in the consumer
+disposition artifact and mirrored here before it can affect release verdicts.
