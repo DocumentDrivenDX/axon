@@ -319,7 +319,7 @@ impl GuardrailsLayer {
                 actor: caller.actor.clone(),
                 entity_id: entity_id.to_string(),
                 filter_field: filter.field.clone(),
-                filter_value: filter.value.clone(),
+                filter_value: Box::new(filter.value.clone()),
             })
         }
     }
@@ -560,7 +560,7 @@ mod tests {
                 assert_eq!(actor, "agent-1");
                 assert_eq!(entity_id, "task-7");
                 assert_eq!(filter_field, "assignee");
-                assert_eq!(filter_value, json!("agent-1"));
+                assert_eq!(filter_value.as_ref(), &json!("agent-1"));
             }
             other => panic!("expected ScopeViolation, got {other:?}"),
         }

@@ -280,6 +280,9 @@ pub enum AxonError {
         /// The filter field that was checked.
         filter_field: String,
         /// The required value for the filter field.
-        filter_value: serde_json::Value,
+        ///
+        /// Boxed to keep `AxonError` compact enough for `Result<(), AxonError>`
+        /// return sites while preserving the structured JSON payload.
+        filter_value: Box<serde_json::Value>,
     },
 }
