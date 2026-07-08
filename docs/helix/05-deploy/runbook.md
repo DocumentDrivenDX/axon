@@ -158,7 +158,7 @@ ddx:
 | Provision a tenant | onboarding a new tenant | `curl -X POST http://localhost:4170/control/tenants ...` (CONTRACT / control-plane routes) | tenant appears in `/control/tenants` with a non-empty `db_name` |
 | Manage user roles | access change | `axon user grant <login> <role>` / `axon user revoke <login>` | `axon user list` reflects the change |
 | Rotate / regenerate self-signed TLS | hostname/SAN change | delete the existing pair in `$XDG_DATA_HOME/axon/tls/`, restart with `--tls-self-signed-san <names>` | new cert covers the required SANs; handshake succeeds |
-| Back up control-plane + tenant data | before every upgrade, plus regular cadence | copy `{data_dir}/axon-control-plane.db` and `{data_dir}/tenants/` | backup exists and is restorable |
+| Back up control-plane + tenant data | before every upgrade, plus regular cadence | SQLite: copy `{data_dir}/axon-control-plane.db` and `{data_dir}/tenants/`. PostgreSQL: copy `{data_dir}/axon-control-plane.db` and `pg_dump` each provisioned `axon_t_*` database | backup exists and is restorable — proved end-to-end (including a real destroy-and-restore cycle) for both backends by `scripts/test-deployment-backup-restore.sh` |
 
 ## Escalation and Communications
 
