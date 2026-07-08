@@ -3520,10 +3520,8 @@ pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result
 // via testcontainers and skip cleanly if the container runtime is unavailable.
 #[cfg(test)]
 mod tests {
-    use std::{
-        ops::{Deref, DerefMut},
-        sync::{Mutex, MutexGuard, OnceLock},
-    };
+    use std::ops::{Deref, DerefMut};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
     use axon_core::intent::{
@@ -3531,12 +3529,9 @@ mod tests {
         MutationIntentSubjectBinding, MutationOperationKind, MutationReviewSummary,
     };
     use axon_core::types::Link;
-    use testcontainers_modules::postgres::Postgres as PgContainer;
-    use testcontainers_modules::testcontainers::{runners::SyncRunner, Container};
 
     struct TestDatabase {
         url: String,
-        _container: Option<Container<PgContainer>>,
     }
 
     enum TestSetupError {
@@ -3545,38 +3540,33 @@ mod tests {
     }
 
     impl TestDatabase {
+        /// Provision a fresh, uniquely-named database on the shared,
+        /// process-wide PostgreSQL cluster (one container started for the
+        /// whole test binary — see `super::pg_conformance_superadmin_dsn`).
+        ///
+        /// Each test gets its own isolated database, so tests no longer need
+        /// to serialize behind a global lock: previously every test in this
+        /// module started its own throwaway container and connected to a
+        /// fixed `axon_test` database, which was both slow (one Docker
+        /// container per test) and required a `Mutex` to avoid cross-test
+        /// data races on that shared database.
         fn connect() -> Result<Self, TestSetupError> {
-            if let Ok(url) = std::env::var("AXON_TEST_POSTGRES") {
-                return Ok(Self {
-                    url,
-                    _container: None,
-                });
-            }
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-            let container = PgContainer::default()
-                .with_db_name("axon_test")
-                .with_user("postgres")
-                .with_password("postgres")
-                .start()
-                .map_err(|error| {
-                    TestSetupError::Skip(format!(
-                        "AXON_TEST_POSTGRES is unset and PostgreSQL test container startup failed: {error}"
-                    ))
-                })?;
-            let host = container.get_host().map_err(|error| {
-                TestSetupError::Fail(AxonError::Storage(format!(
-                    "failed to resolve PostgreSQL test container host: {error}"
-                )))
-            })?;
-            let port = container.get_host_port_ipv4(5432).map_err(|error| {
-                TestSetupError::Fail(AxonError::Storage(format!(
-                    "failed to resolve PostgreSQL test container port: {error}"
-                )))
-            })?;
+            let Some(superadmin_dsn) = super::pg_conformance_superadmin_dsn() else {
+                return Err(TestSetupError::Skip(
+                    "AXON_TEST_POSTGRES is unset and no PostgreSQL test container is available"
+                        .into(),
+                ));
+            };
+
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let db_name = format!("nt_{n:06}");
+            super::provision_postgres_database(&superadmin_dsn, &db_name)
+                .map_err(TestSetupError::Fail)?;
 
             Ok(Self {
-                url: format!("postgres://postgres:postgres@{host}:{port}/axon_test"),
-                _container: Some(container),
+                url: super::tenant_dsn(&superadmin_dsn, &db_name),
             })
         }
 
@@ -3604,14 +3594,6 @@ mod tests {
         }
     }
 
-    fn postgres_test_guard() -> MutexGuard<'static, ()> {
-        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("PostgreSQL test guard lock should not be poisoned")
-    }
-
     fn skip_postgres_test(test_name: &str, reason: &str) {
         tracing::warn!(test = test_name, reason, "skipping PostgreSQL storage test");
     }
@@ -3630,21 +3612,13 @@ mod tests {
     }
 
     fn store() -> Result<TestStore, TestSetupError> {
+        // Each `TestDatabase` is a freshly provisioned, isolated database
+        // (see `TestDatabase::connect`), so there is no pre-existing state to
+        // clean up — `PostgresStorageAdapter::connect` already creates the
+        // schema and default namespace from scratch.
         let database = TestDatabase::connect()?;
         let adapter =
             PostgresStorageAdapter::connect(database.url()).map_err(TestSetupError::Fail)?;
-        // Clean tables for a fresh test.
-        adapter
-            .block_on(
-                sqlx::raw_sql(
-                    "TRUNCATE entities, schemas, collection_views, collections, namespaces, databases, audit_log, mutation_intents, entity_index, entity_compound_index RESTART IDENTITY CASCADE",
-                )
-                .execute(&adapter.pool),
-            )
-            .map_err(TestSetupError::Fail)?;
-        adapter
-            .ensure_default_namespace()
-            .map_err(TestSetupError::Fail)?;
         Ok(TestStore {
             adapter,
             _database: database,
@@ -3710,7 +3684,6 @@ mod tests {
 
     #[test]
     fn postgres_roundtrip_when_available() {
-        let _guard = postgres_test_guard();
         let Some(mut s) = store_or_skip("postgres_roundtrip_when_available") else {
             return;
         };
@@ -3736,7 +3709,6 @@ mod tests {
         // md5 over id:version) must move on an in-place update, while the native
         // structural_version (md5 over the id-set) stays put — confirming the
         // pushed-down strict signature catches update-driven predicate skew.
-        let _guard = postgres_test_guard();
         let Some(mut s) =
             store_or_skip("native_content_version_is_version_inclusive_when_available")
         else {
@@ -3791,7 +3763,6 @@ mod tests {
 
     #[test]
     fn mutation_intent_roundtrip_when_available() {
-        let _guard = postgres_test_guard();
         let Some(mut s) = store_or_skip("mutation_intent_roundtrip_when_available") else {
             return;
         };
@@ -3818,7 +3789,6 @@ mod tests {
 
     #[test]
     fn unregister_collection_cleans_up_legacy_collection_views_when_available() {
-        let _guard = postgres_test_guard();
         let Some(database) = database_or_skip(
             "unregister_collection_cleans_up_legacy_collection_views_when_available",
         ) else {
@@ -3934,7 +3904,6 @@ mod tests {
 
     #[test]
     fn namespace_catalogs_allow_same_name_without_cross_drop() {
-        let _guard = postgres_test_guard();
         let Some(mut s) = store_or_skip("namespace_catalogs_allow_same_name_without_cross_drop")
         else {
             return;
@@ -3991,7 +3960,6 @@ mod tests {
 
     #[test]
     fn drop_namespace_purges_entities_for_removed_collections() {
-        let _guard = postgres_test_guard();
         let Some(mut s) = store_or_skip("drop_namespace_purges_entities_for_removed_collections")
         else {
             return;
@@ -4043,7 +4011,6 @@ mod tests {
 
     #[test]
     fn drop_namespace_keeps_same_named_entities_in_surviving_namespaces() {
-        let _guard = postgres_test_guard();
         let Some(mut s) =
             store_or_skip("drop_namespace_keeps_same_named_entities_in_surviving_namespaces")
         else {
@@ -4100,7 +4067,6 @@ mod tests {
 
     #[test]
     fn drop_namespace_purges_links_for_removed_collections() {
-        let _guard = postgres_test_guard();
         let Some(mut s) = store_or_skip("drop_namespace_purges_links_for_removed_collections")
         else {
             return;
@@ -4198,7 +4164,6 @@ mod tests {
 
     #[test]
     fn drop_database_purges_entities_for_removed_collections() {
-        let _guard = postgres_test_guard();
         let Some(mut s) = store_or_skip("drop_database_purges_entities_for_removed_collections")
         else {
             return;
@@ -4262,7 +4227,6 @@ mod tests {
 
     #[test]
     fn drop_database_purges_links_for_removed_collections() {
-        let _guard = postgres_test_guard();
         let Some(mut s) = store_or_skip("drop_database_purges_links_for_removed_collections")
         else {
             return;
@@ -4360,7 +4324,6 @@ mod tests {
 
     #[test]
     fn drop_database_keeps_same_named_entities_in_surviving_databases() {
-        let _guard = postgres_test_guard();
         let Some(mut s) =
             store_or_skip("drop_database_keeps_same_named_entities_in_surviving_databases")
         else {
@@ -4411,7 +4374,6 @@ mod tests {
 
     #[test]
     fn qualified_entity_identity_isolated_across_namespaces() {
-        let _guard = postgres_test_guard();
         let Some(mut s) = store_or_skip("qualified_entity_identity_isolated_across_namespaces")
         else {
             return;
@@ -4521,7 +4483,6 @@ mod tests {
 
     #[test]
     fn qualified_schema_write_is_readable_via_bare_unique_collection() {
-        let _guard = postgres_test_guard();
         let Some(mut s) =
             store_or_skip("qualified_schema_write_is_readable_via_bare_unique_collection")
         else {
@@ -4614,7 +4575,6 @@ mod tests {
 
     #[test]
     fn qualified_collection_view_write_is_readable_via_bare_unique_collection() {
-        let _guard = postgres_test_guard();
         let Some(mut s) =
             store_or_skip("qualified_collection_view_write_is_readable_via_bare_unique_collection")
         else {
@@ -4655,7 +4615,6 @@ mod tests {
 
     #[test]
     fn qualified_unregister_collection_removes_normalized_metadata_rows() {
-        let _guard = postgres_test_guard();
         let Some(mut s) =
             store_or_skip("qualified_unregister_collection_removes_normalized_metadata_rows")
         else {
@@ -4717,7 +4676,6 @@ mod tests {
 
     #[test]
     fn qualified_unregister_collection_removes_default_namespaced_legacy_metadata_rows() {
-        let _guard = postgres_test_guard();
         let Some(mut s) = store_or_skip(
             "qualified_unregister_collection_removes_default_namespaced_legacy_metadata_rows",
         ) else {
@@ -4916,7 +4874,6 @@ mod tests {
 
         #[test]
         fn null_and_type_mismatch_values_are_not_indexed() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("null_and_type_mismatch_values_are_not_indexed")
             else {
                 return;
@@ -4948,7 +4905,6 @@ mod tests {
 
         #[test]
         fn nested_field_path_indexing() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("nested_field_path_indexing") else {
                 return;
             };
@@ -4974,7 +4930,6 @@ mod tests {
 
         #[test]
         fn index_unique_conflict_check() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("index_unique_conflict_check") else {
                 return;
             };
@@ -5006,7 +4961,6 @@ mod tests {
 
         #[test]
         fn abort_tx_rolls_back_index_changes() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("abort_tx_rolls_back_index_changes") else {
                 return;
             };
@@ -5039,7 +4993,6 @@ mod tests {
 
         #[test]
         fn backfill_via_reindex_collection_covers_preexisting_entities() {
-            let _guard = postgres_test_guard();
             let Some(mut store) =
                 store_or_skip("backfill_via_reindex_collection_covers_preexisting_entities")
             else {
@@ -5080,7 +5033,6 @@ mod tests {
 
         #[test]
         fn backfill_via_put_schema_hook() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("backfill_via_put_schema_hook") else {
                 return;
             };
@@ -5108,7 +5060,6 @@ mod tests {
 
         #[test]
         fn reindex_empty_collection_is_noop() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("reindex_empty_collection_is_noop") else {
                 return;
             };
@@ -5163,7 +5114,6 @@ mod tests {
 
         #[test]
         fn compound_index_missing_field_is_sparse() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("compound_index_missing_field_is_sparse") else {
                 return;
             };
@@ -5187,7 +5137,6 @@ mod tests {
 
         #[test]
         fn drop_indexes_clears_compound_rows() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("drop_indexes_clears_compound_rows") else {
                 return;
             };
@@ -5206,7 +5155,6 @@ mod tests {
 
         #[test]
         fn backfill_compound_via_reindex_covers_preexisting_entities() {
-            let _guard = postgres_test_guard();
             let Some(mut store) =
                 store_or_skip("backfill_compound_via_reindex_covers_preexisting_entities")
             else {
@@ -5247,7 +5195,6 @@ mod tests {
 
         #[test]
         fn backfill_compound_via_put_schema_hook() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("backfill_compound_via_put_schema_hook") else {
                 return;
             };
@@ -5360,7 +5307,6 @@ mod tests {
 
         #[test]
         fn put_new_entity_is_indexed() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("put_new_entity_is_indexed") else {
                 return;
             };
@@ -5373,7 +5319,6 @@ mod tests {
 
         #[test]
         fn put_replace_moves_index_entry() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("put_replace_moves_index_entry") else {
                 return;
             };
@@ -5394,7 +5339,6 @@ mod tests {
 
         #[test]
         fn cas_moves_index_entry() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("cas_moves_index_entry") else {
                 return;
             };
@@ -5414,7 +5358,6 @@ mod tests {
 
         #[test]
         fn delete_removes_index_entries() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("delete_removes_index_entries") else {
                 return;
             };
@@ -5430,7 +5373,6 @@ mod tests {
 
         #[test]
         fn create_if_absent_maintains_and_noop_does_not_duplicate() {
-            let _guard = postgres_test_guard();
             let Some(mut store) =
                 store_or_skip("create_if_absent_maintains_and_noop_does_not_duplicate")
             else {
@@ -5456,7 +5398,6 @@ mod tests {
 
         #[test]
         fn compound_index_maintained_through_put() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("compound_index_maintained_through_put") else {
                 return;
             };
@@ -5478,7 +5419,6 @@ mod tests {
 
         #[test]
         fn unique_violation_on_put_does_not_persist_entity() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("unique_violation_on_put_does_not_persist_entity")
             else {
                 return;
@@ -5508,7 +5448,6 @@ mod tests {
 
         #[test]
         fn unique_violation_on_cas_does_not_persist_entity() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("unique_violation_on_cas_does_not_persist_entity")
             else {
                 return;
@@ -5545,7 +5484,6 @@ mod tests {
 
         #[test]
         fn schemaless_put_writes_without_maintenance() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("schemaless_put_writes_without_maintenance") else {
                 return;
             };
@@ -5575,7 +5513,6 @@ mod tests {
         /// must not commit/rollback its parent's tx).
         #[test]
         fn joined_abort_rolls_back_entity_and_index() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("joined_abort_rolls_back_entity_and_index") else {
                 return;
             };
@@ -5610,7 +5547,6 @@ mod tests {
         /// `commit_tx` durably maintains both the entity and its index entry.
         #[test]
         fn joined_commit_persists_entity_and_index() {
-            let _guard = postgres_test_guard();
             let Some(mut store) = store_or_skip("joined_commit_persists_entity_and_index") else {
                 return;
             };

@@ -12,63 +12,87 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+
 use axon_core::auth::{TenantId, TenantRole, UserId};
 use axon_storage::{
-    MemoryStorageAdapter, PostgresStorageAdapter, SqliteStorageAdapter, StorageAdapter,
+    provision_postgres_database, tenant_dsn, MemoryStorageAdapter, PostgresStorageAdapter,
+    SqliteStorageAdapter, StorageAdapter,
 };
-use testcontainers_modules::{
-    postgres,
-    testcontainers::{runners::SyncRunner, Container},
-};
+use testcontainers_modules::{postgres, testcontainers::runners::SyncRunner};
 
 // ── PostgreSQL test infrastructure ──────────────────────────────────────────
 
 struct TestPg {
     pub dsn: String,
-    _container: Option<Container<postgres::Postgres>>,
 }
 
-/// Resolve or start a test PostgreSQL cluster.
+/// Resolve the shared, process-wide superadmin DSN, starting a single
+/// PostgreSQL container the first time this is called. All tests in this
+/// binary reuse that one container (each provisioning its own isolated
+/// database), instead of every `#[test]` paying to start and tear down its
+/// own container.
+fn superadmin_dsn() -> Option<String> {
+    static DSN: OnceLock<Option<String>> = OnceLock::new();
+
+    DSN.get_or_init(|| {
+        if let Ok(dsn) = std::env::var("AXON_TEST_POSTGRES") {
+            return Some(dsn);
+        }
+
+        let result = postgres::Postgres::default()
+            .with_db_name("postgres")
+            .with_user("postgres")
+            .with_password("postgres")
+            .start();
+
+        match result {
+            Ok(container) => {
+                let host = container
+                    .get_host()
+                    .expect("container host should be available");
+                let port = container
+                    .get_host_port_ipv4(5432)
+                    .expect("container port should be available");
+                // Leak the container so it lives for the whole test binary run.
+                Box::leak(Box::new(container));
+                Some(format!(
+                    "host={host} port={port} user=postgres password=postgres dbname=postgres"
+                ))
+            }
+            Err(e) => {
+                eprintln!(
+                    "container runtime unavailable ({e}); \
+                     set AXON_TEST_POSTGRES to run against a real cluster"
+                );
+                None
+            }
+        }
+    })
+    .clone()
+}
+
+/// Provision a fresh, uniquely-named database on the shared cluster.
 ///
 /// Returns `None` if neither `AXON_TEST_POSTGRES` is set nor a Docker container
 /// can be started, signalling that the test should be skipped.
 fn cluster_or_skip(test_name: &str) -> Option<TestPg> {
-    if let Ok(dsn) = std::env::var("AXON_TEST_POSTGRES") {
-        return Some(TestPg {
-            dsn,
-            _container: None,
-        });
-    }
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    let result = postgres::Postgres::default()
-        .with_db_name("postgres")
-        .with_user("postgres")
-        .with_password("postgres")
-        .start();
+    let Some(dsn) = superadmin_dsn() else {
+        eprintln!("SKIP {test_name}: no PostgreSQL cluster available");
+        return None;
+    };
 
-    match result {
-        Ok(container) => {
-            let host = container
-                .get_host()
-                .expect("container host should be available");
-            let port = container
-                .get_host_port_ipv4(5432)
-                .expect("container port should be available");
-            let dsn =
-                format!("host={host} port={port} user=postgres password=postgres dbname=postgres");
-            Some(TestPg {
-                dsn,
-                _container: Some(container),
-            })
-        }
-        Err(e) => {
-            eprintln!(
-                "SKIP {test_name}: container runtime unavailable ({e}); \
-                 set AXON_TEST_POSTGRES to run against a real cluster"
-            );
-            None
-        }
-    }
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let db_name = format!("tu_{n:06}");
+    provision_postgres_database(&dsn, &db_name)
+        .expect("test database provision should succeed");
+
+    Some(TestPg {
+        dsn: tenant_dsn(&dsn, &db_name),
+    })
 }
 
 // ── Generic test logic ────────────────────────────────────────────────────────

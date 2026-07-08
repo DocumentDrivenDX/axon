@@ -133,6 +133,61 @@ target) requires a baseline measurement file and a comparison step. This is
 planned but not yet implemented. For now, criterion output should be reviewed
 manually after any change to hot paths.
 
+The L5 criterion suite above only exercises the `memory` and `fixture`
+backends; it does not benchmark `PostgresStorageAdapter`. Postgres storage-layer
+latency is not currently ratcheted by L5 — see the classification below for
+why the *conformance test suite* was slow, which is a separate concern from
+storage-engine latency.
+
+### PostgreSQL L4 conformance test performance — classification (2026-07-08)
+
+A readiness review flagged the PostgreSQL L4 backend-conformance test run
+(`cargo test -p axon-storage`) as slow. Investigation found this was a
+**test-environment cost, not a storage-layer performance issue**:
+
+- Three external integration test files
+  (`crates/axon-storage/tests/{auth_schema,tenant_users_test,postgres_tenant_isolation}.rs`)
+  each started a **brand-new Docker `testcontainers` PostgreSQL container per
+  `#[test]` function** (19 container startups total across the three files),
+  instead of sharing one container per test binary the way the L4 conformance
+  macro suite already did (`pg_conformance_superadmin_dsn` in
+  `crates/axon-storage/src/postgres.rs`).
+- The in-crate native PostgreSQL test module (`postgres::tests`, ~39 tests)
+  additionally started its own fresh container per test *and* serialized all
+  39 tests behind a single global `Mutex`, because every test connected to the
+  same fixed `axon_test` database and needed exclusive access to avoid
+  cross-test data races.
+- None of this exercised `PostgresStorageAdapter`'s actual read/write/index
+  hot paths any differently than the (already fast) L4 conformance macro
+  tests — the cost was entirely container-startup and forced serialization
+  overhead.
+
+**Fix**: every PostgreSQL-backed test file now starts a single container once
+per test binary (cached in a process-wide `OnceLock`, mirroring the existing
+`pg_conformance_superadmin_dsn` pattern) and provisions a fresh, uniquely
+named database per test via `provision_postgres_database` / `tenant_dsn`
+(the same isolation mechanism the conformance suite already used). This
+removed the need for the global `Mutex` entirely — each test now owns an
+independent database and can run fully in parallel.
+
+**Evidence** (`cargo test -p axon-storage --release`, same host, same
+dataset — full local historical p99 run vs. the version at this bead's
+`base-rev`):
+
+| Test binary | Before | After |
+|---|---|---|
+| `axon-storage` lib (333 tests incl. L4 conformance ×3 backends) | 129.59s | 10.78s |
+| `tests/auth_schema.rs` (12 tests) | 9.88s | 2.36s |
+| `tests/postgres_tenant_isolation.rs` (4 tests) | 3.83s | 3.23s |
+| `tests/tenant_users_test.rs` (15 tests) | 4.93s | 2.37s |
+| **Total test execution** | **148.23s** | **18.74s (~7.9× faster)** |
+
+**Classification**: resolved as a test-environment cost. No
+`PostgresStorageAdapter` production code path changed; the storage engine's
+own per-operation performance is unaffected and remains outside the L5
+criterion suite's current backend coverage (memory/fixture only, per the
+table above).
+
 ---
 
 ## Coverage

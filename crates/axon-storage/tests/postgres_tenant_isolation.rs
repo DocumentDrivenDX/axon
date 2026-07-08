@@ -11,67 +11,80 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::sync::OnceLock;
+
 use axon_core::id::CollectionId;
 use axon_core::types::Entity;
 use axon_storage::adapter::StorageAdapter;
 use axon_storage::{
     deprovision_postgres_database, provision_postgres_database, tenant_dsn, PostgresStorageAdapter,
 };
-use testcontainers_modules::{
-    postgres,
-    testcontainers::{runners::SyncRunner, Container},
-};
+use testcontainers_modules::{postgres, testcontainers::runners::SyncRunner};
 
 struct TestPgCluster {
     /// Connection string for a superuser on the cluster (no specific database).
     superadmin_dsn: String,
-    /// Container handle — kept alive for the duration of the test.
-    _container: Option<Container<postgres::Postgres>>,
 }
 
 /// Resolve or start a test PostgreSQL cluster.
+///
+/// A single container is started for the whole test binary the first time
+/// this is called (via a process-wide cache) and reused by every test —
+/// each test provisions/deprovisions its own tenant database on it, so
+/// sharing the underlying cluster does not affect isolation.
 ///
 /// Returns `None` if neither `AXON_TEST_POSTGRES` is set nor a container
 /// can be started (Docker unavailable), signalling that the test should be
 /// skipped.
 fn cluster_or_skip(test_name: &str) -> Option<TestPgCluster> {
-    if let Ok(dsn) = std::env::var("AXON_TEST_POSTGRES") {
-        return Some(TestPgCluster {
-            superadmin_dsn: dsn,
-            _container: None,
-        });
-    }
+    static DSN: OnceLock<Option<String>> = OnceLock::new();
 
-    // Try testcontainers.
-    let result = postgres::Postgres::default()
-        .with_db_name("postgres")
-        .with_user("postgres")
-        .with_password("postgres")
-        .start();
+    let dsn = DSN
+        .get_or_init(|| {
+            if let Ok(dsn) = std::env::var("AXON_TEST_POSTGRES") {
+                return Some(dsn);
+            }
 
-    match result {
-        Ok(container) => {
-            let host = container
-                .get_host()
-                .expect("container host should be available");
-            let port = container
-                .get_host_port_ipv4(5432)
-                .expect("container port should be available");
-            let dsn =
-                format!("host={host} port={port} user=postgres password=postgres dbname=postgres");
-            Some(TestPgCluster {
-                superadmin_dsn: dsn,
-                _container: Some(container),
-            })
-        }
-        Err(e) => {
-            eprintln!(
-                "SKIP {test_name}: container runtime unavailable ({e}); \
-                 set AXON_TEST_POSTGRES to run against a real cluster"
-            );
-            None
-        }
-    }
+            // Try testcontainers.
+            let result = postgres::Postgres::default()
+                .with_db_name("postgres")
+                .with_user("postgres")
+                .with_password("postgres")
+                .start();
+
+            match result {
+                Ok(container) => {
+                    let host = container
+                        .get_host()
+                        .expect("container host should be available");
+                    let port = container
+                        .get_host_port_ipv4(5432)
+                        .expect("container port should be available");
+                    // Leak the container so it lives for the whole test binary run.
+                    Box::leak(Box::new(container));
+                    Some(format!(
+                        "host={host} port={port} user=postgres password=postgres dbname=postgres"
+                    ))
+                }
+                Err(e) => {
+                    eprintln!(
+                        "container runtime unavailable ({e}); \
+                         set AXON_TEST_POSTGRES to run against a real cluster"
+                    );
+                    None
+                }
+            }
+        })
+        .clone();
+
+    let Some(dsn) = dsn else {
+        eprintln!("SKIP {test_name}: no PostgreSQL cluster available");
+        return None;
+    };
+
+    Some(TestPgCluster {
+        superadmin_dsn: dsn,
+    })
 }
 
 /// Drop a tenant database ignoring "not found" errors (best-effort cleanup).
