@@ -25,7 +25,8 @@ how to run each gate locally.
 | `@covers` scanner (AC citation format) | Malformed → 0 | Every commit (CI) | `python3 scripts/check_covers_traceability.py --format text` |
 | Correctness seeds (L1 invariants, 10 seeds) | Pass-count ↑ | Every commit (CI) | `scripts/run-sim-seeds.sh` (default 10 seeds) |
 | Correctness seeds (L1 invariants, 1 000 seeds) | Pass-count ↑ | Nightly | `AXON_SIM_SEEDS=1000 scripts/run-sim-seeds.sh` |
-| Performance p99 (BM-001..BM-012) | Latency ↓ or stable | Nightly / manual | `scripts/run-benchmarks.sh` |
+| Performance p99 (BM-001, 002, 003, 004, 006, 007, 009, 010, 011, 012) | Latency < TP-001 §9 target, enforced automatically | Nightly (`cargo bench` panics on trip) | `scripts/run-benchmarks.sh` |
+| Slow-test wall-clock (axon-storage L4 conformance) | Wall-clock ≤ 90s | Every commit (CI) | `scripts/check-slow-tests.sh 90 /tmp/storage-conformance.log -- cargo test -p axon-storage` |
 | Line coverage (axon-core + axon-api ≥ 90%) | % ↑ | Per-release review | `cargo llvm-cov --package axon-core --package axon-api` |
 | Workspace line coverage (≥ 80%) | % ↑ | Per-release review | `cargo llvm-cov --workspace` |
 | Audit gap count | Count → 0 | Every commit (CI, via `cargo test`) | `cargo test -p axon-sim -- audit` |
@@ -91,13 +92,24 @@ AXON_SIM_SEEDS=1000 scripts/run-sim-seeds.sh
 Benchmarks are defined in `crates/axon-api/benches/benchmarks.rs` and
 `crates/axon-cypher/benches/ddx_benchmark.rs`; together they measure the
 targets from TP-001 §9 plus the graph and DDx named-query workloads now
-captured in the story test plans. They are not ratcheted automatically yet — a
-failing seed or regression in benchmark output should be investigated before
-merging the offending change.
+captured in the story test plans.
+
+Each benchmark asserts its own p99 gate in-process (`assert_p99_gate` in
+`benchmarks.rs`, mirroring the pre-existing `assert_p99_gate` in
+`ddx_benchmark.rs`): 101 timed samples are taken after a 10-iteration warmup,
+and `cargo bench` panics (nonzero exit) if the measured p99 does not stay
+under the TP-001 §9 target. This makes the p99 ratchet self-enforcing —
+no separate baseline file or comparison step is needed, and thresholds can
+only be tightened by editing the target constants alongside a TP-001 update,
+never loosened silently. BM-005 (audit overhead, measured as a delta) and
+BM-008 (concurrent-writer throughput scaling) have no fixed single-sample
+budget in TP-001 and are not gated; their Criterion output is still reviewed
+manually per the guidance below.
 
 ```bash
-scripts/run-benchmarks.sh         # all benchmarks
+scripts/run-benchmarks.sh         # all benchmarks (fails if any p99 gate trips)
 scripts/run-benchmarks.sh BM-001  # single benchmark by name filter
+cargo bench -p axon-api -- --test # gate-only smoke run (single sample pass, no Criterion report)
 ```
 
 ### Benchmark evidence bundle
@@ -128,10 +140,13 @@ Criterion p99 evidence is retained under:
 | `axon-api` | `memory` | BM-001..BM-012 ranges from 10,000 point lookups to 99-link neighbor queries |
 | `axon-cypher` | `fixture` | 1,000-bead and 10,000-bead ready/blocked queue fixtures |
 
-Benchmark blocker note: automatic threshold enforcement (fail CI if p99 exceeds
-target) requires a baseline measurement file and a comparison step. This is
-planned but not yet implemented. For now, criterion output should be reviewed
-manually after any change to hot paths.
+Automatic p99 threshold enforcement (resolved 2026-07-08): each gated
+benchmark now fails `cargo bench` — and therefore the nightly `benchmarks` job
+in `.github/workflows/nightly.yml` — if its own in-process p99 sample exceeds
+the TP-001 §9 target. Criterion's own statistical output (mean, throughput,
+regression-vs-previous-run plots) remains informational and should still be
+reviewed manually after any change to hot paths; the automated gate only
+covers the fixed p99 ceiling, not relative regression detection.
 
 The L5 criterion suite above only exercises the `memory` and `fixture`
 backends; it does not benchmark `PostgresStorageAdapter`. Postgres storage-layer
@@ -187,6 +202,20 @@ dataset — full local historical p99 run vs. the version at this bead's
 own per-operation performance is unaffected and remains outside the L5
 criterion suite's current backend coverage (memory/fixture only, per the
 table above).
+
+**Slow-test ratchet**: the `storage-conformance` job in
+`.github/workflows/ci.yml` first runs `cargo test -p axon-storage --no-run`
+(untimed build), then wraps the real test run with
+`scripts/check-slow-tests.sh 90 /tmp/storage-conformance.log -- cargo test -p
+axon-storage`. Building first means the timed step measures test execution,
+not compilation — compile time varies with CI cache state and is not what
+regressed in the incident above. The script times the wrapped command, tees
+its output to the given log path (preserving the existing "PostgreSQL
+conformance tests ran" grep check below it), and fails the job if wall-clock
+time exceeds 90s. 90s gives headroom over the 18.74s measured above for
+slower CI runners while remaining far below the 148.23s pre-fix baseline, so
+a regression back to per-test container startup trips the gate on every
+commit rather than waiting for a readiness review to notice it again.
 
 ---
 

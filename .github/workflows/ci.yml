@@ -225,10 +225,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      # Build first so the ratchet below times test execution, not
+      # compilation (compile time varies with cache state and is not what
+      # the ratchet is meant to catch).
+      - name: Build axon-storage tests
+        env:
+          AXON_TEST_POSTGRES: postgres://postgres:postgres@localhost:5432/postgres
+        run: cargo test -p axon-storage --no-run
+      # Slow-test ratchet: fails if axon-storage's test wall-clock regresses
+      # past 90s, guarding against reintroducing the per-test Docker
+      # container-startup pattern documented in ci-ratchets.md (148.23s
+      # before the fix, 18.74s after; 90s leaves headroom for slower runners).
       - name: Run L4 storage conformance suite (SQLite + PostgreSQL)
         env:
           AXON_TEST_POSTGRES: postgres://postgres:postgres@localhost:5432/postgres
-        run: cargo test -p axon-storage 2>&1 | tee /tmp/storage-conformance.log
+        run: scripts/check-slow-tests.sh 90 /tmp/storage-conformance.log -- cargo test -p axon-storage
       - name: Verify PostgreSQL conformance tests ran (not all skipped)
         run: |
           if grep -q "postgres_conformance::get_missing_returns_none" /tmp/storage-conformance.log; then

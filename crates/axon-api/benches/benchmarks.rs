@@ -23,6 +23,8 @@
 //!   BM-011: Link candidates (10K targets, indexed predicate) < 50 ms
 //!   BM-012: Neighbors (99 links, mixed directions) < 20 ms
 
+use std::time::{Duration, Instant};
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use serde_json::json;
 
@@ -42,6 +44,38 @@ fn col(name: &str) -> CollectionId {
 
 fn eid(id: &str) -> EntityId {
     EntityId::new(id)
+}
+
+/// Samples `op` 101 times (after a 10-iteration warmup) and returns the p99
+/// wall-clock latency. Mirrors the gate already enforced in
+/// `crates/axon-cypher/benches/ddx_benchmark.rs` for US-074.
+fn measure_p99<T>(mut op: impl FnMut() -> T) -> Duration {
+    for _ in 0..10 {
+        black_box(op());
+    }
+
+    let mut samples = Vec::with_capacity(101);
+    for _ in 0..101 {
+        let started = Instant::now();
+        black_box(op());
+        samples.push(started.elapsed());
+    }
+    samples.sort_unstable();
+    let p99_index = ((samples.len() as f64 * 0.99).ceil() as usize).saturating_sub(1);
+    samples[p99_index]
+}
+
+/// Readiness ratchet: fails `cargo bench` if the measured p99 regresses past
+/// the test-plan target (`docs/helix/03-test/test-plan.md` §"Performance
+/// Benchmark Definitions"). Targets are fixed budgets, not historical
+/// baselines — per TP-001 they may only tighten, never loosen.
+fn assert_p99_gate<T>(name: &str, threshold_ms: u128, op: impl FnMut() -> T) {
+    let p99 = measure_p99(op);
+    assert!(
+        p99.as_millis() < threshold_ms,
+        "{name} p99={}ms exceeded {threshold_ms}ms budget (see docs/helix/03-test/ci-ratchets.md)",
+        p99.as_millis()
+    );
 }
 
 fn seeded_link_candidate_handler() -> AxonHandler<MemoryStorageAdapter> {
@@ -206,6 +240,17 @@ fn bm_001_single_entity_read(c: &mut Criterion) {
     }
 
     let mut i = 0_u64;
+    // @covers BM-001
+    assert_p99_gate("BM-001: single entity read", 5, || {
+        let id = format!("item-{:05}", i % 10_000);
+        i += 1;
+        h.get_entity(GetEntityRequest {
+            collection: col("items"),
+            id: eid(&id),
+        })
+        .unwrap()
+    });
+
     c.bench_function("BM-001: single entity read", |b| {
         b.iter(|| {
             let id = format!("item-{:05}", i % 10_000);
@@ -246,6 +291,21 @@ entity_schema:
     h.put_schema(schema).unwrap();
 
     let mut i = 0_u64;
+    // @covers BM-002
+    assert_p99_gate("BM-002: single entity write", 10, || {
+        let id = format!("w-{i:08}");
+        i += 1;
+        h.create_entity(CreateEntityRequest {
+            collection: col("items"),
+            id: eid(&id),
+            data: json!({"name": format!("Item {i}"), "value": i}),
+            actor: Some("bench".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap()
+    });
+
     c.bench_function("BM-002: single entity write", |b| {
         b.iter(|| {
             let id = format!("w-{i:08}");
@@ -282,27 +342,36 @@ fn bm_003_multi_entity_transaction(c: &mut Criterion) {
     }
 
     let mut round = 0_u64;
+    let mut run_transaction = |storage: &mut MemoryStorageAdapter| {
+        let base = (round * 5) % 1000;
+        round += 1;
+
+        let mut tx = Transaction::new();
+        for j in 0..5 {
+            let idx = (base + j) % 1000;
+            let id = format!("acct-{idx:04}");
+            let current = storage.get(&col("accounts"), &eid(&id)).unwrap().unwrap();
+            tx.update(
+                Entity::new(
+                    col("accounts"),
+                    eid(&id),
+                    json!({"balance": current.data["balance"].as_i64().unwrap() - 1}),
+                ),
+                current.version,
+                Some(current.data),
+            );
+        }
+        tx.commit(storage, Some("bench".into()), None).unwrap()
+    };
+
+    // @covers BM-003
+    assert_p99_gate("BM-003: multi-entity transaction (5 ops)", 20, || {
+        run_transaction(&mut storage)
+    });
+
     c.bench_function("BM-003: multi-entity transaction (5 ops)", |b| {
         b.iter(|| {
-            let base = (round * 5) % 1000;
-            round += 1;
-
-            let mut tx = Transaction::new();
-            for j in 0..5 {
-                let idx = (base + j) % 1000;
-                let id = format!("acct-{idx:04}");
-                let current = storage.get(&col("accounts"), &eid(&id)).unwrap().unwrap();
-                tx.update(
-                    Entity::new(
-                        col("accounts"),
-                        eid(&id),
-                        json!({"balance": current.data["balance"].as_i64().unwrap() - 1}),
-                    ),
-                    current.version,
-                    Some(current.data),
-                );
-            }
-            black_box(tx.commit(&mut storage, Some("bench".into()), None).unwrap());
+            black_box(run_transaction(&mut storage));
         })
     });
 }
@@ -324,25 +393,31 @@ fn bm_004_collection_scan(c: &mut Criterion) {
         .unwrap();
     }
 
+    let scan_request = || QueryEntitiesRequest {
+        collection: col("invoices"),
+        filter: Some(FilterNode::Field(FieldFilter {
+            field: "status".into(),
+            op: FilterOp::Eq,
+            value: json!("open"),
+        })),
+        sort: vec![SortField {
+            field: "amount".into(),
+            direction: SortDirection::Desc,
+        }],
+        limit: Some(50),
+        ..Default::default()
+    };
+
+    // @covers BM-004
+    assert_p99_gate(
+        "BM-004: collection scan (1K entities, filter+sort)",
+        100,
+        || h.query_entities(scan_request()).unwrap(),
+    );
+
     c.bench_function("BM-004: collection scan (1K entities, filter+sort)", |b| {
         b.iter(|| {
-            black_box(
-                h.query_entities(QueryEntitiesRequest {
-                    collection: col("invoices"),
-                    filter: Some(FilterNode::Field(FieldFilter {
-                        field: "status".into(),
-                        op: FilterOp::Eq,
-                        value: json!("open"),
-                    })),
-                    sort: vec![SortField {
-                        field: "amount".into(),
-                        direction: SortDirection::Desc,
-                    }],
-                    limit: Some(50),
-                    ..Default::default()
-                })
-                .unwrap(),
-            );
+            black_box(h.query_entities(scan_request()).unwrap());
         })
     });
 }
@@ -462,19 +537,23 @@ fn bm_006_link_traversal(c: &mut Criterion) {
         }
     }
 
+    let traverse_request = || TraverseRequest {
+        collection: col("nodes"),
+        id: eid("root"),
+        link_type: Some("contains".into()),
+        max_depth: Some(3),
+        direction: Default::default(),
+        hop_filter: None,
+    };
+
+    // @covers BM-006
+    assert_p99_gate("BM-006: link traversal (3 hops, 155 nodes)", 50, || {
+        h.traverse(traverse_request()).unwrap()
+    });
+
     c.bench_function("BM-006: link traversal (3 hops, 155 nodes)", |b| {
         b.iter(|| {
-            black_box(
-                h.traverse(TraverseRequest {
-                    collection: col("nodes"),
-                    id: eid("root"),
-                    link_type: Some("contains".into()),
-                    max_depth: Some(3),
-                    direction: Default::default(),
-                    hop_filter: None,
-                })
-                .unwrap(),
-            );
+            black_box(h.traverse(traverse_request()).unwrap());
         })
     });
 }
@@ -502,26 +581,37 @@ fn bm_007_aggregation(c: &mut Criterion) {
         .unwrap();
     }
 
+    let aggregate = || {
+        let results = h
+            .query_entities(QueryEntitiesRequest {
+                collection: col("invoices"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::Eq,
+                    value: json!("approved"),
+                })),
+                ..Default::default()
+            })
+            .unwrap();
+        // Simulate aggregation: sum amounts.
+        let total: i64 = results
+            .entities
+            .iter()
+            .map(|e| e.data["amount"].as_i64().unwrap_or(0))
+            .sum();
+        total
+    };
+
+    // @covers BM-007
+    assert_p99_gate(
+        "BM-007: aggregation (10K entities, filter+sum)",
+        500,
+        aggregate,
+    );
+
     c.bench_function("BM-007: aggregation (10K entities, filter+sum)", |b| {
         b.iter(|| {
-            let results = h
-                .query_entities(QueryEntitiesRequest {
-                    collection: col("invoices"),
-                    filter: Some(FilterNode::Field(FieldFilter {
-                        field: "status".into(),
-                        op: FilterOp::Eq,
-                        value: json!("approved"),
-                    })),
-                    ..Default::default()
-                })
-                .unwrap();
-            // Simulate aggregation: sum amounts.
-            let total: i64 = results
-                .entities
-                .iter()
-                .map(|e| e.data["amount"].as_i64().unwrap_or(0))
-                .sum();
-            black_box(total);
+            black_box(aggregate());
         })
     });
 }
@@ -650,6 +740,11 @@ entity_schema:
         "score": 95.5
     });
 
+    // @covers BM-009
+    assert_p99_gate("BM-009: schema validation (20 fields, 2 levels)", 1, || {
+        axon_schema::validate(&schema, &valid_entity).unwrap()
+    });
+
     c.bench_function("BM-009: schema validation (20 fields, 2 levels)", |b| {
         b.iter(|| {
             black_box(axon_schema::validate(&schema, &valid_entity).unwrap());
@@ -686,16 +781,22 @@ fn bm_010_audit_query(c: &mut Criterion) {
         .unwrap();
     }
 
+    let audit_request = || QueryAuditRequest {
+        collection: Some(col("logs")),
+        entity_id: Some(eid("e-001")),
+        ..Default::default()
+    };
+
+    // @covers BM-010
+    assert_p99_gate(
+        "BM-010: audit query (single entity, 100 mutations)",
+        100,
+        || h.query_audit(audit_request()).unwrap(),
+    );
+
     c.bench_function("BM-010: audit query (single entity, 100 mutations)", |b| {
         b.iter(|| {
-            black_box(
-                h.query_audit(QueryAuditRequest {
-                    collection: Some(col("logs")),
-                    entity_id: Some(eid("e-001")),
-                    ..Default::default()
-                })
-                .unwrap(),
-            );
+            black_box(h.query_audit(audit_request()).unwrap());
         })
     });
 }
@@ -724,6 +825,12 @@ fn bm_011_find_link_candidates(c: &mut Criterion) {
         .iter()
         .any(|candidate| candidate.already_linked));
 
+    assert_p99_gate(
+        "BM-011: link candidates (10K targets, indexed predicate)",
+        50,
+        || h.find_link_candidates(request.clone()).unwrap(),
+    );
+
     c.bench_function(
         "BM-011: link candidates (10K targets, indexed predicate)",
         |b| {
@@ -745,6 +852,10 @@ fn bm_012_list_neighbors(c: &mut Criterion) {
     let warmup = h.list_neighbors(request.clone()).unwrap();
     assert_eq!(warmup.total_count, 99);
     assert_eq!(warmup.groups.len(), 2);
+
+    assert_p99_gate("BM-012: neighbors (99 links, mixed directions)", 20, || {
+        h.list_neighbors(request.clone()).unwrap()
+    });
 
     c.bench_function("BM-012: neighbors (99 links, mixed directions)", |b| {
         b.iter(|| black_box(h.list_neighbors(request.clone()).unwrap()));
