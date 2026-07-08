@@ -82,6 +82,13 @@ ddx:
 - Validation:
   - `axon doctor` reports the server reachable.
   - `curl -fsS http://localhost:4170/health` returns 2xx.
+- Known-good bring-up commands for the same host:
+  - Local dev/test from a checkout: `cargo run -p axon-cli -- serve --no-auth`
+    or `axon serve --no-auth` if the binary is already installed.
+  - Installed service path: `axon server install` once, then
+    `axon server start`.
+  - After either path, re-run `axon doctor` and `curl -fsS
+    http://localhost:4170/health`.
 - Escalate to: Core Team if the control-plane DB is corrupt or the service
   will not start after one restart (proceed to Rollback).
 

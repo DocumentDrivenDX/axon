@@ -25,7 +25,7 @@ procedures these signals feed).
 | Signal | Exposed today | Source | Notes |
 |--------|----------------|--------|-------|
 | Health | Yes | `GET /health` (`crates/axon-server/src/gateway.rs`) | Returns `status`, `version`, `uptime_seconds`, `backing_store.{backend,status}`, `databases`, `default_namespace`, `default_namespace_status`. |
-| Reachability | Yes | `axon doctor` (`crates/axon-cli/src/doctor.rs`) | Resolves config, storage backend, ports, and probes `{server_url}/health`; prints `reachable` / HTTP status / `not reachable`. |
+| Reachability | Yes | `axon doctor` (`crates/axon-cli/src/doctor.rs`) | Resolves config, storage backend, ports, and auth mode; probes `{server_url}/health`; prints the effective CLI mode, `reachable` / HTTP status / `not reachable`, and next-step guidance when the configured server is unreachable. |
 | p99 / request latency | No | — | No latency histogram or timing middleware is implemented. `/metrics` is reserved as a non-data-plane path prefix (`crates/axon-server/src/path_router.rs`) but no metrics handler is registered on the router — there is nothing to scrape yet. Track under the improvement backlog. |
 | Error rate | Partial | server logs; write-rate-limit rejections (`crates/axon-server/src/rate_limit.rs`) return a typed `rate_limit_exceeded` error body | No aggregated error-rate counter or endpoint exists. During release qualification, error rate is derived by tailing/grepping server logs over the soak window (see Evidence Capture below), not read from a dashboard. |
 | Storage | Partial | `GET /health` `databases` list; `axon database list` | Reports which databases exist and default-namespace status, not size/disk-usage/growth. No storage-capacity signal is exposed. |
