@@ -149,7 +149,7 @@ jobs:
           if-no-files-found: error
 
   benchmarks:
-    name: L5 Criterion benchmarks (BM-001..BM-010)
+    name: L5 Criterion benchmarks (BM-001..BM-012)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -159,3 +159,19 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Run benchmarks
         run: scripts/run-benchmarks.sh
+      # Preserve the benchmark evidence bundle: commit, environment, backend,
+      # dataset inventory, and p99 artifact paths recorded by the runner.
+      - name: Upload benchmark metadata
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-metadata
+          path: target/benchmarks
+          if-no-files-found: error
+      - name: Upload Criterion outputs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-criterion
+          path: target/criterion
+          if-no-files-found: warn

@@ -100,6 +100,34 @@ scripts/run-benchmarks.sh         # all benchmarks
 scripts/run-benchmarks.sh BM-001  # single benchmark by name filter
 ```
 
+### Benchmark evidence bundle
+
+`scripts/run-benchmarks.sh` writes `target/benchmarks/<run-id>/benchmark-metadata.json`
+so each run carries the exact commit and host/environment that produced it.
+The manifest records:
+
+- commit SHA
+- host/environment snapshot
+- backend inventory
+- dataset sizes
+- p99 artifact paths
+
+Nightly uploads the benchmark evidence roots:
+
+- `target/benchmarks/`
+- `target/criterion/`
+
+Criterion p99 evidence is retained under:
+
+- `target/criterion/**/new/sample.json`
+- `target/criterion/**/new/estimates.json`
+- `target/criterion/**/report/index.html`
+
+| Suite | Backend | Dataset inventory |
+|-------|---------|-------------------|
+| `axon-api` | `memory` | BM-001..BM-012 ranges from 10,000 point lookups to 99-link neighbor queries |
+| `axon-cypher` | `fixture` | 1,000-bead and 10,000-bead ready/blocked queue fixtures |
+
 Benchmark blocker note: automatic threshold enforcement (fail CI if p99 exceeds
 target) requires a baseline measurement file and a comparison step. This is
 planned but not yet implemented. For now, criterion output should be reviewed

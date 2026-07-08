@@ -10,6 +10,10 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# L5 benchmarks stay out of per-commit CI; the nightly workflow records
+# commit, environment, backend, dataset, and p99 evidence via
+# scripts/run-benchmarks.sh.
+
 jobs:
   check:
     name: Check
