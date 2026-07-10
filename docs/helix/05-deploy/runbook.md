@@ -177,7 +177,8 @@ ddx:
 - Architecture: `docs/helix/02-design/architecture.md`
 - Control plane feature: `docs/helix/01-frame/features/FEAT-025-control-plane.md`
 - Unified binary feature: `docs/helix/01-frame/features/FEAT-028-unified-binary.md`
-- Release notes: `docs/helix/05-deploy/release-notes-0.7.1.md`
+- Release notes: `docs/helix/05-deploy/release-notes-0.4.x.md`
+- Historical release note: `docs/helix/05-deploy/release-notes-0.7.1.md`
 - Monitoring setup: not yet authored (`docs/helix/05-deploy/monitoring-setup.md`
   — placeholder; signals here use `axon doctor`, `/health`, and server logs).
 - Security architecture: not yet authored

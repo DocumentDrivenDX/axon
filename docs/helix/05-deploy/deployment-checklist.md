@@ -27,8 +27,9 @@ ddx:
   (`docs/helix/05-deploy/runbook.md`), CLI/config contract `CONTRACT-008`
   (`docs/helix/02-design/contracts/CONTRACT-008-cli-and-config.md`),
   architecture (`docs/helix/02-design/architecture.md`), release notes
-  (`docs/helix/05-deploy/release-notes-0.7.1.md` — superseded; historical
-  record of the revoked 0.7.1 target).
+  (`docs/helix/05-deploy/release-notes-0.4.x.md` — active 0.4.x pilot target;
+  `docs/helix/05-deploy/release-notes-0.7.1.md` remains the historical record
+  of the revoked 0.7.1 target).
 
 ## Pre-Deploy Checks
 
