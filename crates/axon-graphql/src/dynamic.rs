@@ -11341,7 +11341,11 @@ mod tests {
     }
 
     impl<S: StorageAdapter> StorageAdapter for CountingStorageAdapter<S> {
-        fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
             self.record();
             self.inner.get(collection, id)
         }
@@ -11480,7 +11484,8 @@ mod tests {
             intent_id: &str,
         ) -> Result<Option<MutationIntent>, AxonError> {
             self.record();
-            self.inner.get_mutation_intent(tenant_id, database_id, intent_id)
+            self.inner
+                .get_mutation_intent(tenant_id, database_id, intent_id)
         }
         fn list_pending_mutation_intents(
             &self,
@@ -11655,7 +11660,10 @@ mod tests {
             self.record();
             self.inner.list_collections()
         }
-        fn collection_numeric_id(&self, collection: &CollectionId) -> Result<Option<u64>, AxonError> {
+        fn collection_numeric_id(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<u64>, AxonError> {
             self.record();
             self.inner.collection_numeric_id(collection)
         }
@@ -11897,7 +11905,11 @@ mod tests {
             self.inner.create_tenant_database(tenant_id, name)
         }
 
-        fn delete_tenant_database(&self, tenant_id: TenantId, name: &str) -> Result<bool, AxonError> {
+        fn delete_tenant_database(
+            &self,
+            tenant_id: TenantId,
+            name: &str,
+        ) -> Result<bool, AxonError> {
             self.record();
             self.inner.delete_tenant_database(tenant_id, name)
         }
@@ -13261,10 +13273,7 @@ mod tests {
         let schema =
             build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
 
-        async fn page(
-            schema: &async_graphql::dynamic::Schema,
-            args: &str,
-        ) -> serde_json::Value {
+        async fn page(schema: &async_graphql::dynamic::Schema, args: &str) -> serde_json::Value {
             let query = format!(
                 r#"{{
                     ready_beads({args}) {{
