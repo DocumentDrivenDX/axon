@@ -87,15 +87,15 @@ fn provision_and_deprovision_round_trip() {
         return;
     };
     let dsn = &cluster.superadmin_dsn;
-    let tenant = "provision_test";
+    let tenant = format!("provision_test_{}", std::process::id());
 
     // Cleanup any leftover from a previous failed run.
-    cleanup_tenant(dsn, tenant);
+    cleanup_tenant(dsn, &tenant);
 
-    provision_postgres_database(dsn, tenant).expect("provision should succeed for a new database");
+    provision_postgres_database(dsn, &tenant).expect("provision should succeed for a new database");
 
     // Provisioning again should return AlreadyExists.
-    let err = provision_postgres_database(dsn, tenant)
+    let err = provision_postgres_database(dsn, &tenant)
         .expect_err("second provision should fail with AlreadyExists");
     assert!(
         matches!(err, axon_core::error::AxonError::AlreadyExists(_)),
@@ -103,10 +103,10 @@ fn provision_and_deprovision_round_trip() {
     );
 
     // Deprovisioning should succeed.
-    deprovision_postgres_database(dsn, tenant).expect("deprovision should succeed");
+    deprovision_postgres_database(dsn, &tenant).expect("deprovision should succeed");
 
     // Deprovisioning a second time should return NotFound.
-    let err2 = deprovision_postgres_database(dsn, tenant)
+    let err2 = deprovision_postgres_database(dsn, &tenant)
         .expect_err("second deprovision should fail with NotFound");
     assert!(
         matches!(err2, axon_core::error::AxonError::NotFound(_)),
@@ -148,20 +148,20 @@ fn two_tenant_databases_are_isolated() {
         return;
     };
     let dsn = &cluster.superadmin_dsn;
-    let tenant_a = "isola_tenant_a";
-    let tenant_b = "isola_tenant_b";
+    let tenant_a = format!("isola_tenant_a_{}", std::process::id());
+    let tenant_b = format!("isola_tenant_b_{}", std::process::id());
 
     // Cleanup any leftover from a previous failed run.
-    cleanup_tenant(dsn, tenant_a);
-    cleanup_tenant(dsn, tenant_b);
+    cleanup_tenant(dsn, &tenant_a);
+    cleanup_tenant(dsn, &tenant_b);
 
     // Provision both tenant databases.
-    provision_postgres_database(dsn, tenant_a).expect("provision tenant_a should succeed");
-    provision_postgres_database(dsn, tenant_b).expect("provision tenant_b should succeed");
+    provision_postgres_database(dsn, &tenant_a).expect("provision tenant_a should succeed");
+    provision_postgres_database(dsn, &tenant_b).expect("provision tenant_b should succeed");
 
     // Connect to each tenant database.
-    let conn_a = tenant_dsn(dsn, tenant_a);
-    let conn_b = tenant_dsn(dsn, tenant_b);
+    let conn_a = tenant_dsn(dsn, &tenant_a);
+    let conn_b = tenant_dsn(dsn, &tenant_b);
 
     let mut adapter_a =
         PostgresStorageAdapter::connect(&conn_a).expect("connect to tenant_a should succeed");
@@ -224,6 +224,6 @@ fn two_tenant_databases_are_isolated() {
     // Cleanup.
     drop(adapter_a);
     drop(adapter_b);
-    cleanup_tenant(dsn, tenant_a);
-    cleanup_tenant(dsn, tenant_b);
+    cleanup_tenant(dsn, &tenant_a);
+    cleanup_tenant(dsn, &tenant_b);
 }

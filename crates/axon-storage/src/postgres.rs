@@ -3522,7 +3522,10 @@ pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result
 mod tests {
     use std::{
         ops::{Deref, DerefMut},
-        sync::{Mutex, MutexGuard, OnceLock},
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Mutex, MutexGuard, OnceLock,
+        },
     };
 
     use super::*;
@@ -3537,6 +3540,7 @@ mod tests {
     struct TestDatabase {
         url: String,
         _container: Option<Container<PgContainer>>,
+        cleanup: Option<(String, String)>,
     }
 
     enum TestSetupError {
@@ -3546,10 +3550,16 @@ mod tests {
 
     impl TestDatabase {
         fn connect() -> Result<Self, TestSetupError> {
-            if let Ok(url) = std::env::var("AXON_TEST_POSTGRES") {
+            if let Ok(superadmin_dsn) = std::env::var("AXON_TEST_POSTGRES") {
+                static COUNTER: AtomicU64 = AtomicU64::new(0);
+                let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+                let database_name = format!("ut_{}_{sequence:06}", std::process::id());
+                provision_postgres_database(&superadmin_dsn, &database_name)
+                    .map_err(TestSetupError::Fail)?;
                 return Ok(Self {
-                    url,
+                    url: tenant_dsn(&superadmin_dsn, &database_name),
                     _container: None,
+                    cleanup: Some((superadmin_dsn, database_name)),
                 });
             }
 
@@ -3577,12 +3587,47 @@ mod tests {
             Ok(Self {
                 url: format!("postgres://postgres:postgres@{host}:{port}/axon_test"),
                 _container: Some(container),
+                cleanup: None,
             })
         }
 
         fn url(&self) -> &str {
             &self.url
         }
+    }
+
+    impl Drop for TestDatabase {
+        fn drop(&mut self) {
+            if let Some((superadmin_dsn, database_name)) = self.cleanup.take() {
+                let _ = force_deprovision_test_database(&superadmin_dsn, &database_name);
+            }
+        }
+    }
+
+    fn force_deprovision_test_database(
+        superadmin_dsn: &str,
+        database_name: &str,
+    ) -> Result<(), AxonError> {
+        validate_pg_db_name(database_name)?;
+        let full_name = format!("axon_{database_name}");
+        let options = pg_connect_options(superadmin_dsn)?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| AxonError::Storage(error.to_string()))?;
+        rt.block_on(async {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .map_err(|error| AxonError::Storage(error.to_string()))?;
+            let result = sqlx::raw_sql(&format!("DROP DATABASE \"{full_name}\" WITH (FORCE)"))
+                .execute(&pool)
+                .await
+                .map_err(|error| AxonError::Storage(error.to_string()));
+            pool.close().await;
+            result.map(|_| ())
+        })
     }
 
     struct TestStore {
@@ -5699,7 +5744,7 @@ fn pg_conformance_make_adapter() -> Option<PostgresStorageAdapter> {
 
     let dsn = pg_conformance_superadmin_dsn()?;
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let db_name = format!("ct_{n:06}");
+    let db_name = format!("ct_{}_{n:06}", std::process::id());
 
     provision_postgres_database(&dsn, &db_name)
         .expect("conformance database provision should succeed");

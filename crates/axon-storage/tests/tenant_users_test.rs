@@ -13,8 +13,11 @@
 #![allow(clippy::unwrap_used)]
 
 use axon_core::auth::{TenantId, TenantRole, UserId};
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use axon_storage::{
-    MemoryStorageAdapter, PostgresStorageAdapter, SqliteStorageAdapter, StorageAdapter,
+    deprovision_postgres_database, provision_postgres_database, tenant_dsn, MemoryStorageAdapter,
+    PostgresStorageAdapter, SqliteStorageAdapter, StorageAdapter,
 };
 use testcontainers_modules::{
     postgres,
@@ -26,6 +29,15 @@ use testcontainers_modules::{
 struct TestPg {
     pub dsn: String,
     _container: Option<Container<postgres::Postgres>>,
+    cleanup: Option<(String, String)>,
+}
+
+impl Drop for TestPg {
+    fn drop(&mut self) {
+        if let Some((superadmin_dsn, database_name)) = self.cleanup.take() {
+            let _ = deprovision_postgres_database(&superadmin_dsn, &database_name);
+        }
+    }
 }
 
 /// Resolve or start a test PostgreSQL cluster.
@@ -33,10 +45,16 @@ struct TestPg {
 /// Returns `None` if neither `AXON_TEST_POSTGRES` is set nor a Docker container
 /// can be started, signalling that the test should be skipped.
 fn cluster_or_skip(test_name: &str) -> Option<TestPg> {
-    if let Ok(dsn) = std::env::var("AXON_TEST_POSTGRES") {
+    if let Ok(superadmin_dsn) = std::env::var("AXON_TEST_POSTGRES") {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let database_name = format!("members_{}_{sequence:06}", std::process::id());
+        provision_postgres_database(&superadmin_dsn, &database_name)
+            .expect("isolated tenant-membership test database should provision");
         return Some(TestPg {
-            dsn,
+            dsn: tenant_dsn(&superadmin_dsn, &database_name),
             _container: None,
+            cleanup: Some((superadmin_dsn, database_name)),
         });
     }
 
@@ -59,6 +77,7 @@ fn cluster_or_skip(test_name: &str) -> Option<TestPg> {
             Some(TestPg {
                 dsn,
                 _container: Some(container),
+                cleanup: None,
             })
         }
         Err(e) => {
