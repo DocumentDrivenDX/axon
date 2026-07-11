@@ -27,7 +27,7 @@ record is the source of truth it aligns to.
 ## 1. Release target disposition
 
 **Disposition: REVOKE the 0.7.1 documentation-only target. CONFIRM 0.4.x as
-the current, evidence-backed pilot release target.**
+the current, evidence-backed pilot-ready release target.**
 
 - **Prior state**: `docs/helix/01-frame/prd.md` and
   `docs/helix/01-frame/feature-registry.md` recorded an operator-requested
@@ -50,6 +50,9 @@ the current, evidence-backed pilot release target.**
   the operator's pilot-readiness target: Axon's V1 readiness verdict
   (`axon-5744d96b`) is evaluated against a `0.4.x` pilot release, not a
   `0.7.1` release.
+  This pilot line is qualified on PostgreSQL 16 only; GA criteria are not
+  adopted here, and no broader PostgreSQL-major promise is made in this
+  disposition.
 - **What this does not decide**: whether or when to cut an actual `v0.4.x`
   GitHub release/tag/package artifact remains release-workflow work outside
   this decision (tracked by the deployment/readiness beads under

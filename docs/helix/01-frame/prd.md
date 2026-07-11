@@ -39,7 +39,8 @@ The release target remains a documentation and planning authority: this PRD
 does not by itself prove that a `v0.4.x` GitHub release, package version, or
 binary artifact beyond the current `v0.4.0` has been published. Any
 release/tag/package promotion must be handled by release workflow work outside
-this PRD.
+this PRD. The 0.4.x line is pilot-ready only; GA remains future work, and the
+server backend qualified for this line is PostgreSQL 16 only.
 
 ## Summary
 
@@ -179,10 +180,33 @@ modes:
 - **Offline-write reconciliation**: clients that accept writes with no
   connectivity and converge them deterministically on sync are out of scope for
   this release (FR-33, deferred 2026-06-27). The committed local-first
-  capability is a read-only replica (FR-32); offline-write convergence is
-  parked pending objective demand.
+  capability is a read-only replica (FR-32) fed by FR-31 resumable change
+  streams; offline-write convergence is parked pending objective demand.
 
 Deferred items are tracked in `docs/helix/parking-lot.md`.
+
+### Scope Split
+
+- FR-31 stays committed: ordered, resumable audit and change streams with
+  stable cursors and resume semantics.
+- FR-32 stays committed as the read-only local read replica built on FR-31.
+- FR-33 stays deferred/parked: offline writes and bidirectional reconciliation
+  are not part of this release line.
+
+### Pilot Qualification Criteria
+
+The 0.4.x line is pilot-ready only; GA remains future work and is not part of
+this PRD.
+
+| Domain | Pilot success criterion | Evidence |
+|--------|-------------------------|----------|
+| schema fail | schema fail path rejects invalid writes before commit, emits a structured diagnostic, and leaves no audit entry | FEAT-002 schema-validation contract tests |
+| typed link | typed link mutations reject invalid endpoints or cardinality and round-trip the declared link metadata | FEAT-001 / FEAT-007 contract tests |
+| mixed transaction | mixed transaction over entity and link mutations either commits atomically or aborts wholly on the first validation, policy, or version failure | FEAT-008 transaction tests |
+| payload | Canonical mutation payloads and response envelopes stay stable across GraphQL, MCP, and HTTP for the same intent, including redaction and operation-hash binding | CONTRACT-005 / CONTRACT-006 and intent tests |
+| PostgreSQL 16 | The 0.4.x pilot line is qualified on PostgreSQL 16 only; no broader PostgreSQL-major claim is made here | release disposition and architecture |
+| graph | graph query and traversal results remain policy-filtered, depth-bounded, and free of hidden N+1 row explosion on pilot data | FEAT-009 / FEAT-015 contract tests |
+| FR-32 | FR-32 remains a read-only, resumable, policy-redacted local replica; offline writes stay parked in FR-33 | FEAT-032 and parking lot |
 
 ## Users and Scope
 
@@ -423,8 +447,8 @@ feature specs without embedding implementation design.
 - **Application UI**: SvelteKit/Svelte 5 with TypeScript and Bun for the admin
   UI under `ui/`.
 - **Storage**: SQLite/libSQL for embedded development and testing;
-  PostgreSQL for server deployments; storage behavior mediated by adapter
-  traits.
+  PostgreSQL 16 for server deployments in the 0.4.x pilot line; storage
+  behavior mediated by adapter traits.
 - **APIs**: Generated GraphQL, MCP tools/resources, CLI, SDK-facing handler
   APIs, and JSON/REST compatibility where needed. Writes remain schema- and
   policy-validated through preview, intent, approval, and commit flows where

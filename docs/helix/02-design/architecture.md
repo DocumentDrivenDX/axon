@@ -156,7 +156,7 @@ to the replica are out of scope (FR-33, deferred).
 |-----------|------------|------------------|---------------|
 | Axon server | Rust, axum + tonic (single `axon` binary, FEAT-028) | Hosts the governed request path; serves GraphQL, MCP, REST, gRPC; stateless — any instance serves any request | HTTP/1.1+2, JSON / GraphQL / MCP, path-based routing (ADR-018) |
 | Embedded Axon | Rust library (same crates, no server) | Same handler path in-process for dev/test/edge | Native Rust traits |
-| Backing store | SQLite/libSQL (embedded) or PostgreSQL 15+ (server) | Durable storage of entities, links, EAV indexes, audit, schemas; replication and failover | SQL over `rusqlite` / `tokio-postgres` (ADR-003) |
+| Backing store | SQLite/libSQL (embedded) or PostgreSQL 16 (server, 0.4.x pilot qualification only) | Durable storage of entities, links, EAV indexes, audit, schemas; replication and failover | SQL over `rusqlite` / `tokio-postgres` (ADR-003) |
 | CDC publisher | `rdkafka` producer inside the server | Tails audit log by cursor, emits Debezium envelopes, at-least-once | Kafka protocol; Confluent Schema Registry façade (ADR-014) |
 | Control plane | Rust (`axon-control-plane`) + PostgreSQL metadata DB | Tenant registry, health snapshots (60 s polling), tenant config, node registry / database placement; never reads entity data | HTTPS, HMAC-signed registration and instance tokens (ADR-017/018) |
 | Admin UI | SvelteKit + Bun + Vite (ADR-006) | Operator console: schemas, policy, intents, audit, tenants | GraphQL against the Axon server |

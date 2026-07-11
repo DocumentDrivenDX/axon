@@ -33,6 +33,7 @@ ddx:
 - The active release target is now documented as Axon 0.4.x pilot, matching the repository's evidence ceiling.
 - The revoked 0.7.1 note remains available as a historical record instead of the active release authority.
 - The version/tag reconciliation is explicit: `Cargo.toml` is `0.4.0`, and the newest tag is `v0.4.0`.
+- The pilot backend qualification is PostgreSQL 16 only; GA remains future work and is not part of this release authority.
 
 ## Required Actions Summary
 
