@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::marker::PhantomData;
 use uuid::Uuid;
 
 /// Default database name for single-tenant deployments.
@@ -116,6 +117,10 @@ impl fmt::Display for CollectionId {
 mod system_seal {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(super) struct Seal;
+}
+
+mod governed_system_seal {
+    pub trait Sealed {}
 }
 
 /// Typed class for reserved Axon-owned collection names.
@@ -240,6 +245,59 @@ impl SystemCollection {
         }
     }
 }
+
+/// Sealed marker for an Axon-owned module's governed system collection.
+pub trait GovernedSystemCollection: governed_system_seal::Sealed {
+    /// The single manifest collection governed by this module.
+    const SYSTEM_COLLECTION: SystemCollection;
+}
+
+/// Marker for the built-in bead/work-item module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeadSystemCollection {}
+
+impl governed_system_seal::Sealed for BeadSystemCollection {}
+
+impl GovernedSystemCollection for BeadSystemCollection {
+    const SYSTEM_COLLECTION: SystemCollection = SystemCollection::beads();
+}
+
+/// Sealed capability granting a module access to its governed system collection.
+///
+/// The target collection is an associated constant on a sealed marker type, not
+/// mutable capability state. External crates can pass the exported bead
+/// capability where Axon exposes one, but they cannot construct a new capability,
+/// implement a new marker, widen it into an all-system capability, or retarget it
+/// to another reserved name.
+#[derive(Debug, PartialEq, Eq)]
+pub struct GovernedSystemCapability<C: GovernedSystemCollection> {
+    _module: PhantomData<fn() -> C>,
+    _seal: system_seal::Seal,
+}
+
+impl<C: GovernedSystemCollection> Clone for GovernedSystemCapability<C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<C: GovernedSystemCollection> Copy for GovernedSystemCapability<C> {}
+
+impl<C: GovernedSystemCollection> GovernedSystemCapability<C> {
+    /// The only system collection addressable through this capability.
+    pub const fn collection(&self) -> SystemCollection {
+        C::SYSTEM_COLLECTION
+    }
+}
+
+/// Capability for the built-in bead/work-item module.
+pub type BeadSystemCapability = GovernedSystemCapability<BeadSystemCollection>;
+
+/// The only governed system capability currently exported by `axon-core`.
+pub const BEAD_SYSTEM_CAPABILITY: BeadSystemCapability = GovernedSystemCapability {
+    _module: PhantomData,
+    _seal: system_seal::Seal,
+};
 
 /// Typed class for audit-addressable subjects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -564,6 +622,65 @@ mod tests {
         assert_eq!(governed, GovernedWriteTx::storage_adapter());
         assert_eq!(migration, MigrationCapability::storage_migration());
         assert_eq!(checkpoint, CheckpointCapability::storage_checkpoint());
+    }
+
+    #[test]
+    fn governed_system_capability_bead_binding_is_manifest_exact() {
+        let capability = BEAD_SYSTEM_CAPABILITY;
+        let collection = capability.collection();
+
+        assert_eq!(collection, SystemCollection::beads());
+        assert_eq!(collection.name(), "__axon_beads__");
+        assert_eq!(collection.class(), SystemCollectionClass::BeadCatalog);
+        assert_eq!(
+            SystemCollection::from_reserved_name(collection.name()),
+            Some(SystemCollection::beads())
+        );
+    }
+
+    #[test]
+    fn governed_system_capability_does_not_target_hidden_physical_stores() {
+        let capability = BEAD_SYSTEM_CAPABILITY;
+        let hidden = [
+            SystemCollection::links(),
+            SystemCollection::links_rev(),
+            SystemCollection::cdc_cursors(),
+        ];
+
+        for collection in hidden {
+            assert_ne!(capability.collection(), collection);
+            assert_ne!(capability.collection().name(), collection.name());
+        }
+    }
+
+    #[test]
+    fn governed_system_capability_does_not_target_virtual_or_legacy_alias_names() {
+        let capability = BEAD_SYSTEM_CAPABILITY;
+        let virtual_or_alias = [
+            SystemCollection::mutation_intents(),
+            SystemCollection::legacy_policies(),
+        ];
+
+        for collection in virtual_or_alias {
+            assert_ne!(capability.collection(), collection);
+            assert_ne!(capability.collection().name(), collection.name());
+        }
+    }
+
+    #[test]
+    fn governed_system_capability_unmanifested_reserved_names_are_unbound() {
+        let capability = BEAD_SYSTEM_CAPABILITY;
+        let unknown_reserved_names = [
+            "__axon_unknown__",
+            "__axon_links_archive__",
+            "__mutation_intents_v2",
+            "_cdc_cursors_shadow",
+        ];
+
+        for name in unknown_reserved_names {
+            assert_ne!(capability.collection().name(), name);
+            assert!(SystemCollection::from_reserved_name(name).is_none());
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, BEAD_SYSTEM_CAPABILITY};
 use axon_schema::schema::CollectionSchema;
 use axon_storage::adapter::StorageAdapter;
 
@@ -207,14 +207,17 @@ pub fn create_bead<S: StorageAdapter>(
         data["acceptance"] = json!(a);
     }
 
-    handler.create_entity_in_system_collection(CreateEntityRequest {
-        collection: bead_collection(),
-        id: EntityId::new(params.id),
-        data: data.clone(),
-        actor: Some("bead-system".into()),
-        audit_metadata: None,
-        attribution: None,
-    })?;
+    handler.create_entity_in_system_collection(
+        BEAD_SYSTEM_CAPABILITY,
+        CreateEntityRequest {
+            collection: bead_collection(),
+            id: EntityId::new(params.id),
+            data: data.clone(),
+            actor: Some("bead-system".into()),
+            audit_metadata: None,
+            attribution: None,
+        },
+    )?;
 
     let mut bead: Bead = serde_json::from_value(data)
         .map_err(|e| AxonError::Storage(format!("bead serialization: {e}")))?;
@@ -264,15 +267,18 @@ pub fn transition_bead<S: StorageAdapter>(
     let mut new_data = entity.data.clone();
     new_data["status"] = json!(new_status);
 
-    handler.update_entity_in_system_collection(UpdateEntityRequest {
-        collection: col,
-        id: eid,
-        data: new_data,
-        expected_version: entity.version,
-        actor: Some("bead-system".into()),
-        audit_metadata: None,
-        attribution: None,
-    })?;
+    handler.update_entity_in_system_collection(
+        BEAD_SYSTEM_CAPABILITY,
+        UpdateEntityRequest {
+            collection: col,
+            id: eid,
+            data: new_data,
+            expected_version: entity.version,
+            actor: Some("bead-system".into()),
+            audit_metadata: None,
+            attribution: None,
+        },
+    )?;
 
     Ok(())
 }
@@ -298,15 +304,18 @@ pub fn add_dependency<S: StorageAdapter>(
         .ok_or_else(|| AxonError::NotFound(format!("bead {dep_id}")))?;
 
     // Check for cycles: if dep_id can already reach bead_id, adding this edge creates a cycle.
-    let reachable = handler.reachable_system_collection(crate::request::ReachableRequest {
-        source_collection: col.clone(),
-        source_id: EntityId::new(dep_id),
-        target_collection: col.clone(),
-        target_id: EntityId::new(bead_id),
-        link_type: Some(DEPENDS_ON_LINK.into()),
-        max_depth: Some(10),
-        direction: TraverseDirection::Forward,
-    })?;
+    let reachable = handler.reachable_system_collection(
+        BEAD_SYSTEM_CAPABILITY,
+        crate::request::ReachableRequest {
+            source_collection: col.clone(),
+            source_id: EntityId::new(dep_id),
+            target_collection: col.clone(),
+            target_id: EntityId::new(bead_id),
+            link_type: Some(DEPENDS_ON_LINK.into()),
+            max_depth: Some(10),
+            direction: TraverseDirection::Forward,
+        },
+    )?;
 
     if reachable.reachable {
         return Err(AxonError::InvalidOperation(format!(
@@ -314,16 +323,19 @@ pub fn add_dependency<S: StorageAdapter>(
         )));
     }
 
-    handler.create_link_in_system_collection(CreateLinkRequest {
-        source_collection: col.clone(),
-        source_id: EntityId::new(bead_id),
-        target_collection: col,
-        target_id: EntityId::new(dep_id),
-        link_type: DEPENDS_ON_LINK.into(),
-        metadata: json!(null),
-        actor: Some("bead-system".into()),
-        attribution: None,
-    })?;
+    handler.create_link_in_system_collection(
+        BEAD_SYSTEM_CAPABILITY,
+        CreateLinkRequest {
+            source_collection: col.clone(),
+            source_id: EntityId::new(bead_id),
+            target_collection: col,
+            target_id: EntityId::new(dep_id),
+            link_type: DEPENDS_ON_LINK.into(),
+            metadata: json!(null),
+            actor: Some("bead-system".into()),
+            attribution: None,
+        },
+    )?;
 
     Ok(())
 }
@@ -333,11 +345,14 @@ pub fn list_beads<S: StorageAdapter>(
     handler: &AxonHandler<S>,
     status_filter: Option<&str>,
 ) -> Result<Vec<Bead>, AxonError> {
-    let resp = handler.query_entities_in_system_collection(QueryEntitiesRequest {
-        collection: bead_collection(),
-        limit: Some(1000),
-        ..Default::default()
-    })?;
+    let resp = handler.query_entities_in_system_collection(
+        BEAD_SYSTEM_CAPABILITY,
+        QueryEntitiesRequest {
+            collection: bead_collection(),
+            limit: Some(1000),
+            ..Default::default()
+        },
+    )?;
 
     let mut beads: Vec<Bead> = Vec::new();
     for entity in &resp.entities {
@@ -362,14 +377,17 @@ pub fn ready_queue<S: StorageAdapter>(handler: &AxonHandler<S>) -> Result<Vec<Be
     let mut ready = Vec::new();
     for bead in pending {
         // Find all dependencies (outbound depends-on links).
-        let deps = handler.traverse_system_collection(TraverseRequest {
-            collection: col.clone(),
-            id: EntityId::new(&bead.id),
-            link_type: Some(DEPENDS_ON_LINK.into()),
-            max_depth: Some(1),
-            direction: TraverseDirection::Forward,
-            hop_filter: None,
-        })?;
+        let deps = handler.traverse_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            TraverseRequest {
+                collection: col.clone(),
+                id: EntityId::new(&bead.id),
+                link_type: Some(DEPENDS_ON_LINK.into()),
+                max_depth: Some(1),
+                direction: TraverseDirection::Forward,
+                hop_filter: None,
+            },
+        )?;
 
         let all_deps_done = deps
             .entities
@@ -389,14 +407,17 @@ pub fn dependency_tree<S: StorageAdapter>(
     bead_id: &str,
 ) -> Result<Vec<Bead>, AxonError> {
     let col = bead_collection();
-    let resp = handler.traverse_system_collection(TraverseRequest {
-        collection: col,
-        id: EntityId::new(bead_id),
-        link_type: Some(DEPENDS_ON_LINK.into()),
-        max_depth: Some(10),
-        direction: TraverseDirection::Forward,
-        hop_filter: None,
-    })?;
+    let resp = handler.traverse_system_collection(
+        BEAD_SYSTEM_CAPABILITY,
+        TraverseRequest {
+            collection: col,
+            id: EntityId::new(bead_id),
+            link_type: Some(DEPENDS_ON_LINK.into()),
+            max_depth: Some(10),
+            direction: TraverseDirection::Forward,
+            hop_filter: None,
+        },
+    )?;
 
     let mut beads = Vec::new();
     for entity in &resp.entities {
@@ -455,14 +476,17 @@ pub fn import_beads<S: StorageAdapter>(
             obj.remove("id");
         }
 
-        handler.create_entity_in_system_collection(CreateEntityRequest {
-            collection: col.clone(),
-            id: EntityId::new(&bead.id),
-            data: entity_data,
-            actor: Some("bead-import".into()),
-            audit_metadata: None,
-            attribution: None,
-        })?;
+        handler.create_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new(&bead.id),
+                data: entity_data,
+                actor: Some("bead-import".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )?;
         imported += 1;
     }
 

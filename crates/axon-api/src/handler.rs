@@ -57,8 +57,9 @@ use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::CallerIdentity;
 use axon_core::error::{AxonError, PolicyDenial};
 use axon_core::id::{
-    CollectionId, EntityId, Namespace, QualifiedCollectionId, SystemCollection,
-    SystemCollectionClass, DEFAULT_DATABASE, DEFAULT_SCHEMA,
+    CollectionId, EntityId, GovernedSystemCapability, GovernedSystemCollection, Namespace,
+    QualifiedCollectionId, SystemCollection, SystemCollectionClass, DEFAULT_DATABASE,
+    DEFAULT_SCHEMA,
 };
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
@@ -283,12 +284,27 @@ fn audit_operation_filter(operation: Option<&str>) -> Result<Option<MutationType
     Ok(operation)
 }
 
-fn ensure_system_collection_capability(collection: &CollectionId) -> Result<(), AxonError> {
+fn ensure_manifest_system_collection(collection: &CollectionId) -> Result<(), AxonError> {
     if SystemCollection::from_collection_name(collection.as_str()).is_some() {
         return Ok(());
     }
     Err(AxonError::InvalidArgument(format!(
         "collection '{}' is not an Axon system collection",
+        collection
+    )))
+}
+
+fn ensure_governed_system_capability<C: GovernedSystemCollection>(
+    capability: GovernedSystemCapability<C>,
+    collection: &CollectionId,
+) -> Result<(), AxonError> {
+    let allowed = capability.collection();
+    if collection.as_str() == allowed.name() {
+        return Ok(());
+    }
+    Err(AxonError::InvalidArgument(format!(
+        "governed system capability for '{}' cannot address collection '{}'",
+        allowed.name(),
         collection
     )))
 }
@@ -4527,11 +4543,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.create_entity_inner_unchecked(req, caller)
     }
 
-    pub(crate) fn create_entity_in_system_collection(
+    pub(crate) fn create_entity_in_system_collection<C: GovernedSystemCollection>(
         &mut self,
+        capability: GovernedSystemCapability<C>,
         req: CreateEntityRequest,
     ) -> Result<CreateEntityResponse, AxonError> {
-        ensure_system_collection_capability(&req.collection)?;
+        ensure_governed_system_capability(capability, &req.collection)?;
         self.create_entity_inner_unchecked(req, None)
     }
 
@@ -5042,11 +5059,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.update_entity_inner_unchecked(req, caller)
     }
 
-    pub(crate) fn update_entity_in_system_collection(
+    pub(crate) fn update_entity_in_system_collection<C: GovernedSystemCollection>(
         &mut self,
+        capability: GovernedSystemCapability<C>,
         req: UpdateEntityRequest,
     ) -> Result<UpdateEntityResponse, AxonError> {
-        ensure_system_collection_capability(&req.collection)?;
+        ensure_governed_system_capability(capability, &req.collection)?;
         self.update_entity_inner_unchecked(req, None)
     }
 
@@ -5497,11 +5515,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.query_entities_with_read_context_unchecked(req, caller, attribution)
     }
 
-    pub(crate) fn query_entities_in_system_collection(
+    pub(crate) fn query_entities_in_system_collection<C: GovernedSystemCollection>(
         &self,
+        capability: GovernedSystemCapability<C>,
         req: QueryEntitiesRequest,
     ) -> Result<QueryEntitiesResponse, AxonError> {
-        ensure_system_collection_capability(&req.collection)?;
+        ensure_governed_system_capability(capability, &req.collection)?;
         self.query_entities_with_read_context_unchecked(req, None, None)
     }
 
@@ -6077,10 +6096,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         authorize_system_audit_query(caller, &req.tenant_id, &req.database)?;
 
         if let Some(collection) = &req.query.collection {
-            ensure_system_collection_capability(collection)?;
+            ensure_manifest_system_collection(collection)?;
         }
         for collection in &req.query.collection_ids {
-            ensure_system_collection_capability(collection)?;
+            ensure_manifest_system_collection(collection)?;
         }
 
         let requested_limit = req.query.limit.unwrap_or(HANDLER_AUDIT_DEFAULT_PAGE_SIZE);
@@ -8525,12 +8544,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.create_link_inner(req)
     }
 
-    pub(crate) fn create_link_in_system_collection(
+    pub(crate) fn create_link_in_system_collection<C: GovernedSystemCollection>(
         &mut self,
+        capability: GovernedSystemCapability<C>,
         req: CreateLinkRequest,
     ) -> Result<CreateLinkResponse, AxonError> {
-        ensure_system_collection_capability(&req.source_collection)?;
-        ensure_system_collection_capability(&req.target_collection)?;
+        ensure_governed_system_capability(capability, &req.source_collection)?;
+        ensure_governed_system_capability(capability, &req.target_collection)?;
         self.create_link_inner(req)
     }
 
@@ -8800,11 +8820,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.traverse_with_read_context_unchecked(req, caller, attribution, false)
     }
 
-    pub(crate) fn traverse_system_collection(
+    pub(crate) fn traverse_system_collection<C: GovernedSystemCollection>(
         &self,
+        capability: GovernedSystemCapability<C>,
         req: TraverseRequest,
     ) -> Result<TraverseResponse, AxonError> {
-        ensure_system_collection_capability(&req.collection)?;
+        ensure_governed_system_capability(capability, &req.collection)?;
         self.traverse_with_read_context_unchecked(req, None, None, true)
     }
 
@@ -8970,12 +8991,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.reachable_with_read_context_unchecked(req, caller, attribution, false)
     }
 
-    pub(crate) fn reachable_system_collection(
+    pub(crate) fn reachable_system_collection<C: GovernedSystemCollection>(
         &self,
+        capability: GovernedSystemCapability<C>,
         req: ReachableRequest,
     ) -> Result<ReachableResponse, AxonError> {
-        ensure_system_collection_capability(&req.source_collection)?;
-        ensure_system_collection_capability(&req.target_collection)?;
+        ensure_governed_system_capability(capability, &req.source_collection)?;
+        ensure_governed_system_capability(capability, &req.target_collection)?;
         self.reachable_with_read_context_unchecked(req, None, None, true)
     }
 
@@ -11048,7 +11070,9 @@ mod tests {
         AuthError, CredentialMetadata, GrantedDatabase, Grants, Op, Role, TenantId, TenantRole,
         UserId,
     };
-    use axon_core::id::{CollectionId, EntityId, Namespace, SystemCollection};
+    use axon_core::id::{
+        CollectionId, EntityId, Namespace, SystemCollection, BEAD_SYSTEM_CAPABILITY,
+    };
     use axon_schema::schema::{
         Cardinality, CollectionSchema, CollectionView, EsfDocument, IndexDef, IndexType,
         LinkTypeDef, NamedQueryDef,
@@ -11757,6 +11781,47 @@ mod tests {
     }
 
     #[test]
+    fn governed_system_generic_access_rejected_before_storage() {
+        let mut h = AxonHandler::new(LookupCountingStorageAdapter::default());
+        let beads = CollectionId::new(SystemCollection::beads().name());
+        let id = EntityId::new("bead-1");
+
+        let create_err = h
+            .create_entity(CreateEntityRequest {
+                collection: beads.clone(),
+                id: id.clone(),
+                data: json!({"title": "reserved"}),
+                actor: Some("app".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("generic create must reject __axon_beads__");
+        assert_reserved_namespace_guard_error(create_err, beads.as_str(), OP_ENTITY);
+
+        let get_err = h
+            .get_entity(GetEntityRequest {
+                collection: beads.clone(),
+                id: id.clone(),
+            })
+            .expect_err("generic get must reject __axon_beads__");
+        assert_reserved_namespace_guard_error(get_err, beads.as_str(), OP_ENTITY);
+
+        let query_err = h
+            .query_entities(QueryEntitiesRequest {
+                collection: beads.clone(),
+                ..Default::default()
+            })
+            .expect_err("generic query must reject __axon_beads__");
+        assert_reserved_namespace_guard_error(query_err, beads.as_str(), OP_QUERY);
+
+        assert_eq!(
+            h.storage_ref().storage_calls(),
+            0,
+            "generic __axon_beads__ rejection must happen before storage access"
+        );
+    }
+
+    #[test]
     fn generic_system_rows_unobservable_forward_reverse_index_checkpoint() {
         let mut h = handler();
         let public = CollectionId::new("public_system_scan_anchor");
@@ -11974,31 +12039,45 @@ mod tests {
         assert!(neighbors.groups.is_empty());
 
         let typed_checkpoint_query = h
-            .query_entities_in_system_collection(QueryEntitiesRequest {
-                collection: checkpoint.clone(),
-                filter: Some(FilterNode::Field(FieldFilter {
-                    field: "sink".into(),
-                    op: FilterOp::Eq,
-                    value: json!("replica"),
-                })),
-                ..Default::default()
-            })
-            .expect("typed system query should still see checkpoint/index rows");
-        assert_eq!(typed_checkpoint_query.total_count, 1);
-        assert_eq!(typed_checkpoint_query.entities[0].id, checkpoint_id);
+            .query_entities_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                QueryEntitiesRequest {
+                    collection: checkpoint.clone(),
+                    filter: Some(FilterNode::Field(FieldFilter {
+                        field: "sink".into(),
+                        op: FilterOp::Eq,
+                        value: json!("replica"),
+                    })),
+                    ..Default::default()
+                },
+            )
+            .expect_err("bead capability must not query checkpoint rows");
+        assert!(typed_checkpoint_query
+            .to_string()
+            .contains("__axon_beads__"));
+        assert!(typed_checkpoint_query
+            .to_string()
+            .contains(checkpoint.as_str()));
 
         let typed_system_traversal = h
-            .traverse_system_collection(TraverseRequest {
-                collection: checkpoint,
-                id: typed_checkpoint_query.entities[0].id.clone(),
-                link_type: Some(link_type.into()),
-                max_depth: Some(1),
-                direction: TraverseDirection::Forward,
-                hop_filter: None,
-            })
-            .expect("typed system traversal should still use raw link rows");
-        assert_eq!(typed_system_traversal.entities.len(), 1);
-        assert_eq!(typed_system_traversal.entities[0].id, target_id);
+            .traverse_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                TraverseRequest {
+                    collection: checkpoint.clone(),
+                    id: checkpoint_id,
+                    link_type: Some(link_type.into()),
+                    max_depth: Some(1),
+                    direction: TraverseDirection::Forward,
+                    hop_filter: None,
+                },
+            )
+            .expect_err("bead capability must not traverse checkpoint rows");
+        assert!(typed_system_traversal
+            .to_string()
+            .contains("__axon_beads__"));
+        assert!(typed_system_traversal
+            .to_string()
+            .contains(checkpoint.as_str()));
     }
 
     fn audit_grants(database: &str, ops: Vec<Op>) -> Grants {
