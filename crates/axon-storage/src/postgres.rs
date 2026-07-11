@@ -19,6 +19,17 @@ use crate::adapter::{
     filter_audit_entries_for_query, prefix_successor, CompoundKey, IndexValue, StorageAdapter,
 };
 
+pub const POSTGRES_MUTATING_ROUTINE_NAME: &str = "axon_record_mutation_intent";
+pub const POSTGRES_MUTATING_ROUTINE_SIGNATURE: &str =
+    "axon_record_mutation_intent(TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, JSONB)";
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PostgresTenantRoles {
+    pub runtime: String,
+    pub capability: String,
+    pub migration: String,
+}
+
 fn pg_connect_options(params: &str) -> Result<PgConnectOptions, AxonError> {
     if params.starts_with("postgres://") || params.starts_with("postgresql://") {
         return PgConnectOptions::from_str(params)
@@ -269,6 +280,7 @@ impl PostgresStorageAdapter {
             )
             .execute(&self.pool),
         )?;
+        self.ensure_postgres_routines()?;
         self.block_on(
             sqlx::raw_sql(
                 "CREATE INDEX IF NOT EXISTS idx_mutation_intents_pending
@@ -314,6 +326,63 @@ impl PostgresStorageAdapter {
         )?;
         self.ensure_namespace_catalog_tables()?;
         self.ensure_default_namespace()
+    }
+
+    fn ensure_postgres_routines(&self) -> Result<(), AxonError> {
+        self.block_on(
+            sqlx::raw_sql(
+                "CREATE OR REPLACE FUNCTION axon_record_mutation_intent(
+                    p_tenant_id TEXT,
+                    p_database_id TEXT,
+                    p_intent_id TEXT,
+                    p_decision TEXT,
+                    p_approval_state TEXT,
+                    p_expires_at_ns BIGINT,
+                    p_intent_json JSONB
+                )
+                RETURNS void
+                LANGUAGE SQL
+                SECURITY DEFINER
+                SET search_path = public
+                AS '
+                    INSERT INTO mutation_intents (
+                        tenant_id,
+                        database_id,
+                        intent_id,
+                        decision,
+                        approval_state,
+                        expires_at_ns,
+                        intent_json
+                    )
+                    VALUES (
+                        p_tenant_id,
+                        p_database_id,
+                        p_intent_id,
+                        p_decision,
+                        p_approval_state,
+                        p_expires_at_ns,
+                        p_intent_json
+                    )
+                    ON CONFLICT (tenant_id, database_id, intent_id)
+                    DO UPDATE SET
+                        decision = EXCLUDED.decision,
+                        approval_state = EXCLUDED.approval_state,
+                        expires_at_ns = EXCLUDED.expires_at_ns,
+                        intent_json = EXCLUDED.intent_json
+                ';
+                REVOKE ALL ON FUNCTION axon_record_mutation_intent(
+                    TEXT,
+                    TEXT,
+                    TEXT,
+                    TEXT,
+                    TEXT,
+                    BIGINT,
+                    JSONB
+                ) FROM PUBLIC;",
+            )
+            .execute(&self.pool),
+        )?;
+        Ok(())
     }
 
     fn collection_exists_in_namespace(
@@ -3380,6 +3449,19 @@ fn validate_pg_db_name(name: &str) -> Result<(), AxonError> {
     Ok(())
 }
 
+pub fn tenant_postgres_roles(tenant_db_name: &str) -> Result<PostgresTenantRoles, AxonError> {
+    validate_pg_db_name(tenant_db_name)?;
+    Ok(PostgresTenantRoles {
+        runtime: format!("axon_{tenant_db_name}_runtime"),
+        capability: format!("axon_{tenant_db_name}_capability"),
+        migration: format!("axon_{tenant_db_name}_migration"),
+    })
+}
+
+fn quote_pg_ident(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
 /// Derive a per-tenant DSN from a superadmin DSN by replacing/adding the
 /// `dbname` key.
 ///
@@ -3423,6 +3505,84 @@ pub fn tenant_dsn(superadmin_dsn: &str, tenant_db_name: &str) -> String {
     }
 }
 
+async fn create_postgres_tenant_roles(
+    pool: &sqlx::PgPool,
+    roles: &PostgresTenantRoles,
+) -> Result<(), AxonError> {
+    use sqlx::Row;
+
+    for role in [&roles.runtime, &roles.capability, &roles.migration] {
+        let row = sqlx::query("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)")
+            .bind(role)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let exists: bool = row.get(0);
+        if !exists {
+            sqlx::raw_sql(&format!("CREATE ROLE {} NOLOGIN", quote_pg_ident(role)))
+                .execute(pool)
+                .await
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn drop_postgres_tenant_roles(
+    pool: &sqlx::PgPool,
+    roles: &PostgresTenantRoles,
+) -> Result<(), AxonError> {
+    for role in [&roles.runtime, &roles.capability, &roles.migration] {
+        sqlx::raw_sql(&format!("DROP ROLE IF EXISTS {}", quote_pg_ident(role)))
+            .execute(pool)
+            .await
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+    }
+
+    Ok(())
+}
+
+fn apply_postgres_routine_privileges(
+    tenant_dsn: &str,
+    roles: &PostgresTenantRoles,
+) -> Result<(), AxonError> {
+    let options = pg_connect_options(tenant_dsn)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+    rt.block_on(async {
+        let pool = sqlx::PgPool::connect_with(options)
+            .await
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let runtime = quote_pg_ident(&roles.runtime);
+        let capability = quote_pg_ident(&roles.capability);
+        let migration = quote_pg_ident(&roles.migration);
+        let statements = [
+            format!("GRANT USAGE ON SCHEMA public TO {runtime}"),
+            format!("GRANT USAGE ON SCHEMA public TO {capability}"),
+            format!("GRANT USAGE ON SCHEMA public TO {migration}"),
+            format!("REVOKE ALL ON FUNCTION {POSTGRES_MUTATING_ROUTINE_SIGNATURE} FROM {runtime}"),
+            format!(
+                "GRANT EXECUTE ON FUNCTION {POSTGRES_MUTATING_ROUTINE_SIGNATURE} TO {capability}"
+            ),
+            format!(
+                "GRANT EXECUTE ON FUNCTION {POSTGRES_MUTATING_ROUTINE_SIGNATURE} TO {migration}"
+            ),
+        ];
+
+        for statement in statements {
+            sqlx::raw_sql(&statement)
+                .execute(&pool)
+                .await
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
+
+        Ok(())
+    })
+}
+
 /// Create a physical PostgreSQL database named `axon_{name}` using a
 /// superadmin connection.
 ///
@@ -3440,6 +3600,7 @@ pub fn tenant_dsn(superadmin_dsn: &str, tenant_db_name: &str) -> String {
 pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(), AxonError> {
     validate_pg_db_name(name)?;
     let full_name = format!("axon_{name}");
+    let roles = tenant_postgres_roles(name)?;
     let options = pg_connect_options(superadmin_dsn)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -3461,6 +3622,7 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
                 "PostgreSQL database '{full_name}'"
             )));
         }
+        create_postgres_tenant_roles(&pool, &roles).await?;
         // CREATE DATABASE cannot run inside a transaction; use raw_sql to
         // avoid the implicit transaction that execute() would open.
         sqlx::raw_sql(&format!("CREATE DATABASE \"{full_name}\""))
@@ -3468,7 +3630,12 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
-    })
+    })?;
+
+    let tenant = tenant_dsn(superadmin_dsn, name);
+    let adapter = PostgresStorageAdapter::connect(&tenant)?;
+    drop(adapter);
+    apply_postgres_routine_privileges(&tenant, &roles)
 }
 
 /// Drop the physical PostgreSQL database named `axon_{name}`.
@@ -3484,6 +3651,7 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
 pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(), AxonError> {
     validate_pg_db_name(name)?;
     let full_name = format!("axon_{name}");
+    let roles = tenant_postgres_roles(name)?;
     let options = pg_connect_options(superadmin_dsn)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -3509,6 +3677,7 @@ pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result
             .execute(&pool)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
+        drop_postgres_tenant_roles(&pool, &roles).await?;
         Ok(())
     })
 }

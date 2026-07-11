@@ -1,0 +1,28 @@
+{
+  "sql_sources": [
+    {
+      "path": "schema.sql",
+      "enclosing_function": "<migration>",
+      "kind": "migration"
+    }
+  ],
+  "governed_tables": [],
+  "governed_routines": [
+    "unsafe_mutator"
+  ],
+  "routine_classifications": [],
+  "records": [
+    {
+      "source_file": "schema.sql",
+      "enclosing_function": "<migration>",
+      "touched_tables": [],
+      "touched_routines": [
+        "unsafe_mutator"
+      ],
+      "capability": "routine:unsafe_mutator:manage",
+      "mutation_class": "create_function",
+      "co_commit": "fixture",
+      "fault_test": "fixture"
+    }
+  ]
+}

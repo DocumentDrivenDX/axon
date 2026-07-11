@@ -1,0 +1,1 @@
+CREATE FUNCTION unsafe_mutator() RETURNS void LANGUAGE SQL AS 'SELECT 1';

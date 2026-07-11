@@ -45,6 +45,7 @@ struct DmlBoundaryManifest {
     sql_sources: Vec<DmlSqlSource>,
     governed_tables: Vec<String>,
     governed_routines: Vec<String>,
+    routine_classifications: Vec<DmlRoutineClassification>,
     records: Vec<DmlRecord>,
     dynamic_sql_allowances: Vec<DmlDynamicSqlAllowance>,
     excluded_functions: Vec<DmlExcludedFunction>,
@@ -67,6 +68,12 @@ struct DmlRecord {
     mutation_class: String,
     co_commit: String,
     fault_test: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DmlRoutineClassification {
+    name: String,
+    class: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,10 +391,34 @@ fn validate_dml_boundary_manifest(manifest: &Manifest, repo: &Path) -> Result<()
 
     let governed_tables: BTreeSet<String> = dml.governed_tables.iter().cloned().collect();
     let governed_routines: BTreeSet<String> = dml.governed_routines.iter().cloned().collect();
+    let routine_classes: BTreeMap<String, String> = dml
+        .routine_classifications
+        .iter()
+        .map(|routine| (routine.name.clone(), routine.class.clone()))
+        .collect();
     for table in &governed_tables {
         if !allowed_tables.contains(table) {
             failures.push(format!(
                 "DML governed table {table} is not a physical object, raw target, or migration exception"
+            ));
+        }
+    }
+    for routine in &governed_routines {
+        if !routine_classes.contains_key(routine) {
+            failures.push(format!(
+                "DML governed routine {routine} is missing routine classification"
+            ));
+        }
+    }
+    for (routine, class) in &routine_classes {
+        if !governed_routines.contains(routine) {
+            failures.push(format!(
+                "DML routine classification {routine} does not match a governed routine"
+            ));
+        }
+        if !matches!(class.as_str(), "read_only" | "mutating" | "migration_only") {
+            failures.push(format!(
+                "DML routine classification {routine} has invalid class {class}"
             ));
         }
     }

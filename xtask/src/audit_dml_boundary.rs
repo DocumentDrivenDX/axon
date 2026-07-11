@@ -55,6 +55,7 @@ pub fn run_manifest(manifest_path: &Path) -> Result<AuditReport, AuditError> {
             .iter()
             .filter_map(ExcludedFunction::validate),
     );
+    findings.extend(validate_routine_classifications(&manifest));
 
     for source in &manifest.rust_sources {
         let path = root.join(source);
@@ -207,6 +208,8 @@ struct AuditManifest {
     #[serde(default)]
     governed_routines: Vec<String>,
     #[serde(default)]
+    routine_classifications: Vec<RoutineClassification>,
+    #[serde(default)]
     records: Vec<CheckedRecord>,
     #[serde(default)]
     dynamic_sql_allowances: Vec<DynamicSqlAllowance>,
@@ -240,6 +243,30 @@ struct AuditManifestFile {
     dml_boundary: Option<AuditManifest>,
     #[serde(flatten)]
     manifest: AuditManifest,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RoutineClassification {
+    name: String,
+    class: RoutineClass,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum RoutineClass {
+    ReadOnly,
+    Mutating,
+    MigrationOnly,
+}
+
+impl Display for RoutineClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReadOnly => f.write_str("read_only"),
+            Self::Mutating => f.write_str("mutating"),
+            Self::MigrationOnly => f.write_str("migration_only"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -353,6 +380,64 @@ impl GovernedSet {
         self.tables.iter().any(|table| lower.contains(table))
             || self.routines.iter().any(|routine| lower.contains(routine))
     }
+}
+
+fn validate_routine_classifications(manifest: &AuditManifest) -> Vec<AuditFinding> {
+    let site = SourceSite {
+        file: "manifest".to_owned(),
+        line: 0,
+        enclosing_function: "manifest".to_owned(),
+        entrypoint: "routine_classifications".to_owned(),
+    };
+    let governed: HashSet<String> = manifest
+        .governed_routines
+        .iter()
+        .map(|routine| normalize_identifier(routine))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut findings = Vec::new();
+
+    for classification in &manifest.routine_classifications {
+        let routine = normalize_identifier(&classification.name);
+        if routine.is_empty() {
+            findings.push(AuditFinding {
+                site: site.clone(),
+                message: format!(
+                    "{} routine classification is missing a routine name",
+                    classification.class
+                ),
+            });
+            continue;
+        }
+        if !seen.insert(routine.clone()) {
+            findings.push(AuditFinding {
+                site: site.clone(),
+                message: format!("duplicate routine classification for {routine}"),
+            });
+        }
+        if !governed.contains(&routine) {
+            findings.push(AuditFinding {
+                site: site.clone(),
+                message: format!(
+                    "routine classification for {routine} does not match a governed routine"
+                ),
+            });
+        }
+    }
+
+    for routine in governed {
+        if !seen.contains(&routine) {
+            findings.push(AuditFinding {
+                site: site.clone(),
+                message: format!(
+                    "governed routine {routine} is missing routine classification \
+                     (read_only, mutating, or migration_only)"
+                ),
+            });
+        }
+    }
+
+    findings
 }
 
 #[derive(Debug, Clone)]
@@ -1367,6 +1452,23 @@ mod tests {
     }
 
     #[test]
+    fn audit_dml_boundary_rejects_unclassified_routines() {
+        let report = run_manifest(&fixture_manifest("unclassified_routine"))
+            .expect("unclassified routine fixture");
+        assert!(
+            !report.is_success(),
+            "expected unclassified routine fixture to fail the audit"
+        );
+
+        let rendered = report.to_string();
+        assert!(
+            rendered.contains("unsafe_mutator")
+                && rendered.contains("missing routine classification"),
+            "missing unclassified routine finding:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn audit_dml_boundary_repository_inventory() {
         let report = run_manifest(&repository_manifest()).expect("repository audit");
         assert!(
@@ -1384,6 +1486,13 @@ mod tests {
             "apply_auth_migrations_sqlite",
             "create_table",
             "table:tenants:create_table",
+        );
+        assert_record(
+            &report.records,
+            "crates/axon-storage/src/postgres.rs",
+            "ensure_postgres_routines",
+            "create_function",
+            "routine:axon_record_mutation_intent:manage",
         );
         assert_record(
             &report.records,

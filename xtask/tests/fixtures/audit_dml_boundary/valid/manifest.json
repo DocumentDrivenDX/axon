@@ -28,6 +28,20 @@
     "audit_entity_mutation",
     "refresh_entity_projection"
   ],
+  "routine_classifications": [
+    {
+      "name": "enforce_entity_write",
+      "class": "migration_only"
+    },
+    {
+      "name": "audit_entity_mutation",
+      "class": "mutating"
+    },
+    {
+      "name": "refresh_entity_projection",
+      "class": "mutating"
+    }
+  ],
   "records": [
     {
       "source_file": "src/entrypoints.rs",

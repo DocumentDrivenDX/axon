@@ -367,8 +367,28 @@
       "user_identities",
       "users"
     ],
-    "governed_routines": [],
+    "governed_routines": [
+      "axon_record_mutation_intent"
+    ],
+    "routine_classifications": [
+      {
+        "name": "axon_record_mutation_intent",
+        "class": "mutating"
+      }
+    ],
     "records": [
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "ensure_postgres_routines",
+        "touched_tables": [],
+        "touched_routines": [
+          "axon_record_mutation_intent"
+        ],
+        "capability": "routine:axon_record_mutation_intent:manage",
+        "mutation_class": "create_function",
+        "co_commit": "axon-gap-closure-2a25d24b",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_rejects_unclassified_routines"
+      },
       {
         "source_file": "crates/axon-storage/src/auth_schema.rs",
         "enclosing_function": "apply_auth_migrations_sqlite",
@@ -2198,6 +2218,13 @@
         "reason": "SELECT over entity_compound_index has an optional upper-bound predicate assembled from a fixed fragment; no dynamic identifier is introduced"
       },
       {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "apply_postgres_routine_privileges",
+        "entrypoint": "sqlx::raw_sql",
+        "allowance_class": "routine_privilege_ddl",
+        "reason": "routine EXECUTE privilege statements are assembled from validated tenant role identifiers and fixed governed routine signatures"
+      },
+      {
         "source_file": "crates/axon-storage/src/sqlite.rs",
         "enclosing_function": "table_info",
         "entrypoint": "sqlx::query",
@@ -2229,6 +2256,16 @@
         "source_file": "crates/axon-storage/src/postgres.rs",
         "enclosing_function": "deprovision_postgres_database",
         "reason": "physical PostgreSQL database administration is outside the governed table/routine DML boundary"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "create_postgres_tenant_roles",
+        "reason": "physical PostgreSQL role administration is outside the governed table/routine DML boundary"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_postgres_tenant_roles",
+        "reason": "physical PostgreSQL role administration is outside the governed table/routine DML boundary"
       },
       {
         "source_file": "crates/axon-storage/src/sqlite.rs",
