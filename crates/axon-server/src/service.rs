@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::auth::{AuthContext, AuthError, Identity};
 use crate::collection_listing::{filter_audit_entries_to_database, list_collections_for_database};
-use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
     CreateNamespaceRequest, DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest,
@@ -13,6 +12,7 @@ use axon_api::request::{
 };
 use axon_api::response::ReservedNamespaceError;
 use axon_api::transaction::Transaction;
+use axon_api::{handler::AxonHandler, AxonBuilder};
 use axon_core::auth::{CallerIdentity as CoreCallerIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE};
@@ -305,7 +305,7 @@ impl<S: StorageAdapter> AxonServiceImpl<S> {
 impl AxonServiceImpl<MemoryStorageAdapter> {
     /// Create a service backed by an in-memory storage adapter.
     pub fn new_in_memory() -> Self {
-        Self::from_handler(AxonHandler::new(MemoryStorageAdapter::default()))
+        Self::from_handler(AxonHandler::new(AxonBuilder::memory_storage()))
     }
 }
 

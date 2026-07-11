@@ -12,7 +12,6 @@ mod init;
 mod service;
 
 use anyhow::{Context, Result};
-use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
     CreateNamespaceRequest, DeleteCollectionTemplateRequest, DeleteEntityRequest,
@@ -23,6 +22,7 @@ use axon_api::request::{
     RevalidateRequest, RevertEntityRequest, RollbackEntityRequest, RollbackEntityTarget,
     RollbackTransactionRequest, TraverseRequest, UpdateEntityRequest,
 };
+use axon_api::{handler::AxonHandler, AxonBuilder};
 use axon_core::auth::CallerIdentity;
 use axon_core::id::{CollectionId, EntityId};
 use axon_schema::schema::CollectionSchema;
@@ -920,7 +920,9 @@ pub fn run(cli: Cli) -> Result<()> {
             .to_string_lossy()
             .into_owned()
     });
-    let storage = SqliteStorageAdapter::open(&db_path)
+    let storage = AxonBuilder::new()
+        .sqlite_path(&db_path)
+        .build_sqlite_storage()
         .with_context(|| format!("failed to open database: {db_path}"))?;
     let mut handler = AxonHandler::new(storage);
 
