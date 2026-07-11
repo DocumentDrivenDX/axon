@@ -4,10 +4,10 @@ ddx:
   depends_on:
     - helix.prd
   review:
-    self_hash: 12ccce87edac4ae9a5f5e74c9008be07b644d10cfffc9562df51061e00e03574
+    self_hash: fef81eac3824d481ea889c8402ec5f2d7e6ecfa7f396186f18fa49ed8319a1cf
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T02:26:23Z"
 ---
 # Feature Specification: FEAT-001 — Collections
 
@@ -57,7 +57,7 @@ A developer or agent creates a named, schema-bound collection in a single comman
 - **COL-04**. Axon MUST create a named collection bound to a schema. The schema is validated (FEAT-002) before the collection is created, and creation is recorded in the audit log (FEAT-003).
 - **COL-05**. Axon MUST support renaming a collection without downtime and without rewriting entity data; existing audit records and references remain valid via the stable identity (COL-02, ADR-010). Renames are recorded in the audit log.
 - **COL-06**. Axon MUST drop a collection and its entities only with explicit confirmation. Audit records for the collection and its entities MUST be retained, and the drop event MUST be audited including the entity count at drop time.
-- **COL-07**. Schema binding is mandatory: a collection MUST NOT exist without a schema. Schemaless collections are not supported.
+- **COL-07**. Schema binding is mandatory: a collection MUST NOT exist without a schema. Schemaless collections are not supported. The internal contract is fail-closed for governed collection-addressable state.
 
 #### Discovery
 
@@ -98,7 +98,7 @@ A developer or agent creates a named, schema-bound collection in a single comman
 ## Constraints and Assumptions
 
 ### Constraints
-- Schema binding is required — no schemaless collections.
+- Schema binding is required — no schemaless collections; governed collection-addressable state fails closed without an active schema.
 - Database-level isolation: collections in different databases are fully independent.
 - Collections exist within a schema namespace within a database (FEAT-014, ADR-011).
 

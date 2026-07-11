@@ -7,13 +7,13 @@ ddx:
     - FEAT-021
     - FEAT-003
   review:
-    self_hash: 7f517e76111e7aad2b8d174cc01ec03d521c5163e08633ae4c5947a1ca4f1ab3
+    self_hash: 13e5724753d3343edd73481dd9458874fd1c3c676be5005a53022e77e751da39
     deps:
-      ADR-014: d0be4bb4fa8f98ca5e4518b4b1c0bc4a46882a42098d38931c6d5b649cbb9655
-      ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
+      ADR-014: 6b9f2190081dd7dae202942b25247ee638b0359a4ead7109987b5bc4440c7347
+      ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
       FEAT-003: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
       FEAT-021: 6165a271de0b5e5c978f97ab9393596e651a680c51db80153fb85167ed93d993
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T02:26:23Z"
 ---
 
 # Contract
@@ -145,7 +145,7 @@ Served on a configurable port (default 8081), as a facade over Axon's
 |---|---|
 | `_cdc_cursors` table | Persists the last emitted `audit_id` per sink; per-collection cursors track independent progress |
 | Resume | On restart the producer resumes from the stored cursor; events after the cursor MAY be re-emitted (at-least-once). Consumers MUST be idempotent or deduplicate by `source.audit_id` |
-| Cursor token | External APIs expose an opaque cursor derived from audit sequence, sink, and scope. Tokens MUST remain valid across producer restarts and schema changes |
+| Cursor token | External APIs expose an opaque, random, server-resolved cursor handle derived from audit sequence, sink, and scope. When the scope is transaction-aware, replay is transaction-framed. Tokens MUST remain valid across producer restarts and schema-compatible migrations; incompatible schema, policy, or auth epoch changes purge outstanding tokens and require rebootstrap |
 | Scoped replay | Replay MAY be scoped by database, schema, collection, entity/link ID, or transaction ID without changing envelope semantics; a consumer MAY reset its cursor to any `audit_id` |
 | Snapshot | Initial snapshot emits all existing entities as `op: "r"` in entity-ID order; the snapshot boundary is the max `audit_id` recorded at start; live tailing begins from the boundary. Snapshots are resumable from the last emitted entity ID |
 | Cursor vocabulary parity | GraphQL subscriptions, MCP resource notifications, SDK change readers, and CDC sinks use the same audit cursor vocabulary |
@@ -187,6 +187,11 @@ Kafka is optional: file and SSE sinks MUST work without it.
   `default` tenant segment; the template is configurable via
   `topic_template`, but any template MUST include `{tenant}` when more than
   one tenant exists.
+- Cursor epoch compatibility: producer restarts and schema-compatible
+  migrations preserve cursor validity. Incompatible schema, policy, or auth
+  epoch changes trigger a hard cursor cut before 1.0, but the cut MUST be
+  explicit: existing cursors are purged and clients rebootstrap from a fresh
+  snapshot.
 - Delivery: at-least-once. `source.audit_id` is the offset enabling
   consumer-side exactly-once.
 - Ordering: per-entity ordering within a partition is guaranteed by the
@@ -203,6 +208,7 @@ Kafka is optional: file and SSE sinks MUST work without it.
 | Producer crash mid-snapshot | Snapshot resumes from last emitted entity ID | yes | None required from consumers |
 | Unknown subject on registry lookup | 40401 subject-not-found (Confluent error convention) | no | Use a listed subject |
 | Incompatible schema registration | 409 conflict per compatibility mode | yes (after change) | Adjust schema or compatibility mode |
+| Incompatible schema, policy, or auth epoch change | Existing cursor tokens are purged; client must rebootstrap from a fresh snapshot | no | Obtain a fresh cursor after the incompatible change |
 | Cursor token invalid for scope | Request rejected | no | Obtain a fresh cursor from a recent event |
 
 ## Examples

@@ -13,19 +13,19 @@ ddx:
     - FEAT-026
     - FEAT-029
   review:
-    self_hash: 56f09de1d818257f569cfef9c6845797d6a5c9c1a78a09fbec23789bbcca1bd2
+    self_hash: ec2ebe9ab6a850fe677c4955a735649ed539c744be5e7001994893c781716837
     deps:
       ADR-016: d023701c0bedc5ada8a9121fa850a6b78d7b2b2f39d2b7ac41d7d2c48de7a1b9
-      ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
+      ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
       FEAT-004: 1ba0ba90778c2e6b4a38b11632d8ca73d3b328ac19ad326e151534c26ecd0b46
       FEAT-005: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
-      FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
+      FEAT-008: 398492902a4c9d62e5fe6f2d8629ba67cb6175878128036f77f33e40e00d5f6a
       FEAT-010: f5e9cc42a1a1e5b377b069b10a011414e361565a26c13d7bead25314b5d3bf34
       FEAT-014: 89f20cc345d46dc650c9c0f1042da643fbc4e57b3e9278c287b2fb625cc6fd4f
       FEAT-023: 24416c13b9a48e864ae43e3967c63d2711763c745905850dbb4f03768ffc7949
       FEAT-026: 8751e34ac2140fb80077b881290769d82b1d39e7cb1fbaa60404bc82eae1b07b
-      # TODO: refresh review stamp — FEAT-029 dep hash needs recomputation via the review tooling
-    reviewed_at: "2026-06-15T00:35:16Z"
+      FEAT-029: f548dd83b06d298a7e8c575870ae1a06e5e9c53e94d6ccb64b2b876daf7b3b0c
+    reviewed_at: "2026-07-11T02:26:23Z"
 ---
 
 # Contract
@@ -223,7 +223,8 @@ Unsupported audit filters return `unsupported_audit_filter` with
 
 Every entity (and link) response carries server-managed system fields
 alongside user data. System fields live outside the user schema namespace
-(CONTRACT-010) and MUST NOT be writable through entity payloads.
+(CONTRACT-010) and MUST NOT be writable through entity payloads. Reserved
+namespace collisions are rejected with `reserved_namespace`.
 
 | Field | Type | Rules |
 |-------|------|-------|
@@ -237,8 +238,8 @@ alongside user data. System fields live outside the user schema namespace
 - All six fields are present on every entity read/list/query response.
 - Links carry the same envelope semantics with at minimum `_id`,
   `_version`, `_created_at`, `_created_by`.
-- A client payload that attempts to set a system field is rejected with
-  400 `invalid_argument`.
+- A client payload that attempts to set a system field or reserved namespace
+  key is rejected with 400 `reserved_namespace`.
 
 ### Transaction and idempotency protocol (FEAT-008)
 
@@ -287,15 +288,20 @@ standard envelope: payload/size and count violations return 400
 `invalid_argument`; schema-shape violations (nesting, field counts) return
 422 `schema_validation`.
 
+AXON-CJSON-1 is the canonical byte-measurement rule for payload and link
+metadata limits: serialize the request or entity to canonical UTF-8 JSON
+with stable object-key ordering and no insignificant whitespace, then count
+the bytes of that canonical form.
+
 | Constraint | Limit | Notes |
 |-----------|-------|-------|
-| Entity size (serialized) | 1 MB default, 10 MB hard max | Configurable per collection up to the hard max |
+| Entity size (AXON-CJSON-1 canonical bytes) | 1 MB default, 10 MB hard max | Configurable per collection up to the hard max |
 | Entity nesting depth | 8 levels | Enforced at schema definition and at write time |
 | Fields per nesting level | 65,535 (u16) | |
 | Array/list elements | 4,294,967,295 (u32) | |
 | User-defined fields per entity | ≥ 1 | Beyond the system-metadata envelope |
 | String/blob field size | Bounded by entity size | No independent per-field limit |
-| Link metadata size | 64 KB | Links are lightweight |
+| Link metadata size | 64 KB | Measured in AXON-CJSON-1 canonical bytes; links are lightweight |
 | Traversal depth (`max_depth`) | 10 hops default | Configurable; warning emitted above 10 |
 | Operations per transaction | 100 | Normative rule above; the 101st is rejected |
 | Transaction timeout | 30 seconds | Configurable; expired transactions abort cleanly |

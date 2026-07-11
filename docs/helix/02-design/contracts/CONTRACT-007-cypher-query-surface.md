@@ -7,13 +7,13 @@ ddx:
     - FEAT-018
     - FEAT-029
   review:
-    self_hash: 1f6a26cfdc85119f3c286960772256d583687544d5ef9949c7f654ee8bc4ae08
+    self_hash: a8835666faac1d25c9af382cbf4f039ae51073521aa646210b12fcc99de92407
     deps:
       ADR-021: 7672758c3841fb3871bc2b8f90aeb7c63d5453c42dae5bedf5cf27d6394dda78
       FEAT-009: 08784dee672189395e039843c292e6513155f125f9c9ec50bb29f2cc593c7bca
       FEAT-018: 32736251fbe98379326a28a9517474ad1b69ba9cbfb29b710f2cfaab1d3b8d08
       FEAT-029: f548dd83b06d298a7e8c575870ae1a06e5e9c53e94d6ccb64b2b876daf7b3b0c
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T02:26:23Z"
 ---
 
 # Contract
@@ -135,9 +135,9 @@ At `put_schema` time the compiler MUST:
 
 - type-check the query against the active collection schemas (labels,
   properties, relationship types exist);
-- validate index usage — queries requiring unindexed scans on collections
-  above the configured threshold are rejected with a diagnostic suggesting
-  an index declaration;
+- validate index usage — queries requiring unindexed scans above the hard
+  threshold are rejected with a diagnostic suggesting an index declaration;
+  there is no schema-declaration opt-out or request flag;
 - validate policy compatibility — queries requiring policy bypass are
   rejected with `policy_required_bypass`;
 - on activation, generate one typed GraphQL field on `Query` and one MCP
@@ -164,10 +164,10 @@ an initial snapshot on subscribe; ad-hoc queries are NOT subscribable in V1.
 |---|---|
 | `unsupported_clause` | Query uses a construct outside the V1 subset |
 | `unknown_label` | Label, property, or relationship type not in the active schema |
-| `unsupported_query_plan` | Plan requires unindexed access on a collection above the configured threshold (default 1,000 entities) |
+| `unsupported_query_plan` | Plan requires unindexed access on a collection above the hard threshold (1,000 entities) |
 | `policy_required_bypass` | Query would require policy bypass to be useful (named-query compile and ad-hoc parse) |
-| `query_too_large` | Planned worst-case cardinality exceeds the configured budget (default 1M intermediate rows) or in-memory materialization budget exceeded |
-| `query_timeout` | Wall-clock timeout exceeded (default 30s) |
+| `query_too_large` | Planned worst-case cardinality exceeds the hard budget (1M intermediate rows) or in-memory materialization budget exceeded |
+| `query_timeout` | Wall-clock timeout exceeded (30 seconds) |
 
 The set is extend-only; codes MUST NOT be renamed or reused.
 
@@ -175,10 +175,10 @@ The set is extend-only; codes MUST NOT be renamed or reused.
 
 | Limit | Default | Scope |
 |---|---|---|
-| Variable-length path depth cap | 10 | configurable per database |
-| Unindexed-scan collection threshold | 1,000 entities | named queries may opt out at schema-declaration time after review; ad-hoc queries require an explicit request flag plus a strict cost budget |
-| Worst-case cardinality budget | 1M intermediate rows | ad-hoc; named queries may override at schema-declaration time |
-| Wall-clock timeout | 30 s | every query; configurable |
+| Variable-length path depth cap | 10 | Hard V1 limit for named and ad-hoc queries; not configurable per database |
+| Unindexed-scan collection threshold | 1,000 entities | Hard V1 limit for named and ad-hoc queries; no opt-out and no request flag |
+| Worst-case cardinality budget | 1M intermediate rows | Hard V1 limit for named and ad-hoc queries |
+| Wall-clock timeout | 30 seconds | Hard V1 limit for named and ad-hoc queries |
 
 ### Policy enforcement obligations
 
@@ -220,7 +220,7 @@ aggregation engine or grammar exists.
   failures (`query_timeout`).
 - Named queries are the safe default: pre-compiled, policy-bound, and
   index-validated at schema-write time; ad-hoc queries get the same
-  validation at request time and never bypass policy.
+  validation at request time and never bypass policy or hard limits.
 - Policy/schema snapshot: a query evaluates against the schema/policy
   snapshot active at query start.
 
@@ -230,10 +230,10 @@ aggregation engine or grammar exists.
 |-----------|------------------|-------|----------------------|
 | Construct outside subset | `unsupported_clause` at parse | no | Rewrite within the V1 subset |
 | Unknown label/property/relationship | `unknown_label` at parse | no | Use schema-declared names |
-| Unindexed plan above threshold | `unsupported_query_plan` + diagnostics naming the required index | yes (after schema change) | Declare a FEAT-013 index, or opt in with the request flag (ad-hoc) |
+| Unindexed plan above threshold | `unsupported_query_plan` + diagnostics naming the required index | yes (after schema change) | Declare a FEAT-013 index or rewrite the query; there is no opt-in or opt-out path |
 | Query needs policy bypass | `policy_required_bypass` (typed diagnostic) | no | Restructure the query; policy is never bypassed |
-| Cardinality or memory budget exceeded | `query_too_large` | yes (narrower query) | Add predicates/limits or raise the named-query budget at schema time |
-| Timeout | `query_timeout` after 30 s default | yes | Narrow the query or raise the configured timeout |
+| Cardinality or memory budget exceeded | `query_too_large` | yes (narrower query) | Add predicates/limits or rewrite the query |
+| Timeout | `query_timeout` after 30 seconds default | yes | Narrow the query; there is no timeout opt-out |
 
 ## Examples
 
