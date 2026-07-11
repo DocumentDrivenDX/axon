@@ -7,7 +7,7 @@ ddx:
     self_hash: 84f680ec396f34b25b2a91172d8cab7a8e9204817430b9e3aa8f9ec1ee3afd03
     deps:
       helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
-    reviewed_at: "2026-07-11T03:00:17Z"
+    reviewed_at: "2026-07-11T04:03:36Z"
 ---
 # Feature Specification: FEAT-002 — Schema Engine
 

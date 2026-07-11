@@ -8,8 +8,8 @@ ddx:
     self_hash: e6114f00749d8d9f548b7a400069f2d042d245926439e21ad11260795957fca1
     deps:
       FEAT-009: 08784dee672189395e039843c292e6513155f125f9c9ec50bb29f2cc593c7bca
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:03:36Z"
 ---
 # Feature Specification: FEAT-020 — Link Discovery and Graph Queries
 

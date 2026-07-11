@@ -4,10 +4,10 @@ ddx:
   depends_on: [helix.prd]
   review:
     # TODO: refresh review stamp (Principle 8 local-first read-replica re-scope, 2026-06-27)
-    self_hash: 68d05c2f025124f224f952adb2e7b93671c8f099011975fcbb3619e18fde38dd
+    self_hash: aaf83801ad6408940c25991544463178c86c1ce3a308fc25b9d4a7a18cd331e8
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:03:37Z"
 ---
 # Axon Project Principles
 

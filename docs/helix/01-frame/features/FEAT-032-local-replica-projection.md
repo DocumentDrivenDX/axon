@@ -8,7 +8,12 @@ ddx:
       - FEAT-021
       - CONTRACT-006
       - CONTRACT-009
-  # TODO: refresh review stamp (new spec authored 2026-06-27; deps unstamped)
+    # TODO: refresh review stamp (new spec authored 2026-06-27; deps unstamped)
+  review:
+    self_hash: d72199d3fa5f5ad4a17b5e9fa40e53daf2e323180d7116ffcebbf9cde9cc3b3b
+    deps:
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:03:37Z"
 ---
 # Feature Specification: FEAT-032 — Local Replica Projection
 

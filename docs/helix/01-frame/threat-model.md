@@ -5,11 +5,11 @@ ddx:
     - helix.security-requirements
     - helix.prd
   review:
-    self_hash: 1f144a1be515827aa3418049388e08e416f920234f4cb258be115026e773a36b
+    self_hash: c5d122663a894af8e1e1dbd5cc7a4b9e790e49fc0f922eec0282458517ac1d64
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-      helix.security-requirements: 11163041a22f3ac008d62a7c957593da690306bc15bec244ebb9afdb9c69d0f5
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+      helix.security-requirements: 09d5e34b217554b4c87407160c5102d800cf64c6260d7141768498e8ac76f58a
+    reviewed_at: "2026-07-11T04:03:37Z"
 ---
 
 <!-- TODO: refresh review stamp (local read-replica FR-32/FEAT-032 note added, 2026-06-27) -->

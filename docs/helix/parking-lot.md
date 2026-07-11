@@ -4,10 +4,10 @@ ddx:
   depends_on: [helix.prd]
   review:
     # TODO: refresh review stamp (offline-write reconciliation deferred, 2026-06-27)
-    self_hash: 055b7a6710086e4b97c452947b79dab22cbc0c81834bfa40d1cc40f24a9870ee
+    self_hash: bfeae92435864abaedff575ef122942a6c7a51b649afc102758c5937ed3b7b58
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:03:37Z"
 ---
 
 # Parking Lot (Deferred / Future Work)
