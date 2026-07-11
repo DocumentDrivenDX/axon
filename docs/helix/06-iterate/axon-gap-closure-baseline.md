@@ -4,6 +4,12 @@ ddx:
   depends_on:
     - RN-0.4.x
     - helix.decision-2026-07-06-release-readiness
+  review:
+    self_hash: c10f7a4176b5b6c5ac8db2cde2a367be9705a216a33427c06b001588265484ac
+    deps:
+      RN-0.4.x: fd6a452b5f5b8bad322e10c9bcfb3eaa0c4dd00402c118fc1ac5bc68011c82db
+      helix.decision-2026-07-06-release-readiness: e758f2f571fdd32ab1936872bf8415044d2502aee3f8f314a7da2c5cd31e7aa7
+    reviewed_at: "2026-07-11T05:21:10Z"
 ---
 
 # Axon Gap-Closure Phase 0 Baseline

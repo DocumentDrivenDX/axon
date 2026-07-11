@@ -7,9 +7,9 @@ ddx:
   review:
     self_hash: b668168b48418cb12c1ebf14ba91e60908bf27558ad3f54228cc802db560d88e
     deps:
-      helix.implementation-plan: 0e148fd35ce924a18f94e43f85ad3ede981ae523021ed942b820d9365aa8ed97
-      helix.prd: b11053b18982ec8f95158d284546dc20773f504bca99ec6c1970d71628f703ad
-    reviewed_at: "2026-07-07T08:49:13Z"
+      helix.implementation-plan: 0510f3fcb3473db02d42a19eb66a9e528946a57e5aee5d03b2eecf080914329d
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T05:21:10Z"
 ---
 # Improvement Backlog
 

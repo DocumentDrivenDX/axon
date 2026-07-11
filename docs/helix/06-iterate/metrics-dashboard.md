@@ -2,8 +2,12 @@
 ddx:
   id: metrics-dashboard
   depends_on:
-    - metric-definition.axon-auth-rejections-total
     - metric-definitions
+  review:
+    self_hash: e79c17f22041c68476ca5af7075cc408c4b71e7eb39132f6eae1e7285dc98364
+    deps:
+      metric-definitions: 9b141eae2e6cdcc94474f4cd7fbd12c2416361ad0f16666794b5ed18d48b6243
+    reviewed_at: "2026-07-11T05:21:10Z"
 ---
 
 # Metrics Dashboard: Emitted-Metric Baseline Survey
