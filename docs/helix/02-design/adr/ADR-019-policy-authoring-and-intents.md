@@ -12,18 +12,18 @@ ddx:
     - FEAT-017
     - FEAT-019
   review:
-    self_hash: 3d6482363128cb8e6bc2cb86023a0a66c6a1c3027fab72ad99938d8136bb9732
+    self_hash: 3ec156d9ec6696d67e0f12a6c80495c9166470525128ac475b95dae0b5647f7e
     deps:
       ADR-012: cea81e56e4101b53f6b9a2e98c796278756bc657b895398ae226b6bc4f1f0188
       ADR-013: 3c5d06aa567303e3947976b4f827908cf6f7fd881f93c865666dcf56ca478f59
-      ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
-      FEAT-002: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
+      ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
+      FEAT-002: 5bafc95cb4f27a89ced79a4dd738d5753960166d6960f536b074f511c6f3dc29
       FEAT-012: d37c0b05aaef5e6da2c11ad0f7433660198cf96113dec4bf07fee4e095521eea
       FEAT-015: c75ebd606ba19b7ac509eefcd0bb47c229433b5a14b1110fcae70d6c3898bd6f
       FEAT-016: 9a2522adbeae59163b67207dc28717d0abc0f7ff65bdb155bd6b23d490d1ba5e
       FEAT-017: 7589f2ef1950a23cd5b4572f4ab88b8c30a9cb3421a6a63138dde3e6a0619f97
       FEAT-019: ddf48d3192c435e1b9a40b2dc77ec60f363bfd91230e99fab336ebf4232785c4
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T02:44:22Z"
 ---
 # ADR-019: Policy Authoring and Mutation Intents
 
@@ -87,10 +87,17 @@ The policy compiler produces a `PolicyPlan` with:
 
 - normalized subject and field references;
 - typed row, field, relationship, and transition predicates;
+- adapter-owned policy catalog metadata for the current `(tenant_id,
+  database_id)` pair, including `auth_scope_required`, `policy_epoch`, and
+  `policy_hash`;
 - indexability requirements for row filters;
 - GraphQL type-shape consequences such as nullable redacted fields;
 - MCP capability metadata and policy envelope descriptions;
 - an explanation plan that records which rule can fire and why.
+
+The canonical `policy_hash` is `AXON-POLICY-HASH-1`, computed from the
+normalized policy AST and manifest bytes after the adapter-owned
+`policy_catalog` row has been normalized for the target tenant/database.
 
 Invalid policies are rejected at schema write time. A policy that cannot be
 compiled safely never becomes active.
@@ -185,8 +192,9 @@ delegated agent identity:
 | `subject.attributes.*` | Request-scoped application attributes declared in policy |
 
 Attribute lookups are cached for one request only. The audit record stores the
-subject snapshot and the policy version used for the decision, so historical
-decisions remain explainable after users, credentials, or attributes change.
+subject snapshot and the policy epoch/hash used for the decision, so
+historical decisions remain explainable after users, credentials, or
+attributes change.
 
 ### 5. Decision Semantics Are Explicit
 
@@ -230,8 +238,8 @@ GraphQL and MCP writes can run in preview mode. A preview produces a mutation
 intent with:
 
 - operation kind and canonical operation hash;
-- subject, credential ID, grant version, tenant, and database;
-- schema version and policy version;
+- subject, credential ID, grant version, tenant, database, and auth epoch;
+- schema version, policy epoch, and policy hash;
 - pre-image entity and link versions for every affected record;
 - computed diff and policy explanation;
 - decision: `allow`, `needs_approval`, or `deny`;
@@ -239,9 +247,9 @@ intent with:
 - approval route, if approval is required.
 
 Executing an intent re-checks the operation hash, subject/grant scope, schema
-version, policy version, and all pre-image versions. If anything changed, the
-intent fails as stale and the caller must preview again. This prevents
-time-of-check/time-of-use approval bugs.
+version, policy epoch, policy hash, and all pre-image versions. If anything
+changed, the intent fails as stale and the caller must preview again. This
+prevents time-of-check/time-of-use approval bugs.
 
 Intent tokens are opaque references to a server-side intent record, not
 self-authorizing bearer claims. The token format is:
@@ -266,7 +274,9 @@ database:
     "grant_version": 7
   },
   "schema_version": 12,
-  "policy_version": 12,
+  "auth_epoch": 31,
+  "policy_epoch": 12,
+  "policy_hash": "sha256:...",
   "operation_hash": "sha256:...",
   "pre_images": [
     {
@@ -292,9 +302,10 @@ Commit validation checks:
 - token HMAC;
 - tenant/database match;
 - caller still satisfies FEAT-012 grants;
+- tenant auth_epoch still matches the current tenant epoch;
 - subject/delegation constraints still hold, unless an approver role explicitly
   executes on behalf of the original subject;
-- schema and policy versions still match;
+- schema version, policy epoch, and policy hash still match;
 - operation hash matches the stored canonical operation;
 - every pre-image version still matches;
 - approval state is valid for the decision.

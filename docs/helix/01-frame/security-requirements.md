@@ -5,11 +5,11 @@ ddx:
     - helix.prd
     - helix.principles
   review:
-    self_hash: 11163041a22f3ac008d62a7c957593da690306bc15bec244ebb9afdb9c69d0f5
+    self_hash: 09d5e34b217554b4c87407160c5102d800cf64c6260d7141768498e8ac76f58a
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-      helix.principles: 68d05c2f025124f224f952adb2e7b93671c8f099011975fcbb3619e18fde38dd
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+      helix.principles: aaf83801ad6408940c25991544463178c86c1ce3a308fc25b9d4a7a18cd331e8
+    reviewed_at: "2026-07-11T02:44:22Z"
 ---
 
 # Security Requirements
@@ -112,6 +112,23 @@ there map to SRs here.
   decision — PO-decision-pending.]** *Acceptance*: fixture where an
   admin-granted agent's `putSchema`/`axon.schema.put` that widens policy
   returns `needs_approval` and commits nothing.
+- **SR-6a — Policy catalog rows are scoped and fail closed.** Each
+  `(tenant_id, database_id)` pair owns exactly one adapter-owned
+  `policy_catalog` row with `auth_scope_required`, `policy_epoch`, and
+  `policy_hash`. Missing rows fail closed with `policy_catalog_missing`.
+  Fresh initialization starts the catalog at epoch 1. Semantic policy
+  changes increment `policy_epoch` and update `policy_hash`; formatting-only
+  changes do not. *Acceptance*: catalog-missing fixture rejects access,
+  policy-only rotation fixture bumps the epoch, and structural-only edits do
+  not.
+- **SR-6b — Auth epoch invalidation is tenant-wide.** Any committed
+  single-tenant transaction that changes memberships, credentials, or other
+  auth-scope state increments that tenant's `auth_epoch` exactly once and
+  invalidates every outstanding token and session for that tenant. Fresh
+  tenant bootstrap starts at `auth_epoch = 1`. This is a tenant-wide
+  invalidation rule, not a per-credential one. *Acceptance*: the next
+  request after an auth mutation fails stale until the caller reauthenticates
+  or refreshes.
 - **SR-7 — Commit-time revalidation covers attribute state.** Intent commit
   must either (a) re-run full policy evaluation (including
   `subject.attributes.*` lookups) at commit time, or (b) bind the attribute

@@ -7,13 +7,13 @@ ddx:
     - FEAT-030
     - FEAT-012
   review:
-    self_hash: bd23424e3a23701fcca96c275e1bd4d9524f68eb4488665b5583483d8ebb355d
+    self_hash: 44362ccf2c383194383cf49261736b27869dc8cfe54c7bdfa4e4ac50ccc46a10
     deps:
-      ADR-019: 3d6482363128cb8e6bc2cb86023a0a66c6a1c3027fab72ad99938d8136bb9732
+      ADR-019: 3ec156d9ec6696d67e0f12a6c80495c9166470525128ac475b95dae0b5647f7e
       FEAT-012: d37c0b05aaef5e6da2c11ad0f7433660198cf96113dec4bf07fee4e095521eea
       FEAT-029: f548dd83b06d298a7e8c575870ae1a06e5e9c53e94d6ccb64b2b876daf7b3b0c
       FEAT-030: 81a89ddb42efe517ddde6ea7481c104b3600481a32072e31bd9d94cd7294922d
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T02:44:22Z"
 ---
 
 # Contract
@@ -60,6 +60,47 @@ code, SQL, JavaScript, Rust hooks, or custom resolvers MUST be rejected.
 | `fields` | no | `{ <field_path>: { read: { deny: [rule] }, write: { allow: [rule], deny: [rule] } } }` | Field read redaction and field write rules. Read-deny rules MAY carry `redact_as` (V1: `null` only) |
 | `transitions` | no | `{ <lifecycle_name>: { <transition>: { allow: [rule] } } }` | Lifecycle transition guards |
 | `envelopes` | no | `{ write: [envelope_rule] }` | Autonomous-write limits and approval routing |
+
+### Policy catalog, epochs, and canonical hash
+
+Axon compiles exactly one policy catalog row per `(tenant_id, database_id)`.
+The row is adapter-owned metadata, not an entity collection. The stale
+`__axon_policies__` label is reserved only as a legacy alias in commentary; it
+is not a collection or entity storage surface.
+
+| Field | Meaning |
+|---|---|
+| `tenant_id` | Tenant whose policy scope is being compiled |
+| `database_id` | Database whose policy scope is being compiled |
+| `auth_scope_required` | Whether a resolved auth scope is required before policy evaluation; if the row is missing or the scope is absent, fail closed |
+| `format_version` | Canonical policy-manifest format version (currently `1`) |
+| `policy_epoch` | Database-scoped monotonic policy revision, starting at `1` |
+| `policy_hash` | `AXON-POLICY-HASH-1`, the `sha256:` digest of the canonical AXON-CJSON-1 bytes for the normalized policy manifest |
+| `collections` | Canonical collection-order manifest used for hashing and diffing |
+| `normalized_ast` | Typed, closed policy AST after defaulting and canonicalization |
+
+The normalized AST is the typed, closed policy AST after defaulting and
+canonicalization.
+
+Normative rules:
+
+- Exactly one policy catalog row MUST exist for each `(tenant_id,
+  database_id)` pair. Missing rows fail closed with `policy_catalog_missing`.
+- Fresh initialization creates the row at epoch 1, with `policy_hash`
+  computed from the empty/default normalized AST and `auth_scope_required:
+  true`.
+- A semantic policy change creates a new `policy_epoch` and `policy_hash`.
+  Formatting-only changes, key-order changes, comments, anchors, and other
+  non-semantic source changes do not change either value.
+- The canonical `collections` array is sorted lexicographically by collection
+  name. Within each collection, blocks are emitted in contract order and rules
+  are sorted by `name`.
+- `normalized_ast` MUST carry explicit defaults for omitted booleans, empty
+  lists, and nullable values so equivalent source forms hash identically.
+- `AXON-POLICY-HASH-1` uses SHA-256 over the AXON-CJSON-1 bytes of the
+  canonical manifest object with keys ordered `format_version`, `tenant_id`,
+  `database_id`, `auth_scope_required`, `policy_epoch`, `collections`,
+  `normalized_ast`.
 
 ### Rule grammar
 
@@ -164,8 +205,10 @@ The five-step order is normative (FEAT-029):
 1. Authenticate and resolve identity.
 2. Check tenant membership, credential grants, and operation class
    (`read`, `write`, `admin`) per ADR-018 / FEAT-012.
-3. Resolve collection schema and policy document (the snapshot active when
-   the request begins).
+3. Resolve collection schema and the adapter-owned policy catalog row for the
+   request's `(tenant_id, database_id)` pair (the snapshot active when the
+   request begins); missing catalog rows fail closed with
+   `policy_catalog_missing`.
 4. Apply collection, row, and field policies — within this step, evaluate in
    order: collection operation policy, row predicate policy, field
    redaction/write policy, transition guard policy, envelope decision
@@ -235,6 +278,7 @@ GraphQL errors carry the same code and detail under `extensions`
 | `field_write_denied` | Caller may mutate the row but not the named field |
 | `approval_required` | Policy returned `needs_approval`; caller must use the FEAT-030 intent flow |
 | `policy_filter_unindexed` | Required policy predicate cannot execute within configured query limits |
+| `policy_catalog_missing` | No policy catalog row exists for the tenant/database pair, or the row requires an auth scope the caller does not satisfy |
 | `policy_expression_invalid` | Policy expression rejected at schema write time |
 
 Implementations MUST NOT introduce new `reason` values for these conditions
@@ -268,6 +312,9 @@ type EffectiveCollectionPolicy {
   machine-readable fields `policy_version`, `decision`, `reason`, `policy`,
   `field_path`, `redacted_fields`, `approval_route`, and `audit_ref` where
   available.
+- `policyVersion` is the compatibility alias for `policy_epoch`; surfaces
+  that need content-addressable lookup also expose `policyHash` sourced from
+  `AXON-POLICY-HASH-1`.
 
 ### Legacy FEAT-012 policy-rule schema
 
@@ -382,7 +429,8 @@ access_control:
 
 ## Non-Normative Notes
 
-- FEAT-012's `__axon_policies__` entity store and `principal`
+- FEAT-012's `__axon_policies__` label is stale/reserved; the adapter-owned
+  `policy_catalog` table supersedes it. FEAT-012's `principal`
   email/tag/role matching predate the schema-adjacent model. Where they
   conflict with this contract — notably FEAT-012's "silently preserved"
   option for immutable fields — FEAT-029 governs: denied field writes always
@@ -398,4 +446,7 @@ access_control:
 - [ ] Compatibility and precedence rules are explicit.
 - [ ] Error handling is explicit.
 - [ ] At least one executable test can be derived from this contract.
+- [ ] Shared golden vectors prove `AXON-POLICY-HASH-1` stability across
+  structural-only, policy-only, create, delete, rollback, retry, and
+  multi-record mutation cases.
 - [ ] Non-normative notes cannot be mistaken for contract requirements.

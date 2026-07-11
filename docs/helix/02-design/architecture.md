@@ -16,21 +16,21 @@ ddx:
     - ADR-021
   review:
     # TODO: refresh review stamp (read-side subsection + local-replica consumer added, 2026-06-27)
-    self_hash: 8a39d93af466d83f02851986a0a935ddb0b8b12d1552ee3bc7e7af3c91fb145a
+    self_hash: 31ea2c1044ec737c0030658c1f48b5da1fb0e159e18eb4f90dd86a64fdb94735
     deps:
       ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
-      ADR-004: 4c8ee66b80980bed2298d511d223f7faaace03864610faf8333af8659c4ce570
+      ADR-004: de71b28d07985455c869a2157afbc61158b726134c81f5d13caa5f5f341cedd1
       ADR-010: 80dcbb947056ff9555019c8cbc3c3a6e9dbe67cdaa668402b15d7bbc5d905930
       ADR-011: 128732e07720a3aee6e4d88295cae04893d5c661d8744246532cccb1e667ea58
-      ADR-014: d0be4bb4fa8f98ca5e4518b4b1c0bc4a46882a42098d38931c6d5b649cbb9655
+      ADR-014: 6b9f2190081dd7dae202942b25247ee638b0359a4ead7109987b5bc4440c7347
       ADR-016: d023701c0bedc5ada8a9121fa850a6b78d7b2b2f39d2b7ac41d7d2c48de7a1b9
       ADR-017: f728a498d6498055fa260edf63ca07dee16c4101800198e8b5b59427fe29c045
-      ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
-      ADR-019: 3d6482363128cb8e6bc2cb86023a0a66c6a1c3027fab72ad99938d8136bb9732
+      ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
+      ADR-019: 3ec156d9ec6696d67e0f12a6c80495c9166470525128ac475b95dae0b5647f7e
       ADR-020: ed351273fc7b4c46f5114aa6f0e1e942ae3fcd2e7ca74ad989b23ea730d23790
       ADR-021: 7672758c3841fb3871bc2b8f90aeb7c63d5453c42dae5bedf5cf27d6394dda78
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T02:44:22Z"
 ---
 
 # Architecture
@@ -104,9 +104,9 @@ this document does not redefine any stage.
 
 | # | Stage | What it does | Governing artifacts |
 |---|-------|--------------|---------------------|
-| 1 | Authentication & tenancy | Verify JWT (signature, expiry, revocation, `aud` = URL tenant), resolve `(user, tenant, database)` from the path, check membership and grants | ADR-018, FEAT-012 |
+| 1 | Authentication & tenancy | Verify JWT (signature, expiry, revocation, `aud` = URL tenant), resolve `(user, tenant, database)` from the path, check membership, grants, and tenant `auth_epoch` freshness | ADR-018, FEAT-012 |
 | 2 | Guardrails | Per-actor sliding-window rate limits and entity-filter scope constraints, in-process, <1 ms overhead; rejections are audited | ADR-016 (architecture), ADR-024 (algorithm), FEAT-022 |
-| 3 | Policy | Compiled ESF `access_control` plan: row predicates, field write guards, transition guards, write envelopes (allow / needs_approval / deny) | ADR-019, CONTRACT-004, FEAT-029 |
+| 3 | Policy | Adapter-owned `policy_catalog` row for the target `(tenant_id, database_id)` pair, carrying `auth_scope_required`, `policy_epoch`, `policy_hash`, and the compiled ESF `access_control` plan; missing rows fail closed | ADR-019, CONTRACT-004, FEAT-029 |
 | 4 | Intent routing | Approval-routed writes become mutation intents: preview → approval → commit, with operation-hash and pre-image staleness checks; previews thread into audit | FEAT-030, ADR-019, ADR-023 |
 | 5 | Handler | `axon-api`: ESF schema validation, OCC version checks, transaction assembly | ADR-004, CONTRACT-010, FEAT-008 |
 | 6 | Storage | `StorageAdapter` commit against SQLite or PostgreSQL; numeric collection IDs, opaque entity blobs, EAV indexes, links table | ADR-003, ADR-010 |
@@ -256,6 +256,10 @@ addressing), ADR-020 (data model), CONTRACT-010 (ESF).
 - **Entity storage**: document-shaped entities (not native RDF, ADR-020)
   stored as opaque blobs (JSONB on PostgreSQL, TEXT on SQLite); numeric
   collection IDs; UUIDv7 entity IDs (ADR-010).
+- **Policy catalog**: one adapter-owned `policy_catalog` row per
+  `(tenant_id, database_id)` pair carries the normalized policy AST and
+  `AXON-POLICY-HASH-1`; it is not an entity collection, and missing rows
+  fail closed.
 - **EAV secondary indexes**: per-type `index_{string,integer,float,datetime,boolean}`
   tables keyed `(collection_id, field_path, value, entity_id)`, plus
   compound indexes with binary tuple-encoded sort keys and unique indexes.
