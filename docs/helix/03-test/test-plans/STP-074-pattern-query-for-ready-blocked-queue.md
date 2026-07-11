@@ -2,9 +2,9 @@
 ddx:
   id: STP-074
   review:
-    self_hash: 8c2611ec8e15ed0e0e17fd9ce7dea2c323be157df6901743011eac74b3c26f50
+    self_hash: e29bcd0a5817e2018b406491c76cf1c4267860f7dfb8fc0743ef8ab6a548a928
     deps: {}
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T03:28:00Z"
 ---
 
 # Story Test Plan: STP-074-pattern-query-for-ready-blocked-queue
@@ -26,6 +26,18 @@ ddx:
 
 **Out of Scope**
 - Generic named-query declaration (STP-075), subscription mechanics (STP-077).
+
+## Benchmark Contract
+
+This story freezes the release-blocking graph benchmark for `TARGET_RELEASE`.
+The correctness smoke fixture stays at 10 beads / 15 links. The release gate
+uses synthetic DDX graphs at `1,000` and `10,000` beads on the dedicated
+reference host, with `10` warmup iterations, `101` measured samples, the
+nearest-rank `p99` method, and `100 ms` / `500 ms` thresholds for the ready
+and blocked queries.
+
+GitHub-hosted functional runs are still useful for exercising the code path,
+but they are not authoritative and must never clear `release.block`.
 
 ## Acceptance Criteria Test Mapping
 
@@ -54,13 +66,15 @@ cargo test -p axon-api --test business_scenarios
 ### Coverage Focus
 
 - P0: AC1/AC2 exactness (agents schedule work off this answer); AC3/AC4 ratcheted.
+- P0: AC3/AC4 are release-blocking only on the dedicated reference host; GitHub-hosted functional runs are non-authoritative.
 
 ## Data and Setup
 
 | Need | Required For | Source / Strategy |
 |------|--------------|-------------------|
-| 10-bead/15-link DDx dataset | AC1, AC2 | `ddx_integration.rs` builders |
-| Generated 1K/10K bead graphs | AC3, AC4 | Seeded generator in benchmark harness |
+| 10-bead/15-link DDx dataset | AC1, AC2 | Correctness smoke fixture for the queue partition tests |
+| Generated 1K/10K bead graphs | AC3, AC4 | Seeded generator in benchmark harness; release gate uses the dedicated reference host |
+| Benchmark metadata bundle | AC3, AC4 | `commit`, `environment`, `artifact_paths`, `metadata`, `p99_ms`, `threshold_ms`, `runner_class`, and `backend_configuration` |
 
 ## Edge Cases and Failure Modes
 
@@ -77,7 +91,7 @@ cargo test -p axon-api --test business_scenarios
 - CONTRACT-007 named-query semantics; identical results across backends.
 
 **Done When**
-- [ ] AC1/AC2/AC5 passing with citations; AC3/AC4 recorded in the ratchet file
+- [ ] AC1/AC2/AC5 passing with citations; AC3/AC4 recorded in the ratchet file and qualified only on the dedicated reference host
 
 ## Review Checklist
 

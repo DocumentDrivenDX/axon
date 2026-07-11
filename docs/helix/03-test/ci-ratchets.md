@@ -4,10 +4,10 @@ ddx:
   depends_on:
     - TP-001
   review:
-    self_hash: e6524f2597a069006e2eb7bc0fb452878a8480da90f7832bf284a72f235d0962
+    self_hash: 82e29fcd752662a16d10afecdddb1622ba0b0a31ac95ec763c6306f0a7a532d8
     deps:
-      TP-001: b2fd65f5c9fee74cac32a456a2eb53e5f492374e51469bbfdfce158ade121821
-    reviewed_at: "2026-06-15T00:35:16Z"
+      TP-001: 6394178afcadc3d0f7f4bb90aa607f9aeeedaf1bd094aa0660697081297cc9c3
+    reviewed_at: "2026-07-11T03:28:00Z"
 ---
 # CI Ratchet Enforcement Schedule
 
@@ -31,6 +31,26 @@ how to run each gate locally.
 | Audit gap count | Count → 0 | Every commit (CI, via `cargo test`) | `cargo test -p axon-sim -- audit` |
 
 ---
+
+## Graph Benchmark Qualification
+
+The release-blocking graph benchmark is the `ready_beads` / `blocked_beads`
+gate from `STP-074`. It is frozen for `TARGET_RELEASE`, and only the dedicated
+reference host/runner may decide pass/hold. GitHub-hosted functional runs are
+useful for smoke checking the code path, but they are not authoritative and
+must not clear or set `release.block`.
+
+| Field | Frozen value |
+|-------|--------------|
+| Dataset | Synthetic DDX bead graphs at `1,000` and `10,000` beads; the 10-bead/15-link smoke fixture stays correctness-only |
+| Hardware class | Dedicated reference host, not a GitHub-hosted runner |
+| Backend / configuration | `cargo bench -p axon-cypher` on the `ddx_ready_blocked_queue_benchmark` path, using the in-memory named-query fixture |
+| Warmup | `10` warmup iterations before measurement |
+| Sample count | `101` measured samples |
+| Percentile method | nearest-rank `p99` |
+| Pass threshold | `ready_beads` and `blocked_beads` must both stay below `100 ms` at `1,000` beads and below `500 ms` at `10,000` beads |
+| Artifact / metadata | Each release run records `commit`, `environment`, `artifact_paths`, `metadata`, `p99_ms`, `threshold_ms`, and `runner_class` in the execution bundle |
+| Hold rule | Any GitHub-hosted functional run is informational only; only the dedicated reference host may clear `release.block` for `TARGET_RELEASE` |
 
 ## Per-Commit CI Gates
 

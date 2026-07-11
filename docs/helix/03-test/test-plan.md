@@ -6,12 +6,12 @@ ddx:
     - helix.principles
     - helix.technical-requirements
   review:
-    self_hash: 62819de50cb048ba235e8e309f89cef380b35825556b4204153385d712ff31d0
+    self_hash: 6394178afcadc3d0f7f4bb90aa607f9aeeedaf1bd094aa0660697081297cc9c3
     deps:
       helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
       helix.principles: aaf83801ad6408940c25991544463178c86c1ce3a308fc25b9d4a7a18cd331e8
       helix.technical-requirements: b50c3f03df0814348846c9a6e6eb9bebbc4b7be7dcb3783fdd6d9b4104a56fca
-    reviewed_at: "2026-07-11T03:00:17Z"
+    reviewed_at: "2026-07-11T03:28:00Z"
 ---
 # Axon Test Plan
 
@@ -824,6 +824,26 @@ From technical requirements. All benchmarks use `criterion` and are ratcheted.
 | BM-008: Concurrent writers (100) | Linear throughput scaling | 100 agents writing to different entities |
 | BM-009: Schema validation | < 1 ms | Validate typical entity (20 fields, 2 levels nesting) |
 | BM-010: Audit query (single entity) | < 100 ms | Retrieve all audit entries for one entity (100 mutations) |
+
+### L5 Benchmark Qualification Contract
+
+The release-blocking graph benchmark is the `ready_beads` / `blocked_beads`
+gate from `STP-074`. It is the only benchmark claim in this plan that may
+block `TARGET_RELEASE`, and only the dedicated reference host/runner may move
+it from `release.block` to pass. GitHub-hosted functional runs can verify the
+code path, but they are not authoritative for release verdicts.
+
+| Field | Frozen value |
+|-------|--------------|
+| Dataset | Synthetic DDX bead graphs at `1,000` and `10,000` beads; the 10-bead/15-link smoke fixture is correctness-only |
+| Hardware class | Dedicated reference host, not a GitHub-hosted functional runner |
+| Backend / configuration | `cargo bench -p axon-cypher` on the `ddx_ready_blocked_queue_benchmark` path, using the in-memory named-query fixture |
+| Warmup | `10` warmup iterations before measurement |
+| Sample count | `101` measured samples |
+| Percentile method | nearest-rank `p99` |
+| Pass threshold | `ready_beads` and `blocked_beads` must both stay below `100 ms` at `1,000` beads and below `500 ms` at `10,000` beads |
+| Artifact / metadata | Each release run records `commit`, `environment`, `artifact_paths`, `metadata`, `p99_ms`, `threshold_ms`, `runner_class`, and `backend_configuration` in the execution bundle |
+| Hold rule | Any GitHub-hosted functional run is informational only; only the dedicated reference host may clear `release.block` for `TARGET_RELEASE` |
 
 ---
 
