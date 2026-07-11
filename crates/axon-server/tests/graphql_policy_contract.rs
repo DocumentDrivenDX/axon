@@ -24,7 +24,9 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use axon_api::test_fixtures::{seed_nexiq_reference_fixture, NexiqReferenceFixture};
+use axon_api::test_fixtures::{
+    create_mutation_intent_unchecked_fixture, seed_nexiq_reference_fixture, NexiqReferenceFixture,
+};
 
 type TestStorage = Box<dyn StorageAdapter + Send + Sync>;
 type TestHandler = Arc<Mutex<AxonHandler<TestStorage>>>;
@@ -118,11 +120,8 @@ async fn insert_test_intent(
         expires_at,
         review_summary: MutationReviewSummary::default(),
     };
-    handler
-        .lock()
-        .await
-        .storage_mut()
-        .create_mutation_intent(&intent)
+    let mut guard = handler.lock().await;
+    create_mutation_intent_unchecked_fixture(&mut *guard, &intent)
         .expect("test intent should insert");
 }
 

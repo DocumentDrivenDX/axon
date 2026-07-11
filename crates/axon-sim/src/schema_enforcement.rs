@@ -218,7 +218,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
     };
 
     let all_entities = handler
-        .storage_mut()
+        .storage_ref()
         .range_scan(&col, None, None, None)
         .expect("range_scan must succeed");
 

@@ -57,7 +57,7 @@ fn main() {
     CompileFailCase {
         name: "cursor_store_raw_access",
         code: r#"
-use axon_storage::{MemoryStorageAdapter, StorageCursorStore};
+use axon_storage::{cursor_store::StorageCursorStore, MemoryStorageAdapter};
 
 fn main() {
     let mut store = StorageCursorStore::new(MemoryStorageAdapter::default());
@@ -108,6 +108,7 @@ fn main() {
             "no function or associated item named `storage_adapter`",
             "no function or associated item named `storage_migration`",
             "no function or associated item named `storage_checkpoint`",
+            "cannot construct `GovernedWriteTx` with struct literal syntax due to private fields",
         ],
     },
 ];

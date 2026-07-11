@@ -333,6 +333,7 @@ pub fn setup_cycle_handler(ring_size: usize) -> AxonHandler<MemoryStorageAdapter
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axon_api::request::DeleteLinkRequest;
 
     #[test]
     fn cycle_test_passes_under_normal_execution() {
@@ -385,8 +386,18 @@ mod tests {
             "ring should be intact before violation"
         );
 
-        // Inject: remove the link node-0 → node-1.
-        inject_isolation_violation(handler.storage_mut(), ring_size);
+        // Inject: remove the link node-0 -> node-1.
+        handler
+            .delete_link(DeleteLinkRequest {
+                source_collection: col.clone(),
+                source_id: node_id(0),
+                target_collection: col.clone(),
+                target_id: node_id(1),
+                link_type: LINK_TYPE.into(),
+                actor: Some("sim-test".into()),
+                attribution: None,
+            })
+            .expect("link deletion should break the ring");
 
         // CHECK phase must now detect the broken ring.
         let hops_after = check_ring_integrity(&handler, &col, ring_size * 2);

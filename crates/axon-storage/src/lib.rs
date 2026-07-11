@@ -24,7 +24,7 @@ pub use adapter::{
 };
 pub use auth_schema::{apply_auth_migrations_postgres, apply_auth_migrations_sqlite};
 pub use axon_esf::{coerce_datetime_nanos, encode_compound_index_key, encode_index_value};
-pub use cursor_store::{StorageCursorStore, CDC_CURSORS_COLLECTION};
+pub use cursor_store::CDC_CURSORS_COLLECTION;
 pub use memory::MemoryStorageAdapter;
 pub use postgres::{
     deprovision_postgres_database, provision_postgres_database, tenant_dsn, PostgresStorageAdapter,

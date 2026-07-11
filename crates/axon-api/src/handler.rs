@@ -899,11 +899,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self.storage
     }
 
-    /// Mutable access to the underlying storage adapter for internal fixtures.
-    #[rustfmt::skip]
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub
-    fn storage_mut(&mut self) -> &mut S {
+    /// Mutable access to the underlying storage adapter for crate-local tests.
+    #[cfg(test)]
+    pub(crate) fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
     }
 
@@ -3958,11 +3956,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(None)
     }
 
-    /// Consume this handler, returning the underlying storage adapter.
-    #[rustfmt::skip]
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub
-    fn into_storage(self) -> S {
+    /// Consume this handler, returning the underlying storage adapter for crate-local tests.
+    #[cfg(test)]
+    pub(crate) fn into_storage(self) -> S {
         self.storage
     }
 
@@ -3988,6 +3984,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
         service
             .create_preview_record_with_origin(&mut self.storage, req.intent, req.origin)
             .map(Into::into)
+    }
+
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub(crate) fn create_mutation_intent_unchecked_for_fixture(
+        &mut self,
+        intent: &MutationIntent,
+    ) -> Result<(), AxonError> {
+        self.storage.create_mutation_intent(intent)
     }
 
     /// Read a mutation intent through this handler's governed namespace and
@@ -7914,6 +7918,16 @@ impl<S: StorageAdapter> AxonHandler<S> {
         })
     }
 
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub(crate) fn put_collection_view_unchecked_for_fixture(
+        &mut self,
+        view: CollectionView,
+    ) -> Result<(), AxonError> {
+        let collection = view.collection.clone();
+        self.storage.put_collection_view(&view)?;
+        self.invalidate_markdown_template(&collection)
+    }
+
     /// Retrieve the current markdown template for a collection.
     pub fn get_collection_template(
         &self,
@@ -8466,6 +8480,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
             name: req.name,
             collections_removed: total_collections,
         })
+    }
+
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub(crate) fn drop_database_unchecked_for_fixture(
+        &mut self,
+        name: &str,
+    ) -> Result<(), AxonError> {
+        self.storage.drop_database(name)
     }
 
     /// List all databases.
