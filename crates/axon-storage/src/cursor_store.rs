@@ -42,7 +42,10 @@ impl<S: StorageAdapter> StorageCursorStore<S> {
     }
 
     /// Consume the store and return the underlying storage adapter.
-    pub fn into_inner(self) -> S {
+    #[rustfmt::skip]
+    #[cfg(test)]
+    pub
+    fn into_inner(self) -> S {
         self.storage
     }
 
@@ -52,7 +55,10 @@ impl<S: StorageAdapter> StorageCursorStore<S> {
     }
 
     /// Mutably borrow the underlying storage adapter.
-    pub fn storage_mut(&mut self) -> &mut S {
+    #[rustfmt::skip]
+    #[cfg(test)]
+    pub
+    fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
     }
 

@@ -701,8 +701,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self.storage
     }
 
-    /// Mutable access to the underlying storage adapter (used by simulation framework).
-    pub fn storage_mut(&mut self) -> &mut S {
+    /// Mutable access to the underlying storage adapter for internal fixtures.
+    #[rustfmt::skip]
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub
+    fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
     }
 
@@ -3753,10 +3756,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     /// Consume this handler, returning the underlying storage adapter.
-    ///
-    /// Useful in tests that need to reconstruct a handler from the same storage
-    /// to verify that persisted state (e.g. collection registrations) survives.
-    pub fn into_storage(self) -> S {
+    #[rustfmt::skip]
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub
+    fn into_storage(self) -> S {
         self.storage
     }
 

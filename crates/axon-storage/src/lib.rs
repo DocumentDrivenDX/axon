@@ -29,4 +29,8 @@ pub use memory::MemoryStorageAdapter;
 pub use postgres::{
     deprovision_postgres_database, provision_postgres_database, tenant_dsn, PostgresStorageAdapter,
 };
-pub use sqlite::SqliteStorageAdapter;
+pub use sqlite::{
+    // raw_access_compile_fail covers that external crates cannot obtain the raw
+    // SQLite connection from this concrete adapter export.
+    SqliteStorageAdapter,
+};
