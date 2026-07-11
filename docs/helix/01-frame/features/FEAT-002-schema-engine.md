@@ -4,10 +4,10 @@ ddx:
   depends_on:
     - helix.prd
   review:
-    self_hash: 5bafc95cb4f27a89ced79a4dd738d5753960166d6960f536b074f511c6f3dc29
+    self_hash: 84f680ec396f34b25b2a91172d8cab7a8e9204817430b9e3aa8f9ec1ee3afd03
     deps:
       helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
-    reviewed_at: "2026-07-11T02:26:23Z"
+    reviewed_at: "2026-07-11T03:00:17Z"
 ---
 # Feature Specification: FEAT-002 — Schema Engine
 
@@ -68,6 +68,8 @@ A developer defines a collection schema in minutes using a portable, familiar fo
 
 - **SCH-11**. Schemas MUST be stored within Axon alongside collection metadata, and schema definitions MUST be versioned: each accepted schema change increments the version (ADR-007).
 - **SCH-12**. The schema for any collection MUST be retrievable via the API and CLI in its portable format, including field descriptions when provided — surface per CONTRACT-001/CONTRACT-008.
+- **SCH-13**. Axon MUST compute a whole-catalog structural hash for the active schema set. The hash is `AXON-SCHEMA-CATALOG-HASH-1`, a `sha256:` digest of the canonical `AXON-CJSON-1` bytes for `StructuralSchemaV1`. The preimage includes `format_version`, `tenant_id`, `database_id`, the active schema version, and the normalized `collections` array; policy blocks, history, descriptions, and timestamps are excluded.
+- **SCH-14**. Structural normalization MUST sort collections and link declarations by qualified name, and MUST materialize explicit defaults for omitted structural fields before hashing. Normalized link entries preserve `target_collection`, `cardinality`, `required`, and `metadata_schema` semantics while remaining byte-stable across equivalent source documents.
 
 ### Non-Functional Requirements
 

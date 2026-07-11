@@ -13,7 +13,7 @@ ddx:
     - FEAT-026
     - FEAT-029
   review:
-    self_hash: ec2ebe9ab6a850fe677c4955a735649ed539c744be5e7001994893c781716837
+    self_hash: dba7833be1c4bdf643ff7c45c7f3faac5224013a7d4855ac8769067505bd453e
     deps:
       ADR-016: d023701c0bedc5ada8a9121fa850a6b78d7b2b2f39d2b7ac41d7d2c48de7a1b9
       ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
@@ -25,7 +25,7 @@ ddx:
       FEAT-023: 24416c13b9a48e864ae43e3967c63d2711763c745905850dbb4f03768ffc7949
       FEAT-026: 8751e34ac2140fb80077b881290769d82b1d39e7cb1fbaa60404bc82eae1b07b
       FEAT-029: f548dd83b06d298a7e8c575870ae1a06e5e9c53e94d6ccb64b2b876daf7b3b0c
-    reviewed_at: "2026-07-11T02:26:23Z"
+    reviewed_at: "2026-07-11T03:00:17Z"
 ---
 
 # Contract
@@ -129,7 +129,7 @@ All paths below are relative to `/tenants/{tenant}/databases/{database}`.
 | `/audit/tail` | GET | read | Audit streaming tail |
 | `/traverse/{collection}/{id}` | GET | read | Simple traversal (`link_type`, `max_depth`, `direction`) |
 | `/traverse/{collection}/{id}` | POST | read | Filtered traversal (`hop_filter` body) |
-| `/schema` | GET | read | Schema handshake manifest (hash + full schemas) |
+| `/schema` | GET | read | Schema handshake manifest (active structural hash + full schemas) |
 | `/graphql` | POST | per-operation | GraphQL (CONTRACT-002) |
 | `/graphql/ws` | WS | read at connect | GraphQL subscriptions (CONTRACT-002) |
 | `/mcp` | POST | per-tool | MCP JSON-RPC (CONTRACT-003) |
@@ -172,7 +172,7 @@ addressed only via the `tenant_databases` relationship and the URL path.
 |--------|-----------|-------|
 | `Authorization: Bearer <jwt>` | request | Required outside `--no-auth`/Tailscale modes; claim/verification rules per ADR-018 |
 | `x-request-id` | both | Emitted on every response; echoed if a valid value was supplied, else server generates UUIDv7 |
-| `x-axon-schema-hash` | both | Client asserts expected schema hash; emitted on schema-manifest responses; mismatch → 409 `schema_mismatch` |
+| `x-axon-schema-hash` | both | Client asserts expected `AXON-SCHEMA-CATALOG-HASH-1` active structural hash; emitted on schema-manifest responses; mismatch → 409 `schema_mismatch` |
 | `x-axon-actor` | request | Allowed in CORS preflight; route handlers use authenticated identity for writes |
 | `x-idempotent-cache` | response | `hit` when a transaction replay was served from the idempotency cache |
 | `x-axon-query-cost` | response | Optional; reserved for query-cost reporting; clients MUST treat as optional |
@@ -213,7 +213,7 @@ Clients MUST switch on `code`, never on the human-readable message.
 | 500 | `internal`, `storage_error`, render failure | Server error |
 
 `version_conflict` detail: `{ "expected": n, "actual": n, "current_entity": {...} }`.
-`schema_mismatch` detail: `{ "expected": "...", "actual": "...", "manifest": {...} }`.
+`schema_mismatch` detail: `{ "expected": "...", "actual": "...", "manifest": {...} }`, where `manifest` is the active `StructuralSchemaV1` payload.
 `schema_validation` detail: `{ "message": "...", "field_errors": [{ "field_path", "message", "severity", "fix"? }] }`
 (`field_errors` is `[]` for non-JSON-Schema validation failures).
 Unsupported audit filters return `unsupported_audit_filter` with
@@ -399,7 +399,7 @@ Template management (`/collections/{collection}/template`):
   clean break).
 - Schema compatibility: additive schema changes are compatible; breaking
   changes are rejected without `force`. Clients SHOULD compare
-  `schema_hash` on app load and fail closed on mismatch.
+  `AXON-SCHEMA-CATALOG-HASH-1` on app load and fail closed on mismatch.
 - The `{code, detail}` envelope and code strings are stable; new codes MAY
   be added, existing codes MUST NOT change meaning.
 - Deprecation rules: deprecated routes/headers (un-prefixed routes,

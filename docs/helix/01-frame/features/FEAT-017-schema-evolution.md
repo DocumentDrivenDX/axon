@@ -4,10 +4,10 @@ ddx:
   depends_on:
     - helix.prd
   review:
-    self_hash: 7589f2ef1950a23cd5b4572f4ab88b8c30a9cb3421a6a63138dde3e6a0619f97
+    self_hash: 2651b9abea59b48d54097bc01b2643320f9b6cc04b7101f2ebb964a89bca1ff9
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T03:00:17Z"
 ---
 # Feature Specification: FEAT-017 — Schema Evolution and Migration
 
@@ -85,6 +85,8 @@ When a schema update is submitted, the system MUST classify the change:
 - **EVO-17**. Fields added in a later version with no declared read-time default MUST be returned as null or omitted, per the field's schema declaration.
 - **EVO-18**. When a force-applied change adds a required field with no default, reads of older-version entities MUST succeed with the field absent (or null) plus a structured warning; the required-with-no-default constraint applies to writes only.
 - **EVO-19**. Lazy read MUST NOT modify storage: an entity remains at its stored schema version until its next write, at which point normal validation against the active schema applies. Operators can opt into eager revalidation via EVO-09; lazy read is the runtime default.
+- **EVO-20**. `AXON-SCHEMA-CATALOG-HASH-1` hashes the active whole-catalog structural projection only; inactive history is retained for audit/debugging but excluded from the hash preimage. The golden-vector cases `structural.only` and `policy.only` remain distinct: descriptions, timestamps, and inactive history are structural-only and do not change the active structural hash, while policy-only edits do not change the structural hash.
+- **EVO-21**. Schema activation MUST fail with `policy_projection_mismatch` if the structural projection and policy projection derived from the same source snapshot disagree, and the activation write MUST be guarded by OCC so the active version and structural hash rotate atomically. A stale activator retries against the latest catalog row; there is no mixed-version publish.
 
 ### Non-Functional Requirements
 

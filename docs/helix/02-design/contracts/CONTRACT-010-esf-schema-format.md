@@ -8,14 +8,14 @@ ddx:
     - FEAT-019
     - FEAT-002
   review:
-    self_hash: a10fc8068739396c450f287a43caf3654ab9b2d79b0c83c1dbbc7d466e3e880e
+    self_hash: 9250599003d21f3885a52eb67ad688139715e9aa0497bf1634ad27e2d505e134
     deps:
       ADR-002: 914b8c8b1a9829504c826ae36b8d8b48a6118b0268c6c8c562fc446ee01b9a77
       ADR-007: 5a96b23ec82c256af094753065c60c6862a9a7c2fd8e7db3bb681d896627f727
       ADR-008: 9c129ed10278306924eac7b4b3915894f3584f4cfe22243bbf486afdac2fccfc
-      FEAT-002: 5bafc95cb4f27a89ced79a4dd738d5753960166d6960f536b074f511c6f3dc29
+      FEAT-002: 84f680ec396f34b25b2a91172d8cab7a8e9204817430b9e3aa8f9ec1ee3afd03
       FEAT-019: ddf48d3192c435e1b9a40b2dc77ec60f363bfd91230e99fab336ebf4232785c4
-    reviewed_at: "2026-07-11T02:26:23Z"
+    reviewed_at: "2026-07-11T03:00:17Z"
 ---
 
 # Contract
@@ -72,6 +72,36 @@ The internal contract is fail-closed for governed collection-addressable
 state: `entity_schema` is required, and schema/namespace/link failures are
 represented by typed internal exceptions that surface as stable external
 errors rather than generic failures.
+
+### Structural catalog hash
+
+Axon derives a whole-catalog structural projection named `StructuralSchemaV1`
+from the active ESF documents for a `(tenant_id, database_id)` pair. The
+projection is serialized with AXON-CJSON-1 canonical bytes and hashed with
+SHA-256 to produce `AXON-SCHEMA-CATALOG-HASH-1` (`sha256:...`).
+
+| Field | Meaning |
+|---|---|
+| `format_version` | Canonical structural-manifest format version (currently `1`) |
+| `tenant_id` | Tenant whose active schema catalog is being hashed |
+| `database_id` | Database whose active schema catalog is being hashed |
+| `active_version` | Schema version currently active for the catalog |
+| `collections` | Normalized array of active collection entries, sorted by qualified collection name |
+
+Normalization rules:
+
+- The `collections` array includes only structural declarations from the
+  active schema: `entity_schema`, `link_types`, `lifecycles`, `indexes`, and
+  other structural layers. It excludes `access_control`, inactive versions or
+  history, descriptions, timestamps, and other non-structural annotations.
+- Each collection's `link_types` are sorted by qualified target collection and
+  then link name.
+- Normalized link declarations carry explicit `target_collection`,
+  `cardinality`, `required`, and `metadata_schema` fields, and any omitted
+  structural values are defaulted before hashing so equivalent source
+  documents yield the same bytes.
+- Collection and link names are compared in qualified form during
+  normalization so the hash is stable across source-order changes.
 
 ### Layer 3 — lifecycle declarations
 
