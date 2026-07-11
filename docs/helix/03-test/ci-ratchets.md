@@ -6,8 +6,8 @@ ddx:
   review:
     self_hash: 82e29fcd752662a16d10afecdddb1622ba0b0a31ac95ec763c6306f0a7a532d8
     deps:
-      TP-001: 6394178afcadc3d0f7f4bb90aa607f9aeeedaf1bd094aa0660697081297cc9c3
-    reviewed_at: "2026-07-11T03:28:00Z"
+      TP-001: 058932393e672c4c5c89acf600d9d45b3f712fe114e7caa139f0e5ac11dc7967
+    reviewed_at: "2026-07-11T05:09:15Z"
 ---
 # CI Ratchet Enforcement Schedule
 

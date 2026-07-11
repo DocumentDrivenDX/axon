@@ -5,6 +5,13 @@ ddx:
     - FEAT-025
     - FEAT-028
     - CONTRACT-008
+  review:
+    self_hash: e4c04836ff2c8045398310ce0636e3043545f1f9f5baea1a1626211453d9ed17
+    deps:
+      CONTRACT-008: 9dbb01dffcecc2282b2dc8e819f7e182e1204ba6a8d40c0d0b02b6b9c767e613
+      FEAT-025: 5ff1ca8b03318957e25d5a3752ebf8999a45378a7b83aa6c2978739263ac3603
+      FEAT-028: eaf50210678ba364441138764677456c6bf02edcc09282dfaa7d1b312f3fea20
+    reviewed_at: "2026-07-11T05:09:15Z"
 ---
 
 # Deployment Checklist
@@ -17,9 +24,10 @@ ddx:
 - Version or commit: Axon 0.4.x pilot release target (confirmed 2026-07-06;
   the earlier 0.7.1 documentation target is revoked — see
   `docs/helix/06-iterate/DECISION-2026-07-06-release-and-readiness-dispositions.md`
-  §1). `Cargo.toml` declares workspace version `0.4.0` and local/`origin` Git
-  tags reach `v0.4.0`. Confirm the resolved version with `axon doctor` before
-  treating any version beyond `v0.4.0` as published.
+  §1). `Cargo.toml` declares workspace version `0.4.0`, local/`origin` Git tags
+  reach `v0.4.0`, and GitHub release `v0.4.0` is published. Confirm the
+  resolved binary version with `axon doctor` before treating any version beyond
+  `v0.4.0` as published.
 - Deployment window: [date and time — fill in per release]
 - Release owner: [name — fill in per release]
 - Rollback owner: [name — fill in per release]

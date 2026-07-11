@@ -5,11 +5,11 @@ ddx:
     - helix.prd
     - TP-001
   review:
-    self_hash: 0e148fd35ce924a18f94e43f85ad3ede981ae523021ed942b820d9365aa8ed97
+    self_hash: 0510f3fcb3473db02d42a19eb66a9e528946a57e5aee5d03b2eecf080914329d
     deps:
-      TP-001: 11ebe8dbc3f32b2b1d254c076f87f297f8283d53821440a8fce077a3963815c3
-      helix.prd: b11053b18982ec8f95158d284546dc20773f504bca99ec6c1970d71628f703ad
-    reviewed_at: "2026-07-07T08:49:13Z"
+      TP-001: 058932393e672c4c5c89acf600d9d45b3f712fe114e7caa139f0e5ac11dc7967
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T05:09:15Z"
 ---
 # Build Plan: Axon
 
@@ -37,22 +37,22 @@ artifact in the stack where implementation status belongs; feature-spec
   — `docs/helix/01-frame/features/`
 - Interface contracts CONTRACT-001..010 —
   `docs/helix/02-design/contracts/`
-- Architecture record: ADR-001..024 — `docs/helix/02-design/adr/`
-  (no monolithic architecture.md exists; the ADR corpus is the
-  architecture authority)
+- Architecture record: `docs/helix/02-design/architecture.md` plus ADR-001..030
+  under `docs/helix/02-design/adr/`
 - Test plan — `docs/helix/03-test/test-plan.md` and
   `docs/helix/03-test/feature-story-e2e-traceability.md`
 
 **In scope**: the build slices in this plan. Most are now delivered
 (contract conformance, FEAT-021 Kafka transport, BYOC control plane,
-opt-in Serializable for key-addressed read sets in B-104, and the local-first
-CQRS reframe design in B-105); the remaining open work is predicate/phantom
-serializability (future, out of this plan) and test-coverage closeout (B-107).
+opt-in Serializable for key-addressed reads plus ADR-026 collection-granular
+scan-read validation in B-104, and the local-first CQRS reframe design in
+B-105); the remaining open work is precise/minimal-abort SSI (future, out of
+this plan) and test-coverage closeout (B-107).
 **Out of scope**:
 reopening product or design decisions; live issue state (the tracker owns
-that — all 1074 tracker beads are now closed and the queues are empty).
+claim, status, queue, and closure counts).
 
-## Current Implementation Baseline (verified 2026-06-10)
+## Current Implementation Baseline (refreshed 2026-07-11)
 
 Corrects the 0.2.0 plan, which understated delivered work.
 
@@ -78,7 +78,7 @@ TypeScript SDK (`sdk/typescript/`), website (`website/`).
 | FEAT-029 access control "Not started" | Build landed — `crates/axon-api/src/policy.rs`, `crates/axon-server/tests/graphql_policy_contract.rs`, `feat_029_contract_parent.rs` |
 | FEAT-030 mutation intents "Not started" | Build landed — `crates/axon-api/src/intent.rs`, `crates/axon-server/tests/{graphql,mcp}_intents_contract.rs` |
 | FEAT-031 policy/intents admin UI "Not started" | Build landed — `ui/tests/e2e/` specs incl. `policy-enforcement`, `graphql-policy-console`, `intent-audit-lineage`, plus US-tagged coverage checks (commit `1bebf4e7`) |
-| "ACID transactions ... serializable isolation" | **Snapshot Isolation** is the default (FEAT-008 TXN-05). Opt-in **Serializable** validates the key-addressed read set (B-104), preventing write skew over entities read by id; predicate/phantom serializability (SSI/predicate locking) remains future. No surface claims unqualified "serializable" |
+| "ACID transactions ... serializable isolation" | **Snapshot Isolation** is the default (FEAT-008 TXN-05). Opt-in **Serializable** validates key-addressed reads and ADR-026 collection-membership scan reads, preventing write skew over recorded entity reads and insert/delete phantoms over recorded query/scan/traversal reads. Opt-in `SerializableStrict` catches update-driven predicate skew at collection granularity. Precise/minimal-abort SSI remains future per ADR-027. No surface claims unqualified "serializable" |
 | FEAT-009 "graph traversal" | Spec renamed: `FEAT-009-unified-graph-query.md` (Cypher surface, CONTRACT-007); `axon-cypher`/`axon-cypher-ast` implement it with SQLite executor parity and ready/blocked benchmark gates (commit `2ea08772`) |
 | FEAT-010 filename | Renamed: `FEAT-010-entity-state-machines.md` |
 
@@ -92,9 +92,11 @@ as tracker beads; they form Slice B-101 below.
 ## Shared Constraints
 
 - **Isolation honesty**: Snapshot Isolation is the default (FEAT-008 TXN-05).
-  Opt-in Serializable (B-104) is scoped to **key-addressed read sets** — no
-  artifact, doc, or API may claim unqualified "serializable"; predicate/phantom
-  serializability is not provided.
+  Opt-in Serializable (B-104 + ADR-026) is scoped to **key-addressed read sets**
+  plus **collection-granular predicate/phantom reads** recorded through the
+  handler/query layer. `SerializableStrict` catches update-driven predicate skew
+  at collection granularity. No artifact, doc, or API may claim unqualified
+  "serializable"; precise/minimal-abort SSI remains future per ADR-027.
 - **Authority order**: Vision > PRD > Technical Requirements > Features >
   Tests > Code. Contract changes go through contract amendment, not code drift.
 - **Test-first**: failing tests exist before implementation; no `unwrap()` in
@@ -112,10 +114,10 @@ as tracker beads; they form Slice B-101 below.
 Originally ordered by dependency: conformance debt first (it blocks
 contract-frozen surfaces), then transport/guardrail completion, then isolation
 upgrade, then the two design-first P1 expansions, then coverage closeout. As
-of 2026-06-27 the conformance, transport, guardrail, BYOC, B-104 (opt-in
-Serializable for key-addressed read sets), and B-105 (local-first CQRS reframe
-design) slices are delivered; the open work is predicate/phantom serializability
-(future, out of plan) and B-107 coverage closeout.
+of 2026-07-11 the conformance, transport, guardrail, BYOC, B-104 (opt-in
+Serializable for key-addressed reads plus ADR-026 scan-read validation), and
+B-105 (local-first CQRS reframe design) slices are delivered; the open work is
+precise/minimal-abort SSI (future, out of plan) and B-107 coverage closeout.
 
 Status legend: **DELIVERED** = shipped and verified in-tree; **OUTSTANDING** =
 real open gap, not yet built.
@@ -125,7 +127,7 @@ real open gap, not yet built.
 | B-101 | **DELIVERED** | Contract conformance: dropped `dbName`/`dbPath` (GraphQL+SDK), retired un-prefixed legacy routes (`/auth/me`, `/databases/*`), added SDK governed-workflow methods, tenant-aware MCP endpoints/URIs, Idempotency-Key header deprecation, CONTRACT-008 auth-default amendment | CONTRACT-001, -002, -003, -008, -009; ADR-018; FEAT-028 BIN-10 | None | Verified: `grep -r 'dbName\|dbPath' sdk/typescript/src crates/` returns nothing; `cargo test -p axon-server` contract tests pass; SDK tests pass | Delivered. Beads closed: axon-b8078b63, axon-b684338f, axon-784bc974, axon-95b137d0, axon-c62971d9, axon-87fee98b |
 | B-102 | **DELIVERED** | FEAT-021 Kafka CDC transport (Kafka producer, delivery semantics, config; envelope + JSONL/in-memory sinks pre-existed) | FEAT-021, CONTRACT-006, ADR-014 | B-101 (config surface frozen by CONTRACT-008 amendment) | Verified: `KafkaCdcSink` shipped in `crates/axon-audit/src/cdc.rs`; `cargo test -p axon-audit` passes | Delivered — the last FEAT-021 transport is implemented |
 | B-103 | **DELIVERED** | FEAT-022 remaining guardrail scope (semantic validation hooks; rate limiting + actor scope already shipped) | FEAT-022, ADR-016, ADR-024 | B-101 | Guardrail hook tests in `crates/axon-server` exercise hook rejection paths; `cargo test -p axon-server` passes | Completes the P0 safety-guardrail vision scope |
-| B-104 | **DELIVERED** | Opt-in **Serializable for key-addressed read sets**: `IsolationLevel` + `Transaction::record_read` read-set tracking, commit-time read validation (first-committer-wins, surfaced as `ConflictingVersion`), per-transaction `isolation_level()` inspectability (TXN-05) | FEAT-008 (TXN-05, Constraints), ADR-004 | B-101 | Verified: `cargo test -p axon-sim write_skew` (SI allows skew, Serializable prevents it) + `cargo test -p axon-api --lib proptest_api` (`serializable_prevents_write_skew_that_snapshot_allows`) + `transaction::tests::write_skew_*` | Delivered honest-scope per adversarial review (`AR-2026-06-27` §2 H2). **Predicate/phantom serializability (SSI/predicate locking) is NOT included** and remains future work — no surface claims unqualified "serializable" |
+| B-104 | **DELIVERED** | Opt-in **Serializable**: `IsolationLevel` + `Transaction::record_read` for key-addressed reads, `record_scan_read` for ADR-026 collection-granular scan reads, commit-time read validation (first-committer-wins, surfaced as `ConflictingVersion`), and `SerializableStrict` content-signature validation for collection-granular update-driven predicate skew (TXN-05) | FEAT-008 (TXN-05, Constraints), ADR-004, ADR-026, ADR-027 | B-101 | Verified: `cargo test -p axon-sim write_skew`; `cargo test -p axon-api --lib proptest_api`; `transaction::tests::{write_skew_*,phantom_write_skew_*}`; `crates/axon-api/tests/serializable_autocapture.rs` | Delivered honest scope: key-addressed reads plus collection-granular predicate/phantom reads on every backend. **Precise/minimal-abort SSI is NOT included** and remains future work — no surface claims unqualified "serializable" |
 | B-105 | **DELIVERED** | Local-first **CQRS reframe** (replaces the original standalone sync design): FR-32 rewritten as a local read-replica projection; FEAT-032 authored; ADR-014 amended + ADR-025 (client-projection cursor API); architecture read-side made explicit. The in-tree primitives (`StorageCursorStore`, `CursorToken`, `LocalReplica`, snapshot bootstrap) already exist; the remaining work is end-to-end wiring onto the opaque cursor path. FR-33 writeback parked | PRD FR-32/FR-33, FEAT-032, ADR-014/ADR-025 | None (design) | Design merged in `docs/helix/`; FEAT-032 + ADR-025 present; parking-lot/Non-Goals updated | Delivered per `AR-2026-06-27` §2 H1. Read-replica build work now converges the wired surfaces on the existing primitives; FR-33 remains parked |
 | B-106 | **DELIVERED** | BYOC (FR-27 P1) control plane: tenant/user/credential/database/member management shipped | PRD FR-27, ADR-017, FEAT-025 | B-101 | Verified: control plane shipped in `crates/axon-control-plane`; FEAT-025 acceptance criteria pass in `crates/axon-control-plane`/`axon-server` tests | Delivered. Any residual BYOC packaging beyond the shipped control plane carries forward into ordinary release work, not a distinct open slice |
 | B-107 | partial | Story-test-plan / coverage closeout: PROP-002..005 property tests, L6 contract-suite completion, story-test-plans for remaining non-guardrail features per test-plan §AC allocation | test-plan.md, feature-story-e2e-traceability.md, STP set | B-101..B-104 (tests target final surfaces) | `cargo test` workspace green; traceability doc shows no unallocated ACs | Last: validates the completed surfaces; final closeout follows B-104 |
@@ -147,7 +149,7 @@ Story-level work is tracked as beads in `.ddx/beads.jsonl` via `ddx bead`.
 | B-101 conformance (6 beads closed: axon-b8078b63, axon-b684338f, axon-784bc974, axon-95b137d0, axon-c62971d9, axon-87fee98b) | Code matches CONTRACT-001..010 as written | None | DELIVERED |
 | B-102 Kafka transport | FEAT-021 complete | axon-87fee98b (config contract) | DELIVERED |
 | B-103 guardrail hooks | FEAT-022 complete | None hard; sequence after B-101 | DELIVERED |
-| B-104 opt-in Serializable (key-addressed read sets) | FEAT-008 TXN-05 write-skew constraint discharged for key-addressed reads | Sequenced after B-101 | DELIVERED (predicate serializability future) |
+| B-104 opt-in Serializable (key-addressed reads + ADR-026 scan reads) | FEAT-008 TXN-05 write-skew constraint discharged for key-addressed reads and collection-granular predicate/phantom reads | Sequenced after B-101 | DELIVERED (precise/minimal-abort SSI future) |
 | B-105 local-first CQRS reframe (FEAT-032 + ADR-025) | FR-32 reframed as read-replica projection; FR-33 writeback parked | None (design work) | DELIVERED |
 | B-106 BYOC remainder | FR-27 P1 scope complete | B-101 | DELIVERED |
 | B-107 coverage closeout | No unallocated ACs; PROP-002..005 coded | B-101..B-104 | partial |
@@ -168,7 +170,7 @@ Story-level work is tracked as beads in `.ddx/beads.jsonl` via `ddx bead`.
 | Retiring legacy routes (`/auth/me`, `/databases/*`) breaks an unnoticed consumer | M | Land as 410 + deprecation header first, removal in a follow-up release | Re-register legacy handlers (single router commit revert) |
 | CONTRACT-008 auth-default flip locks operators out of fresh installs | H | Ship explicit opt-out flag and doctor diagnostic in the same change | Revert default in config layer; contract amendment is additive |
 | Kafka transport pulls heavyweight deps into axon-audit | M | Feature-gate behind a cargo feature; keep JSONL sink the default | Disable the cargo feature |
-| Read-set tracking for serializable regresses commit throughput | L | Delivered with read-set capture gated to Serializable transactions only (Snapshot path unchanged, allocation-free) and bounded by `MAX_READS`; SI remains the default. BM suite (`crates/axon-api/benches/benchmarks.rs`) guards >10% regression | Keep SI the default; serializable behind a transaction option |
+| Read-set tracking for serializable regresses commit throughput | L | Delivered with key and scan-read capture gated to Serializable transactions only (Snapshot path unchanged, allocation-free for read-set tracking) and bounded by `MAX_READS`; SI remains the default. BM suite (`crates/axon-api/benches/benchmarks.rs`) guards >10% regression | Keep SI the default; serializable behind a transaction option |
 | Local-first read-replica scope balloons during build | M | FEAT-032 scopes the remaining wiring surface (durable/opaque cursors, client query engine) explicitly; FR-33 writeback parked until concrete adopter demand | N/A (design only so far) |
 | SDK governed methods drift from server intents API | M | SDK tests run against the same contract fixtures as `graphql_intents_contract.rs` | Mark methods experimental in SDK semver |
 

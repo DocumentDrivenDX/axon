@@ -6,12 +6,12 @@ ddx:
     - helix.principles
     - helix.technical-requirements
   review:
-    self_hash: 6394178afcadc3d0f7f4bb90aa607f9aeeedaf1bd094aa0660697081297cc9c3
+    self_hash: 058932393e672c4c5c89acf600d9d45b3f712fe114e7caa139f0e5ac11dc7967
     deps:
       helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
       helix.principles: aaf83801ad6408940c25991544463178c86c1ce3a308fc25b9d4a7a18cd331e8
       helix.technical-requirements: b50c3f03df0814348846c9a6e6eb9bebbc4b7be7dcb3783fdd6d9b4104a56fca
-    reviewed_at: "2026-07-11T03:28:00Z"
+    reviewed_at: "2026-07-11T05:09:10Z"
 ---
 # Axon Test Plan
 
@@ -149,7 +149,7 @@ current measurements; the STPs hold the honest current state.
 
 | Metric | Target | Minimum | Enforcement |
 |--------|--------|---------|-------------|
-| P0 acceptance criteria of guardrail-slice stories covered by **citing** tests | 100% *(target; current citation rate is 0%)* | 100% before a story closes | `ui/`: `bun run check:story-coverage`; Rust: planned `@covers` scan in CI |
+| P0 acceptance criteria of guardrail-slice stories covered by **citing** tests | 100% *(target; current citation coverage is command-derived, not hard-coded here)* | 100% before a story closes | `python3 scripts/check_covers_traceability.py --format text`; `ui/`: `bun run check:story-coverage` |
 | Line coverage on `axon-core` + `axon-api` | ≥90% *(target)* | 80% | CI ratchet file (can only increase) |
 | Workspace line coverage (L1–L4 tests) | ≥80% *(target)* | 70% | CI ratchet file |
 | Policy decision parity across GraphQL/MCP/handler/CLI/SDK | 100% identical decisions on the shared policy-fixture suite | 100% | L6 parity suite blocks merge (PRD success metric) |
@@ -193,10 +193,14 @@ These are the properties that must hold under all circumstances, including concu
 **Statement**: Under opt-in Serializable isolation, write skew over a
 **key-addressed** read set (entities recorded via `record_read`) is prevented;
 under the default Snapshot isolation it is allowed. Verified by the axon-sim
-`write_skew` workload and the PROP-004 `serializable_prevents_write_skew_that_snapshot_allows`
-property test (B-104). Predicate/phantom write skew (invariants over query,
-scan, traversal, or aggregation results) remains out of scope (SSI/predicate
-locking, future).
+`write_skew` workload and the PROP-004
+`serializable_prevents_write_skew_that_snapshot_allows` property test (B-104).
+ADR-026 extends this from key reads to recorded scan/predicate reads with a
+collection-membership phantom guard (`record_scan_read` +
+`StorageAdapter::structural_version`) on every storage backend. The default
+Serializable tier catches insert/delete phantoms; opt-in `SerializableStrict`
+uses `content_version` to catch update-driven predicate skew at collection
+granularity. Precise, minimal-abort SSI remains future per ADR-027.
 
 ### INV-003: Audit Completeness
 
@@ -762,7 +766,7 @@ Representative rows:
 
 ### PROP-004: Transaction Serializability (key-addressed)
 
-**Property**: Two parts. (1) Snapshot default — overlapping multi-entity transactions never lose updates; the first committer wins and the loser aborts retryably (`transactions_are_serializable_under_sequential_simulation`). (2) Opt-in Serializable — write skew over a **key-addressed** read set is allowed under Snapshot but prevented under Serializable (`serializable_prevents_write_skew_that_snapshot_allows`). Full predicate/phantom serializability (consistency with some serial ordering for invariants over query/scan/traversal results) is NOT claimed and requires SSI/predicate locking (future). See FEAT-008 TXN-05 / ADR-004.
+**Property**: Three parts. (1) Snapshot default — overlapping multi-entity transactions never lose updates; the first committer wins and the loser aborts retryably (`transactions_are_serializable_under_sequential_simulation`). (2) Opt-in Serializable — write skew over a **key-addressed** read set is allowed under Snapshot but prevented under Serializable (`serializable_prevents_write_skew_that_snapshot_allows`). (3) ADR-026 scan-read validation — insert/delete phantoms over recorded query/scan/traversal reads are prevented by the collection-membership signature (`phantom_write_skew_prevented_under_serializable`, `crates/axon-api/tests/serializable_autocapture.rs`). Full precise/minimal-abort SSI is NOT claimed; the current guarantee is key-addressed reads plus collection-granular predicate/phantom reads, with `SerializableStrict` available for collection-granular update-driven predicate skew. See FEAT-008 TXN-05, ADR-004, ADR-026, and ADR-027.
 
 ### PROP-005: Link Graph Consistency
 

@@ -6,12 +6,12 @@ ddx:
     - helix.feature-registry
     - helix.implementation-plan
   review:
-    self_hash: a7903aabb6d6129c5199f038be740078a414e6073b96ecdbea37c986894c11d5
+    self_hash: eeefac876b3c6461ead8ef6b0d604b150309443dc655abf70d11c7f97dc2e04c
     deps:
-      helix.feature-registry: e274f95d36a550a5e82c16900412a48e567aed8937e50c3dbe29c59ebfdb531f
-      helix.implementation-plan: c00ab6585798f23953b7f0a7a496bdd4e6d4c8668cdb0557c40dc2ac40b55c03
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.feature-registry: f8c97e4076e20b2f8bfe5d7706689fbad61c1ae22b38cec9920562c974a7412e
+      helix.implementation-plan: 0510f3fcb3473db02d42a19eb66a9e528946a57e5aee5d03b2eecf080914329d
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T05:09:15Z"
 ---
 
 # Release Notes - Axon 0.7.1
@@ -50,9 +50,11 @@ ddx:
 - The website expansion is governed by HELIX rather than hand-maintained
   marketing copy: feature, story, and scenario coverage must be generated from
   the canonical docs.
-- The generated microsite coverage catalog maps 31 feature specs, 140
-  user-story files, 17 named SCN scenarios, and 10 use-case domains to sample
-  projects and demo reels with 100% coverage.
+- The 2026-06-14 generated microsite coverage pass recorded 31 feature specs,
+  140 user-story files, 17 named SCN scenarios, and 10 use-case domains mapped
+  to sample projects and demo reels. This superseded note is not current website
+  projection freshness evidence; use `scripts/generate_website_coverage.py
+  --check` for that.
 - The release notes explicitly separate the `0.7.1` documentation target from
   the currently observed package/tag state.
 
@@ -81,7 +83,7 @@ ddx:
 |------------------|------------|-------------------------|
 | PRD still identified itself as 0.4.0 | Updated to 0.7.1 release-aligned draft | Avoids stale release framing in downstream docs |
 | Build plan and backlog referenced PRD v0.4.0 | Updated references to PRD v0.7.1 | Keeps planning references internally consistent |
-| Website had one quickstart cast and no sample project suite | Generated coverage, examples, and demo reel pages from HELIX sources | Provides auditable 100% mapping across the documented application surface |
+| Website had one quickstart cast and no sample project suite | Generated coverage, examples, and demo reel pages from HELIX sources during the 2026-06-14 alignment | Records the historical mapping pass; current website freshness must be checked separately |
 
 ## Breaking Changes and Required Actions
 
@@ -110,8 +112,8 @@ notes once release artifacts exist.
 
 | Issue | Who is affected | Workaround or next step |
 |------|------------------|-------------------------|
-| Local and remote tags observed during alignment end at `v0.2.8` | Installers and release consumers | Create/verify the real `v0.7.1` tag and artifacts before binary release messaging |
-| `Cargo.toml` still declares workspace version `0.2.8` | Package consumers | Update package metadata in a release workflow bead if `0.7.1` should be a shipped crate/binary version |
+| During the 2026-06-14 alignment, local and remote tags ended at `v0.2.8`; no `v0.7.1` release exists in the current refresh | Installers and release consumers | Do not use this superseded note for binary release messaging; use the active 0.4.x release note |
+| During the 2026-06-14 alignment, `Cargo.toml` declared workspace version `0.2.8`; current repo evidence has since moved to `0.4.0` | Package consumers | Use current package metadata and the active 0.4.x release note for release communication |
 
 ## References
 
