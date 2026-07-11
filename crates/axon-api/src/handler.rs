@@ -76,8 +76,8 @@ use axon_schema::{
 use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdapter};
 
 use crate::intent::{
-    MutationIntent, MutationIntentCommitValidationAuditRequest,
-    MutationIntentCommitValidationError, MutationIntentLifecycleError,
+    ApprovalState, MutationIntent, MutationIntentCommitValidationAuditRequest,
+    MutationIntentCommitValidationError, MutationIntentDecision, MutationIntentLifecycleError,
     MutationIntentLifecycleService, MutationIntentTransactionCommitRequest, MutationOperationKind,
     MutationReviewSummary, PreImageBinding,
 };
@@ -1040,6 +1040,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         schema: Option<&CollectionSchema>,
         snapshot: Option<&PolicyRequestSnapshot>,
         check: PolicyWriteCheck<'_>,
+        approval_envelopes_satisfied: bool,
     ) -> Result<(), AxonError> {
         let Some(schema) = schema else {
             return Ok(());
@@ -1077,7 +1078,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             },
         )?;
         self.enforce_field_write_policy(&plan, snapshot, check.clone())?;
-        self.enforce_policy_envelopes(&plan, snapshot, check)?;
+        self.enforce_policy_envelopes(&plan, snapshot, check, approval_envelopes_satisfied)?;
 
         Ok(())
     }
@@ -1230,6 +1231,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         plan: &PolicyPlan,
         snapshot: &PolicyRequestSnapshot,
         check: PolicyWriteCheck<'_>,
+        approval_envelopes_satisfied: bool,
     ) -> Result<(), AxonError> {
         let mut needs_approval: Option<String> = None;
 
@@ -1263,6 +1265,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         if let Some(policy) = needs_approval {
+            if approval_envelopes_satisfied {
+                return Ok(());
+            }
             return Err(policy_forbidden(
                 "needs_approval",
                 check.collection,
@@ -4201,12 +4206,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
             },
         )?;
         let intent_id = intent.intent_id.clone();
+        let approval_envelopes_satisfied = matches!(
+            (&intent.decision, &intent.approval_state),
+            (
+                MutationIntentDecision::NeedsApproval,
+                ApprovalState::Approved
+            )
+        );
 
         self.enforce_transaction_policy(
             &req.transaction,
             req.actor.as_deref(),
             req.attribution.as_ref(),
             caller,
+            approval_envelopes_satisfied,
         )
         .map_err(|error| mutation_intent_commit_failed(intent_id.clone(), error))?;
 
@@ -4225,7 +4238,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
         ensure_generic_transaction_access(&tx)?;
-        self.enforce_transaction_policy(&tx, actor.as_deref(), attribution.as_ref(), caller)?;
+        self.enforce_transaction_policy(
+            &tx,
+            actor.as_deref(),
+            attribution.as_ref(),
+            caller,
+            false,
+        )?;
         tx.commit(&mut self.storage, actor, attribution)
     }
 
@@ -4235,6 +4254,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         actor: Option<&str>,
         attribution: Option<&AuditAttribution>,
         caller: Option<&CallerIdentity>,
+        approval_envelopes_satisfied: bool,
     ) -> Result<(), AxonError> {
         for (operation_index, op) in tx.staged_ops().iter().enumerate() {
             match op {
@@ -4255,12 +4275,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             &op.entity.data,
                             FieldWriteScope::PresentFields(&op.entity.data),
                         ),
-                        MutationType::EntityUpdate => (
-                            PolicyOperation::Update,
-                            current.as_ref().map(|entity| &entity.data),
-                            &op.entity.data,
-                            FieldWriteScope::PresentFields(&op.entity.data),
-                        ),
+                        MutationType::EntityUpdate => {
+                            let field_scope = transaction_write_scope(op, current.as_ref())?;
+                            (
+                                PolicyOperation::Update,
+                                current.as_ref().map(|entity| &entity.data),
+                                &op.entity.data,
+                                field_scope,
+                            )
+                        }
                         MutationType::EntityDelete => {
                             let data = current
                                 .as_ref()
@@ -4289,6 +4312,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             field_scope,
                             operation_index: Some(operation_index),
                         },
+                        approval_envelopes_satisfied,
                     )?;
                 }
                 crate::transaction::StagedOp::LinkCreate(_)
@@ -4553,6 +4577,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 field_scope: FieldWriteScope::PresentFields(&req.data),
                 operation_index: None,
             },
+            false,
         )?;
 
         // Schema validation.
@@ -5098,6 +5123,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 field_scope: FieldWriteScope::PresentFields(&req.data),
                 operation_index: None,
             },
+            false,
         )?;
 
         // Materialize gate results on the entity itself (FEAT-019).
@@ -5253,6 +5279,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 field_scope: FieldWriteScope::Patch(&req.patch),
                 operation_index: None,
             },
+            false,
         )?;
 
         let before = Some(existing.data.clone());
@@ -5388,6 +5415,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     field_scope: FieldWriteScope::PresentFields(&current.data),
                     operation_index: None,
                 },
+                false,
             )?;
         }
 
@@ -6601,6 +6629,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 field_scope: FieldWriteScope::PresentFields(&before_data),
                 operation_index: None,
             },
+            false,
         )?;
         // Apply the revert write together with its durable audit append,
         // co-located inside one storage transaction on durable backends
@@ -6808,6 +6837,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     field_scope: FieldWriteScope::PresentFields(&target_data),
                     operation_index: None,
                 },
+                false,
             )?;
         }
 
@@ -10842,6 +10872,32 @@ fn policy_forbidden(
     AxonError::PolicyDenied(Box::new(denial))
 }
 
+fn transaction_write_scope<'a>(
+    op: &'a crate::transaction::WriteOp,
+    current: Option<&'a Entity>,
+) -> Result<FieldWriteScope<'a>, AxonError> {
+    match &op.write_scope {
+        crate::transaction::WriteFieldScope::PresentEntity => {
+            Ok(FieldWriteScope::PresentFields(&op.entity.data))
+        }
+        crate::transaction::WriteFieldScope::Patch(patch) => {
+            if let Some(before) = current
+                .map(|entity| &entity.data)
+                .or(op.data_before.as_ref())
+            {
+                let mut merged = before.clone();
+                json_merge_patch(&mut merged, patch);
+                if merged != op.entity.data {
+                    return Err(AxonError::InvalidOperation(
+                        "patch transaction write scope does not match staged entity data".into(),
+                    ));
+                }
+            }
+            Ok(FieldWriteScope::Patch(patch.as_ref()))
+        }
+    }
+}
+
 fn field_write_scope_touches_path(scope: FieldWriteScope<'_>, field_path: &str) -> bool {
     match scope {
         FieldWriteScope::PresentFields(data) => !policy_values_at_path(data, field_path).is_empty(),
@@ -14636,6 +14692,72 @@ mod tests {
             .expect("storage read")
             .expect("row should remain");
         assert_eq!(stored.data["secret"], "classified");
+        assert_eq!(stored.version, 1);
+    }
+
+    #[test]
+    fn transaction_patch_scope_must_match_staged_entity_data() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_patch_scope");
+        h.put_schema(policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                create: Some(allow_all_policy()),
+                read: Some(allow_all_policy()),
+                update: Some(allow_all_policy()),
+                ..Default::default()
+            },
+        ))
+        .expect("policy schema");
+        h.create_entity(CreateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new("doc-1"),
+            data: json!({"title": "seed", "secret": "classified"}),
+            actor: Some("admin".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed row");
+        let audit_before = h.audit_log().entries().len();
+
+        let mut tx = crate::Transaction::new();
+        tx.patch_update(
+            Entity::new(
+                collection.clone(),
+                EntityId::new("doc-1"),
+                json!({"title": "changed", "secret": "redacted"}),
+            ),
+            1,
+            Some(json!({"title": "seed", "secret": "classified"})),
+            json!({"title": "changed"}),
+        )
+        .expect("stage mismatched patch update");
+
+        let err = h
+            .execute_transaction(ExecuteTransactionRequest {
+                transaction: tx,
+                actor: Some("admin".into()),
+                attribution: None,
+            })
+            .expect_err("mismatched patch scope should fail before commit");
+
+        assert!(
+            err.to_string()
+                .contains("patch transaction write scope does not match staged entity data"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(h.audit_log().entries().len(), audit_before);
+        let stored = h
+            .get_entity(GetEntityRequest {
+                collection,
+                id: EntityId::new("doc-1"),
+            })
+            .expect("stored row")
+            .entity;
+        assert_eq!(
+            stored.data,
+            json!({"title": "seed", "secret": "classified"})
+        );
         assert_eq!(stored.version, 1);
     }
 

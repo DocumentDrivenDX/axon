@@ -1050,10 +1050,11 @@ fn stage_patch_entity<S: StorageAdapter>(
     json_merge_patch(&mut merged, &patch);
     validate(&schema, &merged).map_err(to_tool_error)?;
     transaction
-        .update(
+        .patch_update(
             Entity::new(collection, id, merged),
             expected_version,
             Some(current.data),
+            patch,
         )
         .map_err(to_tool_error)
 }

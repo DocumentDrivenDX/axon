@@ -7481,10 +7481,11 @@ fn stage_patch_entity<S: StorageAdapter>(
     json_merge_patch(&mut merged, &patch);
     validate(&schema, &merged).map_err(axon_error_to_gql)?;
     transaction
-        .update(
+        .patch_update(
             Entity::new(collection, id, merged),
             expected_version,
             Some(current.data),
+            patch,
         )
         .map_err(|error| op_error(axon_error_to_gql(error), op_index))
 }

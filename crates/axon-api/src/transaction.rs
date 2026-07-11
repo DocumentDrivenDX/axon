@@ -133,6 +133,13 @@ pub(crate) struct WriteOp {
     /// State before this write (for audit).
     pub(crate) data_before: Option<Value>,
     pub(crate) mutation: MutationType,
+    pub(crate) write_scope: WriteFieldScope,
+}
+
+#[derive(Debug)]
+pub(crate) enum WriteFieldScope {
+    PresentEntity,
+    Patch(Box<Value>),
 }
 
 #[derive(Debug)]
@@ -329,6 +336,7 @@ impl Transaction {
             expected_version: 0,
             data_before: None,
             mutation: MutationType::EntityCreate,
+            write_scope: WriteFieldScope::PresentEntity,
         }));
         Ok(())
     }
@@ -351,6 +359,32 @@ impl Transaction {
             expected_version,
             data_before,
             mutation: MutationType::EntityUpdate,
+            write_scope: WriteFieldScope::PresentEntity,
+        }));
+        Ok(())
+    }
+
+    /// Stage a patch-origin update operation for `entity`.
+    ///
+    /// The transaction commits the supplied full post-patch entity, but handler
+    /// policy revalidation uses `patch` to decide which field-level write rules
+    /// are in scope.
+    ///
+    /// Returns `Err(InvalidArgument)` if the transaction already has [`MAX_OPS`] operations.
+    pub fn patch_update(
+        &mut self,
+        entity: Entity,
+        expected_version: u64,
+        data_before: Option<Value>,
+        patch: Value,
+    ) -> Result<(), AxonError> {
+        self.check_op_limit()?;
+        self.ops.push(StagedOp::Entity(WriteOp {
+            entity,
+            expected_version,
+            data_before,
+            mutation: MutationType::EntityUpdate,
+            write_scope: WriteFieldScope::Patch(Box::new(patch)),
         }));
         Ok(())
     }
@@ -387,6 +421,7 @@ impl Transaction {
             expected_version,
             data_before,
             mutation: MutationType::EntityDelete,
+            write_scope: WriteFieldScope::PresentEntity,
         }));
         Ok(())
     }
