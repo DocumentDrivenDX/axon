@@ -148,6 +148,16 @@ pub struct SystemCollection {
 }
 
 impl SystemCollection {
+    /// All Axon-owned collection names in the internal namespace manifest.
+    pub const ALL: [Self; 6] = [
+        Self::links(),
+        Self::links_rev(),
+        Self::cdc_cursors(),
+        Self::mutation_intents(),
+        Self::beads(),
+        Self::legacy_policies(),
+    ];
+
     /// Internal forward link store (`__axon_links__`).
     pub const fn links() -> Self {
         Self::new("__axon_links__", SystemCollectionClass::LinkForwardStore)
@@ -198,6 +208,13 @@ impl SystemCollection {
             "__axon_policies__" => Some(Self::legacy_policies()),
             _ => None,
         }
+    }
+
+    /// Resolve an unqualified or namespace-qualified collection string against
+    /// the internal namespace manifest.
+    pub fn from_collection_name(name: &str) -> Option<Self> {
+        let (_, collection) = Namespace::parse(name);
+        Self::from_reserved_name(&collection)
     }
 
     /// Reserved collection name.
@@ -482,43 +499,34 @@ mod tests {
     #[test]
     fn system_collection_known_reserved_names_round_trip() {
         let known = [
+            ("__axon_links__", SystemCollectionClass::LinkForwardStore),
             (
-                SystemCollection::links(),
-                "__axon_links__",
-                SystemCollectionClass::LinkForwardStore,
-            ),
-            (
-                SystemCollection::links_rev(),
                 "__axon_links_rev__",
                 SystemCollectionClass::LinkReverseIndex,
             ),
+            ("_cdc_cursors", SystemCollectionClass::CheckpointCursorStore),
             (
-                SystemCollection::cdc_cursors(),
-                "_cdc_cursors",
-                SystemCollectionClass::CheckpointCursorStore,
-            ),
-            (
-                SystemCollection::mutation_intents(),
                 "__mutation_intents",
                 SystemCollectionClass::MutationIntentAuditSubject,
             ),
+            ("__axon_beads__", SystemCollectionClass::BeadCatalog),
             (
-                SystemCollection::beads(),
-                "__axon_beads__",
-                SystemCollectionClass::BeadCatalog,
-            ),
-            (
-                SystemCollection::legacy_policies(),
                 "__axon_policies__",
                 SystemCollectionClass::LegacyPolicyAlias,
             ),
         ];
 
-        for (collection, name, class) in known {
+        assert_eq!(SystemCollection::ALL.len(), known.len());
+
+        for (collection, (name, class)) in SystemCollection::ALL.iter().copied().zip(known) {
             assert_eq!(collection.name(), name);
             assert_eq!(collection.class(), class);
             assert_eq!(collection.collection_id().as_str(), name);
             assert_eq!(SystemCollection::from_reserved_name(name), Some(collection));
+            assert_eq!(
+                SystemCollection::from_collection_name(&format!("prod.default.{name}")),
+                Some(collection)
+            );
         }
     }
 
@@ -526,6 +534,8 @@ mod tests {
     fn system_collection_rejects_unmanifested_reserved_names() {
         assert!(SystemCollection::from_reserved_name("__axon_unknown__").is_none());
         assert!(SystemCollection::from_reserved_name("tasks").is_none());
+        assert!(SystemCollection::from_collection_name("prod.default.__axon_unknown__").is_none());
+        assert!(SystemCollection::from_collection_name("prod.default.tasks").is_none());
     }
 
     #[test]

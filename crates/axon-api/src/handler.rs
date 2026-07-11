@@ -57,7 +57,8 @@ use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::CallerIdentity;
 use axon_core::error::{AxonError, PolicyDenial};
 use axon_core::id::{
-    CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
+    CollectionId, EntityId, Namespace, QualifiedCollectionId, SystemCollection, DEFAULT_DATABASE,
+    DEFAULT_SCHEMA,
 };
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
@@ -92,6 +93,7 @@ use crate::request::{
     RollbackTransactionRequest, SnapshotRequest, SortDirection, TransitionLifecycleRequest,
     TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
+use crate::response::ReservedNamespaceError;
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
     CreateCollectionResponse, CreateDatabaseResponse, CreateEntityResponse, CreateLinkResponse,
@@ -114,6 +116,69 @@ const DEFAULT_MAX_DEPTH: usize = 3;
 const MAX_DEPTH_CAP: usize = 10;
 const DEFAULT_MARKDOWN_TEMPLATE_CACHE_CAPACITY: usize = 256;
 const POLICY_POST_FILTER_COST_LIMIT: usize = 128;
+const OP_ENTITY: &str = "entity";
+const OP_SCHEMA: &str = "schema";
+const OP_TEMPLATE: &str = "template";
+const OP_LIFECYCLE: &str = "lifecycle";
+const OP_LINK: &str = "link";
+const OP_ROLLBACK: &str = "rollback";
+const OP_INTENT: &str = "intent";
+const OP_QUERY: &str = "query";
+const OP_TRAVERSE: &str = "traverse";
+const OP_TRANSACTION: &str = "transaction";
+const OP_AUDIT: &str = "audit";
+
+fn reserved_namespace_error(collection: &CollectionId, operation: &str) -> AxonError {
+    ReservedNamespaceError::new(collection.as_str(), operation).into_axon_error()
+}
+
+fn ensure_generic_collection_access(
+    collection: &CollectionId,
+    operation: &str,
+) -> Result<(), AxonError> {
+    if SystemCollection::from_collection_name(collection.as_str()).is_some() {
+        return Err(reserved_namespace_error(collection, operation));
+    }
+    Ok(())
+}
+
+fn ensure_generic_collection_accesses<'a>(
+    collections: impl IntoIterator<Item = &'a CollectionId>,
+    operation: &str,
+) -> Result<(), AxonError> {
+    for collection in collections {
+        ensure_generic_collection_access(collection, operation)?;
+    }
+    Ok(())
+}
+
+fn ensure_system_collection_capability(collection: &CollectionId) -> Result<(), AxonError> {
+    if SystemCollection::from_collection_name(collection.as_str()).is_some() {
+        return Ok(());
+    }
+    Err(AxonError::InvalidArgument(format!(
+        "collection '{}' is not an Axon system collection",
+        collection
+    )))
+}
+
+fn ensure_generic_transaction_access(
+    tx: &crate::transaction::Transaction,
+) -> Result<(), AxonError> {
+    for op in tx.staged_ops() {
+        match op {
+            crate::transaction::StagedOp::Entity(op) => {
+                ensure_generic_collection_access(&op.entity.collection, OP_TRANSACTION)?;
+            }
+            crate::transaction::StagedOp::LinkCreate(link)
+            | crate::transaction::StagedOp::LinkDelete(link) => {
+                ensure_generic_collection_access(&link.source_collection, OP_TRANSACTION)?;
+                ensure_generic_collection_access(&link.target_collection, OP_TRANSACTION)?;
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy)]
 enum FieldWriteScope<'a> {
@@ -637,6 +702,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Subsequent creates and updates for that collection are validated
     /// against this schema. Replaces any previously stored schema.
     pub fn put_schema(&mut self, schema: CollectionSchema) -> Result<(), AxonError> {
+        ensure_generic_collection_access(&schema.collection, OP_SCHEMA)?;
         self.validate_schema_for_put(&schema)?;
         self.storage.put_schema(&schema)
     }
@@ -685,6 +751,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         collection: &CollectionId,
     ) -> Result<Option<CollectionSchema>, AxonError> {
+        ensure_generic_collection_access(collection, OP_SCHEMA)?;
         self.storage.get_schema(collection)
     }
 
@@ -3780,6 +3847,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         attribution: Option<AuditAttribution>,
         caller: Option<&CallerIdentity>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
+        ensure_generic_transaction_access(&tx)?;
         self.enforce_transaction_policy(&tx, actor.as_deref(), attribution.as_ref(), caller)?;
         tx.commit(&mut self.storage, actor, attribution)
     }
@@ -4042,6 +4110,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: CreateEntityRequest,
         caller: Option<&CallerIdentity>,
     ) -> Result<CreateEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
         if let Some(current) = self.storage.get(&req.collection, &req.id)? {
             return Err(AxonError::ConflictingVersion {
                 expected: 0,
@@ -4053,6 +4122,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     fn create_entity_inner(
+        &mut self,
+        req: CreateEntityRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<CreateEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
+        self.create_entity_inner_unchecked(req, caller)
+    }
+
+    pub(crate) fn create_entity_in_system_collection(
+        &mut self,
+        req: CreateEntityRequest,
+    ) -> Result<CreateEntityResponse, AxonError> {
+        ensure_system_collection_capability(&req.collection)?;
+        self.create_entity_inner_unchecked(req, None)
+    }
+
+    fn create_entity_inner_unchecked(
         &mut self,
         req: CreateEntityRequest,
         caller: Option<&CallerIdentity>,
@@ -4386,6 +4472,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
         tx: &mut crate::transaction::Transaction,
         collections: &[CollectionId],
     ) -> Result<(), AxonError> {
+        ensure_generic_collection_accesses(collections, OP_QUERY)?;
+        self.tx_record_scan_collections_unchecked(tx, collections)
+    }
+
+    fn tx_record_scan_collections_unchecked(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        collections: &[CollectionId],
+    ) -> Result<(), AxonError> {
         for collection in collections {
             let observed = self.scan_signature(tx, collection)?;
             tx.record_scan_read(collection.clone(), observed)?;
@@ -4421,7 +4516,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if axon_cypher_ast::references_relationships(&query) {
             collections.push(Link::links_collection());
         }
-        self.tx_record_scan_collections(tx, &collections)
+        ensure_generic_collection_accesses(
+            collections
+                .iter()
+                .filter(|collection| *collection != &Link::links_collection()),
+            OP_QUERY,
+        )?;
+        self.tx_record_scan_collections_unchecked(tx, &collections)
     }
 
     fn get_entity_with_read_context(
@@ -4430,6 +4531,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<GetEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
         match self.get_visible_entity_for_read_with_context(
             &req.collection,
             &req.id,
@@ -4487,6 +4589,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<GetEntityMarkdownResponse, AxonError> {
+        ensure_generic_collection_access(collection, OP_ENTITY)?;
         let entity = self
             .get_visible_entity_for_read_with_context(collection, id, caller, attribution)?
             .ok_or_else(|| AxonError::NotFound(id.to_string()))?;
@@ -4533,6 +4636,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     fn update_entity_inner(
+        &mut self,
+        req: UpdateEntityRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<UpdateEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
+        self.update_entity_inner_unchecked(req, caller)
+    }
+
+    pub(crate) fn update_entity_in_system_collection(
+        &mut self,
+        req: UpdateEntityRequest,
+    ) -> Result<UpdateEntityResponse, AxonError> {
+        ensure_system_collection_capability(&req.collection)?;
+        self.update_entity_inner_unchecked(req, None)
+    }
+
+    fn update_entity_inner_unchecked(
         &mut self,
         req: UpdateEntityRequest,
         caller: Option<&CallerIdentity>,
@@ -4691,6 +4811,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         mut req: PatchEntityRequest,
         caller: Option<&CallerIdentity>,
     ) -> Result<PatchEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
         // Read current entity.
         let existing = self
             .storage
@@ -4842,6 +4963,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         mut req: DeleteEntityRequest,
         caller: Option<&CallerIdentity>,
     ) -> Result<DeleteEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
         let schema = self.storage.get_schema(&req.collection)?;
         let policy_snapshot = self.policy_snapshot_for_request(
             &req.collection,
@@ -4965,6 +5087,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     fn query_entities_with_read_context(
+        &self,
+        req: QueryEntitiesRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_QUERY)?;
+        self.query_entities_with_read_context_unchecked(req, caller, attribution)
+    }
+
+    pub(crate) fn query_entities_in_system_collection(
+        &self,
+        req: QueryEntitiesRequest,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
+        ensure_system_collection_capability(&req.collection)?;
+        self.query_entities_with_read_context_unchecked(req, None, None)
+    }
+
+    fn query_entities_with_read_context_unchecked(
         &self,
         req: QueryEntitiesRequest,
         caller: Option<&CallerIdentity>,
@@ -5187,17 +5327,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// multi-page consistency requires storage-level snapshot support and is
     /// deferred to a later release.
     pub fn snapshot_entities(&self, req: SnapshotRequest) -> Result<SnapshotResponse, AxonError> {
+        // Resolve the list of collections to scan.
+        let collections: Vec<CollectionId> = match req.collections {
+            Some(list) => {
+                ensure_generic_collection_accesses(&list, OP_QUERY)?;
+                list
+            }
+            None => self.storage.list_collections()?,
+        };
+
         // Capture the audit high-water mark *before* reading entities so the
         // cursor correctly represents "no changes newer than this snapshot".
         // This happens under the same `&self` reference as the entity scan, so
         // no writer can interleave between the cursor read and the data read.
         let audit_cursor = self.audit_log().entries().last().map(|e| e.id).unwrap_or(0);
-
-        // Resolve the list of collections to scan.
-        let collections: Vec<CollectionId> = match req.collections {
-            Some(list) => list,
-            None => self.storage.list_collections()?,
-        };
 
         // Collect entities from all requested collections into a single
         // ordered stream. Sorting by (collection, id) guarantees deterministic
@@ -5259,6 +5402,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: CountEntitiesRequest,
     ) -> Result<CountEntitiesResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_QUERY)?;
         // Try index-accelerated lookup (FEAT-013).
         let schema = self.storage.get_schema(&req.collection)?;
         let index_candidates = try_index_lookup(
@@ -5330,6 +5474,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     /// Compute a numeric aggregation (SUM, AVG, MIN, MAX) over entities.
     pub fn aggregate(&self, req: AggregateRequest) -> Result<AggregateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_QUERY)?;
         // Try index-accelerated lookup (FEAT-013).
         let schema = self.storage.get_schema(&req.collection)?;
         let index_candidates = try_index_lookup(
@@ -5460,6 +5605,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<QueryAuditResponse, AxonError> {
+        if let Some(collection) = &req.collection {
+            ensure_generic_collection_access(collection, OP_AUDIT)?;
+        }
+        ensure_generic_collection_accesses(&req.collection_ids, OP_AUDIT)?;
+
         use axon_audit::entry::MutationType as MT;
 
         let operation: Option<MT> = match req.operation.as_deref() {
@@ -5600,6 +5750,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             let PreImageBinding::Entity { collection, id, .. } = affected_record else {
                 continue;
             };
+            ensure_generic_collection_access(collection, OP_INTENT)?;
             let Some(entity) = self.storage.get(collection, id)? else {
                 continue;
             };
@@ -5639,6 +5790,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             return Ok(());
         }
 
+        ensure_generic_intent_operation_access(operation)?;
         let Some((collection, id)) = intent_operation_entity_ref(operation) else {
             return Ok(());
         };
@@ -5943,6 +6095,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .audit_log()
             .find_by_id(req.audit_entry_id)?
             .ok_or_else(|| AxonError::NotFound(format!("audit entry {}", req.audit_entry_id)))?;
+        ensure_generic_collection_access(&source.collection, OP_ROLLBACK)?;
 
         let before_data = source.data_before.clone().ok_or_else(|| {
             AxonError::InvalidOperation(format!(
@@ -6065,6 +6218,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: RollbackEntityRequest,
     ) -> Result<RollbackEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ROLLBACK)?;
         struct DeletedEntityContext {
             deleted_version: u64,
             created_at_ns: Option<u64>,
@@ -6323,6 +6477,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: RollbackCollectionRequest,
     ) -> Result<RollbackCollectionResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ROLLBACK)?;
         // 1. Query the audit log for all entity-level mutations in this
         //    collection that occurred strictly after the target timestamp.
         let page = self.audit_log().query_paginated(AuditQuery {
@@ -6651,6 +6806,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let mut seen = HashSet::new();
         let mut entity_entries: Vec<&AuditEntry> = Vec::new();
         for entry in tx_entries.iter().rev() {
+            ensure_generic_collection_access(&entry.collection, OP_ROLLBACK)?;
             let key = (entry.collection.clone(), entry.entity_id.clone());
             if seen.insert(key) {
                 entity_entries.push(entry);
@@ -7206,6 +7362,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: PutCollectionTemplateRequest,
     ) -> Result<PutCollectionTemplateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_TEMPLATE)?;
         self.ensure_collection_exists(&req.collection)?;
         let before_view = self.storage.get_collection_view(&req.collection)?;
         axon_render::compile(req.template.clone())?;
@@ -7273,6 +7430,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: GetCollectionTemplateRequest,
     ) -> Result<GetCollectionTemplateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_TEMPLATE)?;
         self.ensure_collection_exists(&req.collection)?;
         let view = self
             .storage
@@ -7293,6 +7451,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DeleteCollectionTemplateRequest,
     ) -> Result<DeleteCollectionTemplateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_TEMPLATE)?;
         self.ensure_collection_exists(&req.collection)?;
         let before_view = self.storage.get_collection_view(&req.collection)?;
         if let Some(before_view) = before_view {
@@ -7351,6 +7510,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: PutSchemaRequest,
     ) -> Result<PutSchemaResponse, AxonError> {
         let collection = req.schema.collection.clone();
+        ensure_generic_collection_access(&collection, OP_SCHEMA)?;
 
         // Compatibility check against existing schema.
         let existing = self.storage.get_schema(&collection)?;
@@ -7618,6 +7778,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ///
     /// Returns [`AxonError::NotFound`] if no schema has been stored.
     pub fn handle_get_schema(&self, req: GetSchemaRequest) -> Result<GetSchemaResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_SCHEMA)?;
         self.storage
             .get_schema(&req.collection)?
             .map(|schema| GetSchemaResponse {
@@ -7633,6 +7794,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Scans all entities and reports which ones fail validation, including
     /// the entity ID, version, and specific errors.
     pub fn revalidate(&self, req: RevalidateRequest) -> Result<RevalidateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_SCHEMA)?;
         let schema = self.storage.get_schema(&req.collection)?.ok_or_else(|| {
             AxonError::NotFound(format!("schema for collection '{}'", req.collection))
         })?;
@@ -7833,6 +7995,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: DiffSchemaRequest,
     ) -> Result<DiffSchemaResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_SCHEMA)?;
         let schema_a = self
             .storage
             .get_schema_version(&req.collection, req.version_a)?
@@ -7871,6 +8034,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Both source and target must exist in storage; if either is missing,
     /// [`AxonError::NotFound`] is returned.
     pub fn create_link(&mut self, req: CreateLinkRequest) -> Result<CreateLinkResponse, AxonError> {
+        ensure_generic_collection_access(&req.source_collection, OP_LINK)?;
+        ensure_generic_collection_access(&req.target_collection, OP_LINK)?;
+        self.create_link_inner(req)
+    }
+
+    pub(crate) fn create_link_in_system_collection(
+        &mut self,
+        req: CreateLinkRequest,
+    ) -> Result<CreateLinkResponse, AxonError> {
+        ensure_system_collection_capability(&req.source_collection)?;
+        ensure_system_collection_capability(&req.target_collection)?;
+        self.create_link_inner(req)
+    }
+
+    fn create_link_inner(
+        &mut self,
+        req: CreateLinkRequest,
+    ) -> Result<CreateLinkResponse, AxonError> {
         // Verify source and target exist.
         if self
             .storage
@@ -8041,6 +8222,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// reverse-index entry from `__axon_links_rev__`. If the link does not exist,
     /// [`AxonError::NotFound`] is returned.
     pub fn delete_link(&mut self, req: DeleteLinkRequest) -> Result<DeleteLinkResponse, AxonError> {
+        ensure_generic_collection_access(&req.source_collection, OP_LINK)?;
+        ensure_generic_collection_access(&req.target_collection, OP_LINK)?;
         let link_id = Link::storage_id(
             &req.source_collection,
             &req.source_id,
@@ -8122,6 +8305,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     fn traverse_with_read_context(
+        &self,
+        req: TraverseRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<TraverseResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_TRAVERSE)?;
+        self.traverse_with_read_context_unchecked(req, caller, attribution)
+    }
+
+    pub(crate) fn traverse_system_collection(
+        &self,
+        req: TraverseRequest,
+    ) -> Result<TraverseResponse, AxonError> {
+        ensure_system_collection_capability(&req.collection)?;
+        self.traverse_with_read_context_unchecked(req, None, None)
+    }
+
+    fn traverse_with_read_context_unchecked(
         &self,
         req: TraverseRequest,
         caller: Option<&CallerIdentity>,
@@ -8273,6 +8474,26 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<ReachableResponse, AxonError> {
+        ensure_generic_collection_access(&req.source_collection, OP_TRAVERSE)?;
+        ensure_generic_collection_access(&req.target_collection, OP_TRAVERSE)?;
+        self.reachable_with_read_context_unchecked(req, caller, attribution)
+    }
+
+    pub(crate) fn reachable_system_collection(
+        &self,
+        req: ReachableRequest,
+    ) -> Result<ReachableResponse, AxonError> {
+        ensure_system_collection_capability(&req.source_collection)?;
+        ensure_system_collection_capability(&req.target_collection)?;
+        self.reachable_with_read_context_unchecked(req, None, None)
+    }
+
+    fn reachable_with_read_context_unchecked(
+        &self,
+        req: ReachableRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<ReachableResponse, AxonError> {
         let max_depth = req
             .max_depth
             .unwrap_or(DEFAULT_MAX_DEPTH)
@@ -8414,6 +8635,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<crate::response::FindLinkCandidatesResponse, AxonError> {
+        ensure_generic_collection_access(&req.source_collection, OP_LINK)?;
         // Verify source entity exists.
         if self
             .get_visible_entity_for_read_with_context(
@@ -8439,6 +8661,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let target_collection = link_def
             .map(|d| CollectionId::new(&d.target_collection))
             .unwrap_or_else(|| req.source_collection.clone());
+        ensure_generic_collection_access(&target_collection, OP_LINK)?;
 
         let cardinality_str = link_def
             .map(|d| {
@@ -8563,6 +8786,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<crate::response::ListNeighborsResponse, AxonError> {
         use std::collections::BTreeMap;
 
+        ensure_generic_collection_access(&req.collection, OP_LINK)?;
+
         // Verify entity exists.
         if self
             .get_visible_entity_for_read_with_context(
@@ -8685,6 +8910,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: TransitionLifecycleRequest,
     ) -> Result<TransitionLifecycleResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection_id, OP_LIFECYCLE)?;
         // (1) Load schema and find the lifecycle definition.
         let schema = self
             .storage
@@ -9656,6 +9882,15 @@ fn intent_operation_entity_ref(operation: &Value) -> Option<(CollectionId, Entit
     ))
 }
 
+fn ensure_generic_intent_operation_access(operation: &Value) -> Result<(), AxonError> {
+    for key in ["collection", "source_collection", "target_collection"] {
+        if let Some(name) = operation.get(key).and_then(Value::as_str) {
+            ensure_generic_collection_access(&CollectionId::new(name), OP_INTENT)?;
+        }
+    }
+    Ok(())
+}
+
 fn transaction_child_operation_kind(operation: &Value) -> Option<MutationOperationKind> {
     match operation.get("op")?.as_str()? {
         "create_entity" => Some(MutationOperationKind::CreateEntity),
@@ -10232,7 +10467,7 @@ mod tests {
     use std::fmt::Display;
 
     use axon_core::auth::Role;
-    use axon_core::id::{CollectionId, EntityId, Namespace};
+    use axon_core::id::{CollectionId, EntityId, Namespace, SystemCollection};
     use axon_schema::schema::{
         Cardinality, CollectionSchema, CollectionView, EsfDocument, IndexDef, IndexType,
         LinkTypeDef, NamedQueryDef,
@@ -10494,6 +10729,54 @@ mod tests {
                 panic!("expected markdown render to succeed: {detail}")
             }
         }
+    }
+
+    fn assert_reserved_namespace_guard_error(
+        err: AxonError,
+        expected_name: &str,
+        expected_operation: &str,
+    ) {
+        let envelope = ReservedNamespaceError::from_axon_error(&err)
+            .unwrap_or_else(|| panic!("expected reserved namespace error, got: {err}"));
+        assert_eq!(envelope.code, crate::response::RESERVED_NAMESPACE_CODE);
+        assert_eq!(envelope.reason, crate::response::RESERVED_NAMESPACE_REASON);
+        assert_eq!(envelope.detail.name, expected_name);
+        assert_eq!(envelope.detail.operation, expected_operation);
+    }
+
+    #[test]
+    fn reserved_namespace_guard_returns_stable_error_for_generic_operations() {
+        let reserved = CollectionId::new(SystemCollection::links().name());
+        for operation in [
+            OP_ENTITY,
+            OP_SCHEMA,
+            OP_TEMPLATE,
+            OP_LIFECYCLE,
+            OP_LINK,
+            OP_ROLLBACK,
+            OP_INTENT,
+            OP_QUERY,
+            OP_TRAVERSE,
+            OP_TRANSACTION,
+            OP_AUDIT,
+        ] {
+            let err = ensure_generic_collection_access(&reserved, operation)
+                .expect_err("reserved collection must be rejected");
+            assert_reserved_namespace_guard_error(err, reserved.as_str(), operation);
+        }
+    }
+
+    #[test]
+    fn reserved_namespace_guard_covers_system_collection_manifest_names() {
+        for collection in SystemCollection::ALL {
+            let name = CollectionId::new(collection.name());
+            let err = ensure_generic_collection_access(&name, OP_ENTITY)
+                .expect_err("manifested system collection must be rejected");
+            assert_reserved_namespace_guard_error(err, collection.name(), OP_ENTITY);
+        }
+
+        ensure_generic_collection_access(&CollectionId::new("tasks"), OP_ENTITY)
+            .expect("ordinary user collection remains allowed");
     }
 
     fn policy_snapshot_schema(collection: &str) -> CollectionSchema {

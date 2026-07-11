@@ -3,12 +3,64 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use axon_audit::entry::{AuditEntry, FieldDiff};
+use axon_core::error::AxonError;
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::GateResult;
 use axon_schema::rules::RuleViolation;
 use axon_schema::schema::CollectionSchema;
 
 use crate::policy::PolicyRequestSnapshot;
+
+pub const RESERVED_NAMESPACE_CODE: &str = "reserved_namespace";
+pub const RESERVED_NAMESPACE_REASON: &str = "generic_access_forbidden";
+
+/// Stable error response for generic collection access to Axon-owned namespaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReservedNamespaceError {
+    pub code: String,
+    pub reason: String,
+    pub detail: ReservedNamespaceDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReservedNamespaceDetail {
+    pub name: String,
+    pub operation: String,
+}
+
+impl ReservedNamespaceError {
+    pub fn new(name: impl Into<String>, operation: impl Into<String>) -> Self {
+        Self {
+            code: RESERVED_NAMESPACE_CODE.into(),
+            reason: RESERVED_NAMESPACE_REASON.into(),
+            detail: ReservedNamespaceDetail {
+                name: name.into(),
+                operation: operation.into(),
+            },
+        }
+    }
+
+    pub fn into_axon_error(self) -> AxonError {
+        match serde_json::to_string(&self) {
+            Ok(payload) => AxonError::InvalidArgument(payload),
+            Err(err) => AxonError::InvalidArgument(format!(
+                "{RESERVED_NAMESPACE_CODE}: failed to encode error detail: {err}"
+            )),
+        }
+    }
+
+    pub fn from_axon_error(error: &AxonError) -> Option<Self> {
+        let AxonError::InvalidArgument(payload) = error else {
+            return None;
+        };
+        let parsed: Self = serde_json::from_str(payload).ok()?;
+        (parsed.code == RESERVED_NAMESPACE_CODE
+            && parsed.reason == RESERVED_NAMESPACE_REASON
+            && !parsed.detail.name.is_empty()
+            && !parsed.detail.operation.is_empty())
+        .then_some(parsed)
+    }
+}
 
 /// Response containing a retrieved entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
