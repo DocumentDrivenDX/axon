@@ -57,8 +57,8 @@ use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::CallerIdentity;
 use axon_core::error::{AxonError, PolicyDenial};
 use axon_core::id::{
-    CollectionId, EntityId, Namespace, QualifiedCollectionId, SystemCollection, DEFAULT_DATABASE,
-    DEFAULT_SCHEMA,
+    CollectionId, EntityId, Namespace, QualifiedCollectionId, SystemCollection,
+    SystemCollectionClass, DEFAULT_DATABASE, DEFAULT_SCHEMA,
 };
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
@@ -127,6 +127,40 @@ const OP_QUERY: &str = "query";
 const OP_TRAVERSE: &str = "traverse";
 const OP_TRANSACTION: &str = "transaction";
 const OP_AUDIT: &str = "audit";
+const HANDLER_AUDIT_DEFAULT_PAGE_SIZE: usize = 100;
+
+fn is_reserved_collection(collection: &CollectionId) -> bool {
+    SystemCollection::from_collection_name(collection.as_str()).is_some()
+}
+
+fn system_collection_class(collection: &CollectionId) -> Option<SystemCollectionClass> {
+    SystemCollection::from_collection_name(collection.as_str()).map(|collection| collection.class())
+}
+
+// Direct named access rejects every system collection. Incidental all-collection
+// scans hide physical internals without removing typed surfaces such as beads,
+// link audit events, or mutation-intent lineage from their existing APIs.
+fn is_hidden_physical_collection(collection: &CollectionId) -> bool {
+    matches!(
+        system_collection_class(collection),
+        Some(
+            SystemCollectionClass::LinkForwardStore
+                | SystemCollectionClass::LinkReverseIndex
+                | SystemCollectionClass::CheckpointCursorStore
+                | SystemCollectionClass::MutationIntentAuditSubject
+                | SystemCollectionClass::LegacyPolicyAlias
+        )
+    )
+}
+
+fn is_hidden_audit_collection(collection: &CollectionId) -> bool {
+    matches!(
+        system_collection_class(collection),
+        Some(
+            SystemCollectionClass::CheckpointCursorStore | SystemCollectionClass::LegacyPolicyAlias
+        )
+    )
+}
 
 fn reserved_namespace_error(collection: &CollectionId, operation: &str) -> AxonError {
     ReservedNamespaceError::new(collection.as_str(), operation).into_axon_error()
@@ -136,7 +170,7 @@ fn ensure_generic_collection_access(
     collection: &CollectionId,
     operation: &str,
 ) -> Result<(), AxonError> {
-    if SystemCollection::from_collection_name(collection.as_str()).is_some() {
+    if is_reserved_collection(collection) {
         return Err(reserved_namespace_error(collection, operation));
     }
     Ok(())
@@ -150,6 +184,36 @@ fn ensure_generic_collection_accesses<'a>(
         ensure_generic_collection_access(collection, operation)?;
     }
     Ok(())
+}
+
+fn visible_collection_ids(collections: Vec<CollectionId>) -> Vec<CollectionId> {
+    collections
+        .into_iter()
+        .filter(|collection| !is_hidden_physical_collection(collection))
+        .collect()
+}
+
+fn visible_audit_entries(entries: Vec<AuditEntry>) -> Vec<AuditEntry> {
+    entries
+        .into_iter()
+        .filter(|entry| !is_hidden_audit_collection(&entry.collection))
+        .collect()
+}
+
+fn visible_audit_page(entries: Vec<AuditEntry>, limit: usize) -> AuditPage {
+    let mut entries = visible_audit_entries(entries);
+    entries.sort_by_key(|entry| entry.id);
+    let has_more = entries.len() > limit;
+    entries.truncate(limit);
+    let next_cursor = if has_more {
+        entries.last().map(|entry| entry.id)
+    } else {
+        None
+    };
+    AuditPage {
+        entries,
+        next_cursor,
+    }
 }
 
 fn ensure_system_collection_capability(collection: &CollectionId) -> Result<(), AxonError> {
@@ -5333,14 +5397,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 ensure_generic_collection_accesses(&list, OP_QUERY)?;
                 list
             }
-            None => self.storage.list_collections()?,
+            None => visible_collection_ids(self.storage.list_collections()?),
         };
 
         // Capture the audit high-water mark *before* reading entities so the
         // cursor correctly represents "no changes newer than this snapshot".
         // This happens under the same `&self` reference as the entity scan, so
         // no writer can interleave between the cursor read and the data read.
-        let audit_cursor = self.audit_log().entries().last().map(|e| e.id).unwrap_or(0);
+        let audit_cursor = visible_audit_entries(self.audit_log().entries())
+            .last()
+            .map(|e| e.id)
+            .unwrap_or(0);
 
         // Collect entities from all requested collections into a single
         // ordered stream. Sorting by (collection, id) guarantees deterministic
@@ -5638,7 +5705,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
         };
 
-        let query = AuditQuery {
+        let requested_limit = req.limit.unwrap_or(HANDLER_AUDIT_DEFAULT_PAGE_SIZE);
+        let mut query = AuditQuery {
             database: req.database,
             collection: req.collection,
             collection_ids: req.collection_ids,
@@ -5652,8 +5720,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
             after_id: req.after_id,
             limit: req.limit,
         };
+        query.limit = Some(usize::MAX);
 
-        let page: AuditPage = self.audit_log().query_paginated(query)?;
+        let page: AuditPage = visible_audit_page(
+            self.audit_log().query_paginated(query)?.entries,
+            requested_limit,
+        );
         let mut entries = page.entries;
         for entry in &mut entries {
             self.redact_audit_entry_for_read_with_context(entry, caller, attribution)?;
@@ -6095,6 +6167,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .audit_log()
             .find_by_id(req.audit_entry_id)?
             .ok_or_else(|| AxonError::NotFound(format!("audit entry {}", req.audit_entry_id)))?;
+        if is_reserved_collection(&source.collection) {
+            return Err(AxonError::NotFound(format!(
+                "audit entry {}",
+                req.audit_entry_id
+            )));
+        }
         ensure_generic_collection_access(&source.collection, OP_ROLLBACK)?;
 
         let before_data = source.data_before.clone().ok_or_else(|| {
@@ -6789,9 +6867,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: RollbackTransactionRequest,
     ) -> Result<RollbackTransactionResponse, AxonError> {
         // 1. Find all audit entries from the target transaction.
-        let tx_entries = self
-            .audit_log()
-            .query_by_transaction_id(&req.transaction_id)?;
+        let tx_entries = visible_audit_entries(
+            self.audit_log()
+                .query_by_transaction_id(&req.transaction_id)?,
+        );
 
         if tx_entries.is_empty() {
             return Err(AxonError::NotFound(format!(
@@ -7307,7 +7386,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         _req: ListCollectionsRequest,
     ) -> Result<ListCollectionsResponse, AxonError> {
         // Storage returns names already sorted ascending.
-        let names = self.storage.list_collections()?;
+        let names = visible_collection_ids(self.storage.list_collections()?);
         let collections: Vec<CollectionMetadata> = names
             .iter()
             .map(|name| {
@@ -7340,6 +7419,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: DescribeCollectionRequest,
     ) -> Result<DescribeCollectionResponse, AxonError> {
+        ensure_generic_collection_access(&req.name, OP_QUERY)?;
         self.ensure_collection_exists(&req.name)?;
 
         let entity_count = self.storage.count(&req.name)?;
@@ -7858,6 +7938,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .storage
             .list_namespace_collections(&Namespace::new(&req.database, &req.schema))?
             .into_iter()
+            .filter(|collection| !is_reserved_collection(collection))
             .map(|collection| collection.to_string())
             .collect();
         Ok(ListNamespaceCollectionsResponse {
@@ -10777,6 +10858,300 @@ mod tests {
 
         ensure_generic_collection_access(&CollectionId::new("tasks"), OP_ENTITY)
             .expect("ordinary user collection remains allowed");
+    }
+
+    fn seed_reserved_physical_collection(
+        h: &mut AxonHandler<MemoryStorageAdapter>,
+    ) -> (CollectionId, EntityId) {
+        let collection = CollectionId::new(SystemCollection::cdc_cursors().name());
+        let id = EntityId::new("reserved-cursor-001");
+        h.storage_mut()
+            .register_collection_in_namespace(&collection, &Namespace::default_ns())
+            .expect("fixture should register reserved collection directly");
+        h.storage_mut()
+            .put(Entity::new(
+                collection.clone(),
+                id.clone(),
+                json!({"secret": true, "kind": "cursor"}),
+            ))
+            .expect("fixture should seed reserved row directly");
+        (collection, id)
+    }
+
+    fn append_reserved_audit_entry(
+        h: &mut AxonHandler<MemoryStorageAdapter>,
+        collection: &CollectionId,
+        id: &EntityId,
+        actor: &str,
+        transaction_id: Option<&str>,
+    ) -> u64 {
+        let mut entry = AuditEntry::new(
+            collection.clone(),
+            id.clone(),
+            1,
+            MutationType::EntityCreate,
+            None,
+            Some(json!({"secret": true, "kind": "cursor"})),
+            Some(actor.into()),
+        );
+        entry.transaction_id = transaction_id.map(String::from);
+        h.storage_mut()
+            .append_audit_entry(entry)
+            .expect("fixture should append reserved audit directly")
+            .id
+    }
+
+    #[test]
+    fn reserved_namespace_no_leak_rejects_key_filter_count_and_rollback_paths() {
+        let mut h = handler();
+        let (reserved, id) = seed_reserved_physical_collection(&mut h);
+        let hidden_audit_id =
+            append_reserved_audit_entry(&mut h, &reserved, &id, "hidden-system", Some("tx-hidden"));
+
+        let key_err = h
+            .get_entity(GetEntityRequest {
+                collection: reserved.clone(),
+                id: id.clone(),
+            })
+            .expect_err("reserved key lookup must be rejected before lookup");
+        assert_reserved_namespace_guard_error(key_err, reserved.as_str(), OP_ENTITY);
+
+        let filter_err = h
+            .query_entities(QueryEntitiesRequest {
+                collection: reserved.clone(),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "secret".into(),
+                    op: FilterOp::Eq,
+                    value: json!(true),
+                })),
+                ..QueryEntitiesRequest::default()
+            })
+            .expect_err("reserved filter query must be rejected before lookup");
+        assert_reserved_namespace_guard_error(filter_err, reserved.as_str(), OP_QUERY);
+
+        let count_err = h
+            .count_entities(CountEntitiesRequest {
+                collection: reserved.clone(),
+                filter: None,
+                group_by: None,
+            })
+            .expect_err("reserved count query must be rejected before lookup");
+        assert_reserved_namespace_guard_error(count_err, reserved.as_str(), OP_QUERY);
+
+        let rollback_preview_err = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: reserved.clone(),
+                id: id.clone(),
+                target: RollbackEntityTarget::Version(1),
+                expected_version: None,
+                actor: Some("operator".into()),
+                dry_run: true,
+            })
+            .expect_err("reserved rollback preview must be rejected before lookup");
+        assert_reserved_namespace_guard_error(rollback_preview_err, reserved.as_str(), OP_ROLLBACK);
+
+        let collection_rollback_err = h
+            .rollback_collection(RollbackCollectionRequest {
+                collection: reserved.clone(),
+                timestamp_ns: 0,
+                actor: Some("operator".into()),
+                dry_run: true,
+            })
+            .expect_err("reserved collection rollback preview must be rejected before lookup");
+        assert_reserved_namespace_guard_error(
+            collection_rollback_err,
+            reserved.as_str(),
+            OP_ROLLBACK,
+        );
+
+        let audit_id_rollback_err = h
+            .revert_entity_to_audit_entry(RevertEntityRequest {
+                audit_entry_id: hidden_audit_id,
+                actor: Some("operator".into()),
+                force: true,
+                attribution: None,
+            })
+            .expect_err("reserved audit-id rollback path must not reveal the collection");
+        assert!(
+            matches!(audit_id_rollback_err, AxonError::NotFound(_)),
+            "hidden audit-id rollback should look absent, got: {audit_id_rollback_err}"
+        );
+
+        let tx_rollback = h.rollback_transaction(RollbackTransactionRequest {
+            transaction_id: "tx-hidden".into(),
+            actor: Some("operator".into()),
+            dry_run: true,
+        });
+        assert!(
+            matches!(tx_rollback, Err(AxonError::NotFound(_))),
+            "reserved-only transaction rollback repair plan must not reveal hidden entries"
+        );
+    }
+
+    #[test]
+    fn reserved_namespace_no_leak_filters_audit_history_and_cursor_gap_metadata() {
+        let mut h = handler();
+        let public = CollectionId::new("public_audit_items");
+        let first_visible = h
+            .create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: EntityId::new("visible-001"),
+                data: json!({"name": "one"}),
+                actor: Some("visible-user".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("visible create should succeed")
+            .audit_id
+            .expect("visible create should return audit id");
+
+        let (reserved, reserved_id) = seed_reserved_physical_collection(&mut h);
+        let hidden_id =
+            append_reserved_audit_entry(&mut h, &reserved, &reserved_id, "hidden-system", None);
+
+        let second_visible = h
+            .create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: EntityId::new("visible-002"),
+                data: json!({"name": "two"}),
+                actor: Some("visible-user".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("second visible create should succeed")
+            .audit_id
+            .expect("second visible create should return audit id");
+
+        let all = h
+            .query_audit(QueryAuditRequest {
+                limit: Some(10),
+                ..QueryAuditRequest::default()
+            })
+            .expect("generic audit query should succeed");
+        assert_eq!(
+            all.entries.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            vec![first_visible, second_visible],
+            "generic audit/history rows must exclude reserved entries"
+        );
+        assert_eq!(all.next_cursor, None);
+
+        let hidden_actor = h
+            .query_audit(QueryAuditRequest {
+                actor: Some("hidden-system".into()),
+                limit: Some(1),
+                ..QueryAuditRequest::default()
+            })
+            .expect("hidden actor audit query should look empty");
+        assert!(hidden_actor.entries.is_empty());
+        assert_eq!(hidden_actor.next_cursor, None);
+
+        let hidden_history = h
+            .query_audit(QueryAuditRequest {
+                entity_id: Some(reserved_id.clone()),
+                limit: Some(10),
+                ..QueryAuditRequest::default()
+            })
+            .expect("generic history query should succeed");
+        assert!(
+            hidden_history.entries.is_empty(),
+            "history query without a reserved collection filter must not reveal reserved rows"
+        );
+
+        let explicit_reserved = h
+            .query_audit(QueryAuditRequest {
+                collection: Some(reserved.clone()),
+                limit: Some(1),
+                ..QueryAuditRequest::default()
+            })
+            .expect_err("explicit reserved audit query must be rejected before lookup");
+        assert_reserved_namespace_guard_error(explicit_reserved, reserved.as_str(), OP_AUDIT);
+
+        // cursor-gap: the next cursor is the last visible audit id, never the hidden id.
+        let page1 = h
+            .query_audit(QueryAuditRequest {
+                limit: Some(1),
+                ..QueryAuditRequest::default()
+            })
+            .expect("first audit page should succeed");
+        assert_eq!(page1.entries.len(), 1);
+        assert_eq!(page1.entries[0].id, first_visible);
+        assert_eq!(page1.next_cursor, Some(first_visible));
+        assert_ne!(page1.next_cursor, Some(hidden_id));
+
+        let page2 = h
+            .query_audit(QueryAuditRequest {
+                after_id: page1.next_cursor,
+                limit: Some(1),
+                ..QueryAuditRequest::default()
+            })
+            .expect("second audit page should skip hidden entries");
+        assert_eq!(page2.entries.len(), 1);
+        assert_eq!(page2.entries[0].id, second_visible);
+        assert_eq!(page2.next_cursor, None);
+    }
+
+    #[test]
+    fn reserved_namespace_no_leak_filters_snapshot_lists_and_total_secrecy() {
+        let mut h = handler();
+        let public = CollectionId::new("public_snapshot_items");
+        h.create_collection(CreateCollectionRequest {
+            name: public.clone(),
+            schema: CollectionSchema::new(public.clone()),
+            actor: Some("visible-user".into()),
+        })
+        .expect("public collection should be registered");
+        let visible_audit_id = h
+            .create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: EntityId::new("visible-001"),
+                data: json!({"name": "one"}),
+                actor: Some("visible-user".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("visible create should succeed")
+            .audit_id
+            .expect("visible create should return audit id");
+
+        let (reserved, reserved_id) = seed_reserved_physical_collection(&mut h);
+        let hidden_audit_id =
+            append_reserved_audit_entry(&mut h, &reserved, &reserved_id, "hidden-system", None);
+
+        let collections = h
+            .list_collections(ListCollectionsRequest {})
+            .expect("list collections should succeed");
+        assert_eq!(collections.collections.len(), 1);
+        assert_eq!(collections.collections[0].name, public.as_str());
+        assert_eq!(collections.collections[0].entity_count, 1);
+
+        let namespace_collections = h
+            .list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: DEFAULT_DATABASE.into(),
+                schema: axon_core::id::DEFAULT_SCHEMA.into(),
+            })
+            .expect("list namespace collections should succeed");
+        assert_eq!(namespace_collections.collections, vec![public.to_string()]);
+
+        // total secrecy: hidden physical collections do not affect totals or cursor metadata.
+        let snapshot = h
+            .snapshot_entities(SnapshotRequest {
+                collections: None,
+                limit: Some(10),
+                after_page_token: None,
+            })
+            .expect("snapshot should succeed");
+        assert_eq!(snapshot.entities.len(), 1);
+        assert_eq!(snapshot.entities[0].collection, public);
+        assert_eq!(snapshot.next_page_token, None);
+        assert_eq!(snapshot.audit_cursor, visible_audit_id);
+        assert_ne!(snapshot.audit_cursor, hidden_audit_id);
+
+        let described = h
+            .describe_collection(DescribeCollectionRequest {
+                name: reserved.clone(),
+            })
+            .expect_err("describe must not expose reserved physical collections");
+        assert_reserved_namespace_guard_error(described, reserved.as_str(), OP_QUERY);
     }
 
     fn policy_snapshot_schema(collection: &str) -> CollectionSchema {
