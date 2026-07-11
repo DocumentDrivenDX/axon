@@ -140,15 +140,17 @@ redaction stages above:
   "what changed, in order, resumably."
 
 The **client local read replica** (FEAT-032, FR-32) is a *consumer* of the
-event-derived projection: it bootstraps from a snapshot and tails the change
-stream using the same opaque, restart/schema-stable cursor vocabulary
-(ADR-025), maintaining a client-resident read model for responsive
+event-derived projection: the SDK's `LocalReplica` and the storage-backed
+`StorageCursorStore` already exist, and the server snapshot bootstrap path
+already emits `op: "r"` bootstrap events. The replica boots from a snapshot and
+tails the change stream using the same opaque, restart/schema-stable cursor
+vocabulary (ADR-025), maintaining a client-resident read model for responsive
 search/sort/filter without server round-trips. Redaction is applied at
 projection time so the replica never holds data the subject may not see
-(ADR-019). The local replica is **not yet implemented** — the durable cursor
-backend and opaque cursor tokens are FEAT-032 gaps (today only a non-durable
-`MemoryCursorStore` and a raw-`audit_id` resume point exist). Offline writes
-to the replica are out of scope (FR-33, deferred).
+(ADR-019). The boundary is still partial/unwired end-to-end: GraphQL
+subscriptions continue to expose raw `audit_id` reconnects, and the single
+opaque cursor vocabulary has not yet replaced every consumer. Replica
+writeback remains out of scope (FR-33, deferred).
 
 ## Level 2: Container Diagram
 
@@ -356,14 +358,14 @@ technical-requirements umbrella; verification methods are binding.
 |-----------|--------|----------|--------------|
 | Write latency | <10 ms p99 single-entity write (schema validation + audit); sub-5 ms SQLite, <10 ms PostgreSQL with audit (ADR-003) | Application-layer post-commit audit, no storage triggers; opaque entity blobs | Benchmark suite; p99 must not regress (HELIX ratchet) |
 | Read latency | <5 ms p99 point read; <100 ms collection scan (1 000 entities); <50 ms 3-hop traversal; <500 ms aggregation over 10 K entities | EAV index tables with B-tree key locality; links table with reverse index (ADR-010) | Benchmark suite |
-| Transactions | <20 ms p99 for 2–5 entity transactions; 100 ops/txn cap; 30 s timeout | OCC version vectors, snapshot isolation, no locks (ADR-004) | DST cycle tests (ring integrity) in `axon-sim` |
+| Transactions | <20 ms p99 for 2–5 entity transactions; 100 ops/txn cap; 30 s timeout | OCC version vectors, backend-qualified storage transactions (SQLite `BEGIN IMMEDIATE`, PostgreSQL `SERIALIZABLE`; `REPEATABLE READ` remains implementation work), memory process-lifetime snapshot apply (ADR-004) | DST cycle tests (ring integrity) in `axon-sim` |
 | Guardrail overhead | <1 ms per request | In-process sliding-window limiter and entity filters (ADR-016/024) | Microbenchmarks; shared-fixture parity tests |
 | Query bounds | Traversal depth ≤10; cardinality budget 1 M rows; 30 s timeout | Streaming Cypher executor with explicit path bounds (ADR-021) | Executor budget tests |
 | Availability | Any instance serves any request; horizontal scaling linear with backing store | Stateless servers — no consensus, no leader election; durability delegated (ADR-003) | Operational acceptance: `/health` with store connectivity; graceful SIGTERM drain; connection pooling |
 | Correctness | All invariants hold under fault injection: no lost updates, audit completeness/immutability, schema enforcement, link integrity, version monotonicity, transaction atomicity | Deterministic simulation with BUGGIFY (disk/network/clock/crash faults), seed-reproducible | `axon-sim` suite; identical suite passes in embedded and server modes (mode parity) |
 | Security | Every request authorized against `(user, tenant, database)`; grants ≤ issuer role ceiling; 401 vs 403 distinction; all rejections audited | JWT credentials with per-tenant `aud` (ADR-018); guardrails (ADR-016/024); policy (ADR-019); non-bypass invariant | Shared-fixture surface-parity tests; threat-model controls (`01-frame/threat-model.md`) |
 | Observability | OpenTelemetry traces and metrics for all operations; backing-store capacity metrics | Instrumented middleware in `axon-server` | Operational acceptance criteria |
-| Disaster recovery | RPO: 0 for committed transactions (durable in backing store at commit; post-commit audit gap closed by startup recovery scan). RTO: bounded by backing-store restore — embedded: single-file copy; server: PostgreSQL PITR | Durability fully delegated to the backing store; documented backup/restore procedure; transient store failures yield retryable errors, never corruption | Backup/restore drills per operational acceptance criteria; audit-gap count ratchet (toward 0) |
+| Disaster recovery | RPO: 0 for committed transactions on restart-durable backends (durable in backing store at commit; post-commit audit gap closed by startup recovery scan). Memory remains process-lifetime only. RTO: bounded by backing-store restore — embedded: single-file copy; server: PostgreSQL PITR | Durability fully delegated to the backing store; documented backup/restore procedure; transient store failures yield retryable errors, never corruption | Backup/restore drills per operational acceptance criteria; audit-gap count ratchet (toward 0) |
 
 Embedded-mode acceptance: zero external processes, single-file database
 (entities, links, audit, schemas), in-process API with the same Rust traits

@@ -94,8 +94,8 @@ default:
 - Dirty reads and non-repeatable reads are prevented; phantom reads are
   prevented for entity lookups by version
 - The commit phase runs under a storage-level transaction (SQLite `BEGIN
-  IMMEDIATE`, PostgreSQL `SERIALIZABLE`), preventing concurrent commits from
-  racing at the storage layer
+  IMMEDIATE`, PostgreSQL `SERIALIZABLE`; `REPEATABLE READ` is not the contract),
+  preventing concurrent commits from racing at the storage layer
 
 **Opt-in Serializable for key-addressed read sets (B-104).** A transaction may
 be constructed at `IsolationLevel::Serializable`. Callers record the entity
@@ -150,10 +150,12 @@ approach is a deliberate trade-off:
 | Crash-safety window | If the process dies between `commit_tx()` and the last `audit.append()`, committed mutations have no audit trail until recovery |
 
 The crash-safety window is acceptable for V1 (in-memory) because both entity state
-and audit log are volatile; a crash loses both equally. For durable backends
-(SQLite, PostgreSQL), the audit log should be integrated into the same backing
-store transaction so that both entity and audit writes commit atomically. This
-is a P1 follow-on tracked by the durable storage adapter implementation tasks.
+and audit log are process-lifetime only; restart-durable claims do not apply to
+that backend. For durable backends (SQLite, PostgreSQL), audit writes are
+restart-durable because the entity and audit writes commit atomically in the
+same backing-store transaction for entity mutations. Remaining follow-up: the
+non-entity audit writes and in-memory query rehydration paths still need the
+same level of restart durability.
 
 **Recovery invariant**: Any implementation targeting durable storage must ensure
 INV-003 holds after restart — either by writing audit entries inside the same

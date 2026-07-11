@@ -121,17 +121,18 @@ This **post-commit audit strategy** guarantees:
 **Trade-off and recovery**: There is a narrow crash-safety window between
 `commit_tx()` and the completion of `AuditLog.append()`. If the process dies in
 that window, the committed mutation has no audit trail. For V1 (in-memory), this
-is acceptable — both entity state and audit log are volatile.
+is acceptable — both entity state and audit log are process-lifetime only, so
+restart-durable claims do not apply.
 
-For durable backends (SQLite, PostgreSQL), implementations must close this gap by
-one of:
+For durable backends (SQLite, PostgreSQL), implementations are restart-durable
+and must close this gap by one of:
 - Writing audit entries to the same database transaction as entity mutations (requires
   audit storage to be integrated into `StorageAdapter`)
 - Writing a pre-commit intent record inside the storage transaction; on startup,
   scanning for committed intents without matching audit entries and replaying them
 
-Until a durable backend is implemented, INV-003 (audit completeness) holds for
-all mutations where the process remains alive — which covers all non-crash scenarios.
+For the memory backend, INV-003 (audit completeness) holds for all mutations
+where the process remains alive — which covers all non-crash scenarios.
 
 #### CDC as audit log projection
 

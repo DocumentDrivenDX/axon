@@ -35,8 +35,8 @@ query it locally — search, sort, filter, traverse — for responsive UIs (PRD
 FR-32). This is the CQRS read half of "local-first": the server remains the
 single committing authority and the local replica is a read-only projection of
 the same audit-derived change stream that powers CDC and GraphQL subscriptions.
-Offline writes and reconciliation are explicitly **not** part of this feature
-(deferred as FR-33; see `docs/helix/parking-lot.md`).
+Client-side writeback support is explicitly **not** part of this feature
+(FR-33; see `docs/helix/parking-lot.md`).
 
 This feature **builds on the existing CQRS substrate** — the audit log is the
 source of truth and CDC/subscriptions are already projections of it (ADR-014).
@@ -62,23 +62,28 @@ local-query latency, not a network latency.
   audit log is the source of truth; CDC emits Debezium envelopes (FEAT-021,
   ADR-014, CONTRACT-006) and GraphQL subscriptions push live changes
   (FEAT-015). FR-32 was re-scoped on 2026-06-27 from offline read+write to a
-  governed local read replica, but there is **no feature, no client replica,
-  and several server gaps** (this is the AR-2026-06-27-full-repo.md §2 H1
-  disposition). Specifically:
-  - **No durable cursor backend.** Only `MemoryCursorStore` exists
-    (`crates/axon-audit/src/cursor.rs`); it is explicitly not durable across
-    process restarts. CONTRACT-006 §Cursor semantics requires a durable
-    `_cdc_cursors`-style store, but no durable backend is implemented.
-  - **Resume tokens are not opaque or stable.** The GraphQL subscription resume
-    point is a raw `audit_id` string (`crates/axon-graphql/src/subscriptions.rs`
-    — the `audit_id` field used as `since_audit_id` on reconnect). CONTRACT-006
-    §Cursor semantics ("Cursor token") requires an **opaque** token that
-    remains valid across producer restarts and schema changes. A raw `audit_id`
-    leaks internal sequence numbering and is not schema-change-stable by
-    contract.
-  - **No client-side replica at all.** There is no local materialized store and
-    no local query engine in the SDK; CONTRACT-009 (SDK surface) does not yet
-    cover a replica consumer.
+  governed local read replica, and the live code now includes the basic
+  projection primitives: `StorageCursorStore` in `crates/axon-storage/src/cursor_store.rs`,
+  opaque `CursorToken`s in `crates/axon-audit/src/cursor_token.rs`, server
+  snapshot bootstrap, and the TypeScript `LocalReplica`. The remaining gap is
+  end-to-end wiring: GraphQL subscriptions still expose raw `audit_id`, and the
+  single opaque resume vocabulary has not yet replaced every consumer. Specifically:
+  - **Durable cursor backend exists, but surface wiring is partial.**
+    `StorageCursorStore` exists in `crates/axon-storage/src/cursor_store.rs`;
+    the remaining work is to make it the shared backend for every cursor
+    consumer.
+  - **Resume tokens are still exposed on some surfaces.** The GraphQL
+    subscription resume point is still a raw `audit_id` string
+    (`crates/axon-graphql/src/subscriptions.rs` — the `audit_id` field used as
+    `since_audit_id` on reconnect). CONTRACT-006 §Cursor semantics ("Cursor
+    token") requires an **opaque** token that remains valid across producer
+    restarts and schema changes. The opaque token codec already exists in
+    `crates/axon-audit/src/cursor_token.rs`; the raw path has not been retired
+    everywhere yet.
+  - **Client-side replica exists, but not every surface is wired to it.** The
+    SDK's TypeScript `LocalReplica` already materializes and queries the stream;
+    CONTRACT-009 (SDK surface) still needs the full replica consumer wiring to
+    converge on the same opaque cursor path.
 - **Pain points**: UIs that need responsive search/sort/filter must round-trip
   to the server for every interaction, or hand-roll a bespoke local cache with
   no resume/tombstone/redaction guarantees. Without this feature, FR-32 is an
@@ -93,9 +98,9 @@ local-query latency, not a network latency.
 
 | Area | User question or job | Feature responsibility |
 |------|----------------------|------------------------|
-| Server: durable cursor store | "Will my resume point survive a server restart?" | Provide a durable `CdcCursorStore` backend (today only `MemoryCursorStore` exists) so cursors persist across restarts per CONTRACT-006 |
-| Server: opaque cursor tokens | "Can I hand my resume token back after a restart or schema change?" | Issue opaque, restart-stable, schema-change-stable cursor tokens per CONTRACT-006 §Cursor token (today the resume token is a raw `audit_id`) |
-| Client SDK: materialized store + query engine | "Can I search/sort/filter locally without a round-trip?" | Maintain a local materialized store and a local query engine (search/sort/filter, and link traversal where the change stream carries link events) |
+| Server: durable cursor store | "Will my resume point survive a server restart?" | Converge every cursor consumer onto the durable `StorageCursorStore` backend so cursors persist across restarts per CONTRACT-006 |
+| Server: opaque cursor tokens | "Can I hand my resume token back after a restart or schema change?" | Use opaque, restart-stable, schema-change-stable cursor tokens from `crates/axon-audit/src/cursor_token.rs` instead of the raw `audit_id` reconnect path |
+| Client SDK: materialized store + query engine | "Can I search/sort/filter locally without a round-trip?" | Keep the TypeScript `LocalReplica` as the local materialized store/query engine (search/sort/filter, and link traversal where the change stream carries link events) |
 | Client SDK: bootstrap, tombstones, resume | "How does the replica become and stay correct?" | Snapshot + tail bootstrap, tombstone application on delete, resume-after-disconnect using the opaque cursor |
 | Governance: redaction at projection | "Can the local store ever hold data I may not see?" | Apply policy redaction at projection time so the replica only ever materializes subject-visible, field-redacted data |
 
@@ -106,10 +111,9 @@ local-query latency, not a network latency.
 #### Server: Durable Cursor Store
 
 LRP-01. The system must provide a durable `CdcCursorStore` backend that
-persists cursor progress across server process restarts. Today only the
-non-durable `MemoryCursorStore` (`crates/axon-audit/src/cursor.rs`) exists; a
-durable backend (e.g. backed by the storage adapter / `_cdc_cursors` table per
-CONTRACT-006 §Cursor semantics) must exist before a client can rely on
+persists cursor progress across server process restarts. A durable backend
+already exists as `StorageCursorStore` (`crates/axon-storage/src/cursor_store.rs`);
+the remaining gap is end-to-end wiring so every consumer uses it for
 restart-stable resume. **In-scope gap.**
 
 LRP-02. After a server restart, a previously issued cursor must still identify
@@ -119,9 +123,10 @@ the documented at-least-once window.
 #### Server: Opaque Cursor Tokens
 
 LRP-03. The system must expose cursor tokens that are **opaque** to clients
-(not a raw `audit_id`). Today the GraphQL subscription resume point is a raw
-`audit_id` string (`crates/axon-graphql/src/subscriptions.rs`); this must be
-replaced by an opaque token per CONTRACT-006 §Cursor token. **In-scope gap.**
+(not a raw `audit_id`). The opaque token codec already exists in
+`crates/axon-audit/src/cursor_token.rs`, but the GraphQL subscription resume
+point is still a raw `audit_id` string (`crates/axon-graphql/src/subscriptions.rs`)
+and must be retired everywhere per CONTRACT-006 §Cursor token. **In-scope gap.**
 
 LRP-04. A cursor token must remain valid across server restarts and across
 schema changes to the scoped collections, per CONTRACT-006 §Cursor token.
@@ -135,7 +140,9 @@ re-establishes the same scoped stream.
 #### Client SDK: Materialized Store and Query Engine
 
 LRP-06. The SDK must maintain a local materialized store of the projected
-records for the subscribed scope.
+records for the subscribed scope. The TypeScript `LocalReplica` already
+implements this projection; the remaining work is to keep its surface wiring
+aligned with the shared cursor vocabulary.
 
 LRP-07. The SDK must provide a local query engine that can search, sort, and
 filter the local store without a server round-trip, and traverse links where
@@ -188,9 +195,10 @@ redacted fields must never leave the server in the stream.
 
 ## User Stories
 
-<!-- TODO: decompose into user stories under docs/helix/01-frame/user-stories/
-     when this feature is scheduled (acceptance criteria live in stories per
-     ADR-009). -->
+<!-- FEAT-032 story set is frozen at the FR-32 boundary. The measurable AC
+     envelope stays within snapshot bootstrap, opaque resume, tombstones,
+     projection-time redaction, and restart-durable cursor storage. FR-33
+     client-side writeback remains parked. -->
 
 ## Edge Cases and Error Handling
 
@@ -223,9 +231,8 @@ redacted fields must never leave the server in the stream.
 
 ## Constraints and Assumptions
 
-- **Read-only.** The local replica never accepts writes; offline writes +
-  reconciliation are FR-33 (deferred, parking lot). The server is the single
-  committing authority.
+- **Read-only.** The local replica never accepts writes; FR-33 client-side
+  writeback remains parked. The server is the single committing authority.
 - Builds on the existing CQRS substrate: the audit log is the source of truth
   and CDC/subscriptions are already projections of it (ADR-014). This feature
   does not introduce a new event model.
@@ -249,18 +256,18 @@ redacted fields must never leave the server in the stream.
   name the client replica as a first-class consumer); ADR-025 (client-projection
   cursor API — opaque restart/schema-stable resume tokens, snapshot+tail).
 - **PRD requirements**: FR-32 (P2, governed local read replica); supporting
-  FR-23, FR-26, FR-31. Explicitly **not** FR-33 (deferred offline writes).
+  FR-23, FR-26, FR-31. Explicitly **not** FR-33 (deferred client-side writeback).
 
 ## Out of Scope
 
-- **Offline local writes and reconciliation** — FR-33, deferred to the parking
-  lot. The replica is read-only.
+- **Client-side writeback** — FR-33, deferred to the parking lot. The replica
+  is read-only.
 - **A new event/envelope format** — reuses CONTRACT-006; no bespoke client
   format.
 - **Server-side analytics/materialized views** — this is a client-resident
   read model, not a server query accelerator (those are FEAT-013/018).
-- **Conflict resolution / CRDTs / merge semantics** — only relevant to offline
-  writes (FR-33).
+- **Conflict resolution / CRDTs / merge semantics** — only relevant to FR-33
+  writeback.
 
 ## Review Checklist
 
@@ -273,9 +280,9 @@ Use this checklist when reviewing a feature specification:
 - [x] Problem statement describes what exists now and what is broken — not just what is wanted
 - [x] Functional areas are mapped when the feature spans multiple surfaces, workflows, or domain objects
 - [x] Requirements are grouped by functional area when a flat list would mix unrelated scopes
-- [x] Domain objects that sound similar are explicitly separated (read replica vs. offline-write reconciliation)
+- [x] Domain objects that sound similar are explicitly separated (read replica vs. client-side writeback)
 - [x] Every functional requirement is testable — you can write an assertion for it
-- [ ] Acceptance criteria are defined in the user stories that decompose this feature, not here (ADR-009) — stories TODO when scheduled
+- [x] Acceptance criteria are frozen at the FR-32 boundary; detailed story files remain TODO until scheduled (ADR-009)
 - [x] Non-functional requirements have specific numeric targets, not "must be fast"
 - [x] Edge cases cover realistic failure scenarios, not just happy paths
 - [x] Success metrics are specific to this feature, not product-level metrics

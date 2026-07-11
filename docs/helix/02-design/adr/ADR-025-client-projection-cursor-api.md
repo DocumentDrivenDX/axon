@@ -35,8 +35,8 @@ ddx:
 
 | Aspect | Description |
 |--------|-------------|
-| Problem | The governed local read replica (FR-32, FEAT-032) needs to bootstrap and then resume the change stream across disconnects, server restarts, schema-compatible migrations, and policy/auth epoch changes. Today the GraphQL subscription resume point is a raw `audit_id` string (`crates/axon-graphql/src/subscriptions.rs`), and the only cursor store is the non-durable `MemoryCursorStore` (`crates/axon-audit/src/cursor.rs`). A raw `audit_id` leaks internal sequence numbering and is not contractually restart/schema-stable. |
-| Current State | ADR-014 established CDC as a projection of the audit log with `audit_id` as the offset. CONTRACT-006 §Cursor semantics already *requires* an opaque cursor token that stays valid across producer restarts and schema-compatible migrations, and purges it on incompatible schema, policy, or auth epoch changes; §Cursor vocabulary parity requires one vocabulary across GraphQL, MCP, SDK, and CDC — but the implementation exposes a raw `audit_id` and lacks a durable cursor backend. |
+| Problem | The governed local read replica (FR-32, FEAT-032) needs to bootstrap and then resume the change stream across disconnects, server restarts, schema-compatible migrations, and policy/auth epoch changes. The token codec and storage-backed cursor store already exist in-tree (`crates/axon-audit/src/cursor_token.rs`, `crates/axon-storage/src/cursor_store.rs`), but the GraphQL subscription resume point is still a raw `audit_id` string (`crates/axon-graphql/src/subscriptions.rs`) and the end-to-end wiring is partial/unwired. A raw `audit_id` leaks internal sequence numbering and is not contractually restart/schema-stable. |
+| Current State | ADR-014 established CDC as a projection of the audit log with `audit_id` as the offset. CONTRACT-006 §Cursor semantics already *requires* an opaque cursor token that stays valid across producer restarts and schema-compatible migrations, and purges it on incompatible schema, policy, or auth epoch changes; §Cursor vocabulary parity requires one vocabulary across GraphQL, MCP, SDK, and CDC. The implementation now has the token/store primitives, but not every consumer is wired to them yet. |
 | Requirements | Opaque resume tokens; tokens valid across server restart and schema-compatible migration; incompatible schema/policy/auth epoch changes purge and force rebootstrap; snapshot+tail bootstrap; one cursor vocabulary across GraphQL subscriptions, MCP resource notifications, SDK change readers, and CDC sinks; durable cursor storage. |
 | Decision Drivers | FEAT-032 cannot rely on raw `audit_id` (leaky, not schema-stable); CONTRACT-006 already mandates an opaque token and explicit invalidation rules, so the implementation must converge to it; one vocabulary avoids per-surface resume logic drift. |
 
@@ -63,13 +63,17 @@ SDK (CONTRACT-009) and shared by all stream consumers, with these properties:
   notifications, SDK change readers, and CDC sinks use the same token vocabulary
   (CONTRACT-006 §Cursor vocabulary parity). The raw `audit_id` resume point in
   GraphQL subscriptions is replaced by this opaque token.
+- **Surface wiring is partial/unwired today** — the token codec and durable
+  cursor store already exist in-tree, but the raw `audit_id` reconnect path
+  still needs to be retired everywhere so every consumer speaks the same
+  vocabulary.
 - **Pre-1.0 hard cut** — because this line is pre-1.0, a hard cursor cut is
   allowed when the token codec or replay epoch cannot be bridged, but it must
   be explicit: purge the old token and require rebootstrap.
 - **Durable backing** — tokens are honored by a durable `CdcCursorStore`
-  backend (replacing reliance on the non-durable `MemoryCursorStore`) so resume
-  survives server restarts (CONTRACT-006 §Cursor semantics). The durable
-  backend itself is a FEAT-032 implementation gap, not a separate decision.
+  backend so resume survives server restarts (CONTRACT-006 §Cursor semantics).
+  The backend itself exists in-tree; the remaining work is converging every
+  consumer onto it.
 
 Normative token format, expiry/aging, and SDK method shape are owned by
 CONTRACT-006 and CONTRACT-009; this ADR fixes the *decision* that the token is

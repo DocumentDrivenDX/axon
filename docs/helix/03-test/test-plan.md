@@ -125,6 +125,21 @@ FEAT-009): `docs/helix/03-test/test-plans/STP-{023..025,046,047,070..077,101..10
 Each STP owns its story's AC↔test matrix with honest per-AC statuses. STPs for
 the remaining features are deferred backlog.
 
+### Frozen FEAT-032 coverage
+
+FEAT-032 is frozen at the FR-32 read-replica boundary. The measurable AC
+envelope is:
+
+| Frozen AC | Measurable check | Existing evidence |
+|---|---|---|
+| FR-32 bootstrap | `snapshot` returns `op: "r"` bootstrap events, then live tailing continues with no gap | `crates/axon-server/tests/snapshot_test.rs`, `sdk/typescript/test/local-replica.test.ts` |
+| FR-32 opaque resume | cursor tokens round-trip; incompatible schema, policy, or auth epoch changes purge the token and require rebootstrap | `crates/axon-audit/src/cursor_token.rs` |
+| FR-32 local projection | `LocalReplica` applies tombstones and keeps search/sort/filter client-side | `sdk/typescript/test/local-replica.test.ts` |
+| FR-32 restart durability | `StorageCursorStore` survives reopen; memory-only cursor state is explicitly not restart-durable | `crates/axon-storage/src/cursor_store.rs` |
+
+This is the frozen coverage set for the eventual story decomposition; FR-33
+writeback remains parked.
+
 ---
 
 ## 4. Coverage Requirements
