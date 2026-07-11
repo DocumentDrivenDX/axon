@@ -76,7 +76,10 @@ use axon_schema::{
 use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdapter};
 
 use crate::intent::{
-    MutationIntent, MutationOperationKind, MutationReviewSummary, PreImageBinding,
+    MutationIntent, MutationIntentCommitValidationAuditRequest,
+    MutationIntentCommitValidationError, MutationIntentLifecycleError,
+    MutationIntentLifecycleService, MutationIntentTransactionCommitRequest, MutationOperationKind,
+    MutationReviewSummary, PreImageBinding,
 };
 use crate::policy::{
     authorize_system_audit_query, AdministrativeAuditCaller, PolicyRequestSnapshot,
@@ -87,10 +90,11 @@ use crate::request::{
     CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
     DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
     DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, DropDatabaseRequest,
-    DropNamespaceRequest, ExplainActorOverride, ExplainPolicyRequest, FieldFilter, FilterNode,
-    FilterOp, GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest,
-    ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
-    ListNamespacesRequest, PatchEntityRequest, PutCollectionTemplateRequest, PutSchemaRequest,
+    DropNamespaceRequest, ExecuteTransactionRequest, ExplainActorOverride, ExplainPolicyRequest,
+    FieldFilter, FilterNode, FilterOp, GetCollectionTemplateRequest, GetEntityRequest,
+    GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
+    PreviewMutationIntentRequest, PutCollectionTemplateRequest, PutSchemaRequest,
     QueryAuditRequest, QueryAuthAuditRequest, QueryEntitiesRequest, QuerySystemAuditRequest,
     ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackCollectionRequest,
     RollbackEntityRequest, RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest,
@@ -99,21 +103,22 @@ use crate::request::{
 };
 use crate::response::ReservedNamespaceError;
 use crate::response::{
-    AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
-    CreateCollectionResponse, CreateDatabaseResponse, CreateEntityResponse, CreateLinkResponse,
-    CreateNamespaceResponse, DeleteCollectionTemplateResponse, DeleteEntityResponse,
-    DeleteLinkResponse, DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse,
-    DropDatabaseResponse, DropNamespaceResponse, EffectivePolicyResponse,
+    AggregateGroup, AggregateResponse, CollectionMetadata, CommitMutationIntentTransactionResponse,
+    CountEntitiesResponse, CountGroup, CreateCollectionResponse, CreateDatabaseResponse,
+    CreateEntityResponse, CreateLinkResponse, CreateNamespaceResponse,
+    DeleteCollectionTemplateResponse, DeleteEntityResponse, DeleteLinkResponse,
+    DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse, DropDatabaseResponse,
+    DropNamespaceResponse, EffectivePolicyResponse, ExecuteTransactionResponse,
     GetCollectionTemplateResponse, GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse,
     InvalidEntity, ListCollectionsResponse, ListDatabasesResponse,
     ListNamespaceCollectionsResponse, ListNamespacesResponse, PatchEntityResponse,
     PolicyApprovalEnvelopeSummary, PolicyExplanationResponse, PolicyQueryPlanDiagnostics,
-    PolicyRuleMatch, PutCollectionTemplateResponse, PutSchemaResponse, QueryAuditResponse,
-    QueryAuthAuditResponse, QueryEntitiesResponse, ReachableResponse, ReadWarning,
-    RevalidateResponse, RevertEntityResponse, RollbackCollectionEntityResult,
-    RollbackCollectionResponse, RollbackEntityResponse, RollbackTransactionEntityResult,
-    RollbackTransactionResponse, SnapshotResponse, TransitionLifecycleResponse, TraverseHop,
-    TraversePath, TraverseResponse, UpdateEntityResponse,
+    PolicyRuleMatch, PreviewMutationIntentResponse, PutCollectionTemplateResponse,
+    PutSchemaResponse, QueryAuditResponse, QueryAuthAuditResponse, QueryEntitiesResponse,
+    ReachableResponse, ReadWarning, RevalidateResponse, RevertEntityResponse,
+    RollbackCollectionEntityResult, RollbackCollectionResponse, RollbackEntityResponse,
+    RollbackTransactionEntityResult, RollbackTransactionResponse, SnapshotResponse,
+    TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -3965,6 +3970,121 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.commit_transaction_inner(tx, actor, attribution, None)
     }
 
+    /// Persist a mutation-intent preview through this handler's governed
+    /// storage and audit boundary.
+    pub fn preview_mutation_intent(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: PreviewMutationIntentRequest,
+    ) -> Result<PreviewMutationIntentResponse, MutationIntentLifecycleError> {
+        ensure_generic_mutation_intent_access(&req.intent)
+            .map_err(MutationIntentLifecycleError::from)?;
+        service
+            .create_preview_record_with_origin(&mut self.storage, req.intent, req.origin)
+            .map(Into::into)
+    }
+
+    /// Execute a staged transaction through the same namespace, schema, policy,
+    /// transaction, and audit path used by lower-level transaction commits.
+    pub fn execute_transaction(
+        &mut self,
+        req: ExecuteTransactionRequest,
+    ) -> Result<ExecuteTransactionResponse, AxonError> {
+        self.execute_transaction_inner(req, None)
+    }
+
+    /// Execute a staged transaction, attributing audit entries to `caller`.
+    pub fn execute_transaction_with_caller(
+        &mut self,
+        mut req: ExecuteTransactionRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<ExecuteTransactionResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
+        self.execute_transaction_inner(req, Some(caller))
+    }
+
+    fn execute_transaction_inner(
+        &mut self,
+        req: ExecuteTransactionRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<ExecuteTransactionResponse, AxonError> {
+        let transaction_id = req.transaction.id.clone();
+        let written =
+            self.commit_transaction_inner(req.transaction, req.actor, req.attribution, caller)?;
+        Ok(ExecuteTransactionResponse {
+            transaction_id,
+            written,
+        })
+    }
+
+    /// Consume a mutation intent by committing its bound transaction through
+    /// this handler's governed policy and audit boundary.
+    pub fn commit_mutation_intent_transaction(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: MutationIntentTransactionCommitRequest,
+    ) -> Result<CommitMutationIntentTransactionResponse, MutationIntentCommitValidationError> {
+        self.commit_mutation_intent_transaction_inner(service, req, None)
+    }
+
+    /// Consume a mutation intent by committing its bound transaction while
+    /// attributing audit entries to `caller`.
+    pub fn commit_mutation_intent_transaction_with_caller(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        mut req: MutationIntentTransactionCommitRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<CommitMutationIntentTransactionResponse, MutationIntentCommitValidationError> {
+        req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
+        self.commit_mutation_intent_transaction_inner(service, req, Some(caller))
+    }
+
+    fn commit_mutation_intent_transaction_inner(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        mut req: MutationIntentTransactionCommitRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<CommitMutationIntentTransactionResponse, MutationIntentCommitValidationError> {
+        ensure_generic_transaction_access(&req.transaction)
+            .map_err(|error| mutation_intent_commit_failed("unknown", error))?;
+
+        let operation = req.canonical_operation.clone().unwrap_or_else(|| {
+            crate::intent::canonical_staged_transaction_operation(&req.transaction)
+        });
+        let mut current = req.current.clone();
+        current.operation_hash = operation.operation_hash.clone();
+
+        let intent = service.validate_commit_bindings_with_audit(
+            &mut self.storage,
+            MutationIntentCommitValidationAuditRequest {
+                scope: &req.scope,
+                token: &req.token,
+                current: &current,
+                now_ns: req.now_ns,
+                actor: req.actor.as_deref(),
+            },
+        )?;
+        let intent_id = intent.intent_id.clone();
+
+        self.enforce_transaction_policy(
+            &req.transaction,
+            req.actor.as_deref(),
+            req.attribution.as_ref(),
+            caller,
+        )
+        .map_err(|error| mutation_intent_commit_failed(intent_id.clone(), error))?;
+
+        req.canonical_operation = Some(operation);
+        req.current = current;
+        service
+            .commit_transaction_intent(&mut self.storage, req)
+            .map(Into::into)
+    }
+
     fn commit_transaction_inner(
         &mut self,
         tx: crate::transaction::Transaction,
@@ -5718,6 +5838,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.query_audit_with_read_context(req, None, None)
     }
 
+    /// Query application-visible audit entries through the governed handler API.
+    pub fn query_application_audit(
+        &self,
+        req: QueryAuditRequest,
+    ) -> Result<QueryAuditResponse, AxonError> {
+        self.query_audit(req)
+    }
+
     pub fn query_audit_with_caller(
         &self,
         req: QueryAuditRequest,
@@ -5725,6 +5853,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
         attribution: Option<AuditAttribution>,
     ) -> Result<QueryAuditResponse, AxonError> {
         self.query_audit_with_read_context(req, Some(caller), attribution.as_ref())
+    }
+
+    /// Query caller-scoped application-visible audit entries through the
+    /// governed handler API.
+    pub fn query_application_audit_with_caller(
+        &self,
+        req: QueryAuditRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<QueryAuditResponse, AxonError> {
+        self.query_audit_with_caller(req, caller, attribution)
     }
 
     fn query_audit_with_read_context(
@@ -5814,6 +5953,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entries: page.entries,
             next_cursor: page.next_cursor,
         })
+    }
+
+    /// Query Axon-owned system audit rows through the governed handler API.
+    pub fn query_governed_system_audit(
+        &self,
+        req: QuerySystemAuditRequest,
+        caller: Option<&AdministrativeAuditCaller>,
+    ) -> Result<QueryAuditResponse, SystemAuditQueryError> {
+        self.query_system_audit(req, caller)
     }
 
     /// Query auth/credential audit metadata through the typed administrative
@@ -10090,6 +10238,51 @@ fn ensure_generic_intent_operation_access(operation: &Value) -> Result<(), AxonE
     Ok(())
 }
 
+fn ensure_generic_mutation_intent_access(intent: &MutationIntent) -> Result<(), AxonError> {
+    let operation = intent
+        .operation
+        .canonical_operation
+        .as_ref()
+        .ok_or_else(|| {
+            AxonError::InvalidArgument(
+                "mutation intent preview requires canonical_operation for namespace validation"
+                    .into(),
+            )
+        })?;
+    ensure_generic_intent_operation_kind_access(&intent.operation.operation_kind, operation)
+}
+
+fn ensure_generic_intent_operation_kind_access(
+    operation_kind: &MutationOperationKind,
+    operation: &Value,
+) -> Result<(), AxonError> {
+    if operation_kind != &MutationOperationKind::Transaction {
+        return ensure_generic_intent_operation_access(operation);
+    }
+
+    let Some(operations) = operation.get("operations").and_then(Value::as_array) else {
+        return ensure_generic_intent_operation_access(operation);
+    };
+    for child in operations {
+        if let Some(child_kind) = transaction_child_operation_kind(child) {
+            ensure_generic_intent_operation_kind_access(&child_kind, child)?;
+        } else {
+            ensure_generic_intent_operation_access(child)?;
+        }
+    }
+    Ok(())
+}
+
+fn mutation_intent_commit_failed(
+    intent_id: impl Into<String>,
+    error: AxonError,
+) -> MutationIntentCommitValidationError {
+    MutationIntentCommitValidationError::CommitFailed {
+        intent_id: intent_id.into(),
+        source: error.to_string(),
+    }
+}
+
 fn transaction_child_operation_kind(operation: &Value) -> Option<MutationOperationKind> {
     match operation.get("op")?.as_str()? {
         "create_entity" => Some(MutationOperationKind::CreateEntity),
@@ -12476,6 +12669,459 @@ mod tests {
                 }],
             }),
             write: None,
+        }
+    }
+
+    mod governed_handler_api {
+        use super::*;
+
+        fn service() -> crate::MutationIntentLifecycleService {
+            crate::MutationIntentLifecycleService::new(crate::MutationIntentTokenSigner::new(
+                b"governed-handler-api-test-secret".as_slice(),
+            ))
+        }
+
+        fn scope() -> crate::MutationIntentScopeBinding {
+            crate::MutationIntentScopeBinding {
+                tenant_id: DEFAULT_DATABASE.into(),
+                database_id: DEFAULT_DATABASE.into(),
+            }
+        }
+
+        fn subject(actor: &str) -> crate::MutationIntentSubjectBinding {
+            crate::MutationIntentSubjectBinding {
+                user_id: Some(actor.into()),
+                tenant_role: Some("write".into()),
+                credential_id: Some(format!("cred-{actor}")),
+                grant_version: Some(1),
+                ..Default::default()
+            }
+        }
+
+        fn intent_with_operation(
+            intent_id: &str,
+            operation: crate::CanonicalOperationMetadata,
+            subject: crate::MutationIntentSubjectBinding,
+        ) -> crate::MutationIntent {
+            crate::MutationIntent {
+                intent_id: intent_id.into(),
+                scope: scope(),
+                subject,
+                schema_version: 1,
+                policy_version: 1,
+                operation,
+                pre_images: Vec::new(),
+                decision: crate::MutationIntentDecision::Allow,
+                approval_state: crate::ApprovalState::None,
+                approval_route: None,
+                expires_at: 9_000_000_000_000_000_000,
+                review_summary: crate::MutationReviewSummary::default(),
+            }
+        }
+
+        fn create_intent(
+            intent_id: &str,
+            collection: CollectionId,
+            id: EntityId,
+            actor: &str,
+        ) -> crate::MutationIntent {
+            let request = CreateEntityRequest {
+                collection,
+                id,
+                data: json!({"owner_id": actor, "title": "previewed"}),
+                actor: Some(actor.into()),
+                audit_metadata: None,
+                attribution: None,
+            };
+            intent_with_operation(
+                intent_id,
+                crate::canonical_create_entity_operation(&request),
+                subject(actor),
+            )
+        }
+
+        fn commit_context(
+            intent: &crate::MutationIntent,
+        ) -> crate::MutationIntentCommitValidationContext {
+            crate::MutationIntentCommitValidationContext {
+                subject: intent.subject.clone(),
+                schema_version: intent.schema_version,
+                policy_version: intent.policy_version,
+                operation_hash: intent.operation.operation_hash.clone(),
+                caller_authorized: true,
+            }
+        }
+
+        #[test]
+        fn governed_handler_api_intent_preview_persists_audit_without_raw_storage() {
+            let mut h = handler();
+            let service = service();
+            let intent = create_intent(
+                "mint_governed_preview",
+                CollectionId::new("governed_preview_docs"),
+                EntityId::new("doc-1"),
+                "alice",
+            );
+
+            let response = h
+                .preview_mutation_intent(
+                    &service,
+                    PreviewMutationIntentRequest {
+                        intent: intent.clone(),
+                        origin: None,
+                    },
+                )
+                .expect("governed preview should persist");
+
+            assert_eq!(response.intent.intent_id, intent.intent_id);
+            assert!(response.intent_token.is_some());
+
+            let audit = h
+                .query_application_audit(QueryAuditRequest {
+                    operation: Some("intent.preview".into()),
+                    intent_id: Some(intent.intent_id.clone()),
+                    ..QueryAuditRequest::default()
+                })
+                .expect("application audit query should see intent preview lineage");
+            assert_eq!(audit.entries.len(), 1);
+            let entry = &audit.entries[0];
+            assert_eq!(entry.mutation, MutationType::IntentPreview);
+            assert_eq!(
+                entry
+                    .intent_lineage
+                    .as_ref()
+                    .expect("preview audit has lineage")
+                    .intent_id,
+                intent.intent_id
+            );
+        }
+
+        #[test]
+        fn governed_handler_api_intent_preview_rejects_reserved_namespace_before_storage() {
+            let mut h = AxonHandler::new(LookupCountingStorageAdapter::default());
+            let service = service();
+            let reserved = CollectionId::new(SystemCollection::beads().name());
+            let intent = create_intent(
+                "mint_governed_reserved_preview",
+                reserved.clone(),
+                EntityId::new("sys-1"),
+                "alice",
+            );
+
+            let err = h
+                .preview_mutation_intent(
+                    &service,
+                    PreviewMutationIntentRequest {
+                        intent,
+                        origin: None,
+                    },
+                )
+                .expect_err("reserved namespace preview must be rejected");
+
+            assert!(
+                err.to_string()
+                    .contains(crate::response::RESERVED_NAMESPACE_CODE),
+                "unexpected error: {err}"
+            );
+            assert_eq!(
+                h.storage_ref().storage_calls(),
+                0,
+                "namespace guard must run before intent preview touches storage"
+            );
+        }
+
+        #[test]
+        fn governed_handler_api_transaction_execution_enforces_policy_and_audit() {
+            let mut h = handler();
+            let collection = CollectionId::new("governed_tx_docs");
+            h.put_schema(policy_test_schema(
+                collection.as_str(),
+                AccessControlPolicy {
+                    create: Some(allow_all_policy()),
+                    fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+                    ..Default::default()
+                },
+            ))
+            .expect("policy schema");
+
+            let mut denied = crate::Transaction::new();
+            denied
+                .create(Entity::new(
+                    collection.clone(),
+                    EntityId::new("blocked"),
+                    json!({"owner_id": "blocked", "title": "blocked", "secret": "classified"}),
+                ))
+                .expect("stage denied create");
+            let audit_before = h.audit_log().len();
+
+            let denial = expect_policy_denial(
+                h.execute_transaction(ExecuteTransactionRequest {
+                    transaction: denied,
+                    actor: Some("blocked".into()),
+                    attribution: None,
+                })
+                .expect_err("governed transaction should enforce policy"),
+            );
+            assert_eq!(denial.reason, "field_write_denied");
+            assert_eq!(denial.operation_index, Some(0));
+            assert_eq!(h.audit_log().len(), audit_before);
+
+            let mut allowed = crate::Transaction::new();
+            allowed
+                .create(Entity::new(
+                    collection.clone(),
+                    EntityId::new("allowed"),
+                    json!({"owner_id": "alice", "title": "allowed"}),
+                ))
+                .expect("stage allowed create");
+            let response = h
+                .execute_transaction(ExecuteTransactionRequest {
+                    transaction: allowed,
+                    actor: Some("alice".into()),
+                    attribution: None,
+                })
+                .expect("allowed governed transaction should commit");
+
+            assert_eq!(response.written.len(), 1);
+            let audit = h
+                .query_application_audit(QueryAuditRequest {
+                    operation: Some("entity.create".into()),
+                    collection: Some(collection),
+                    ..QueryAuditRequest::default()
+                })
+                .expect("application audit should expose committed transaction");
+            assert_eq!(audit.entries.len(), 1);
+            assert_eq!(
+                audit.entries[0].transaction_id.as_deref(),
+                Some(response.transaction_id.as_str())
+            );
+        }
+
+        #[test]
+        fn governed_handler_api_intent_commit_revalidates_policy_and_audits_success() {
+            let mut h = handler();
+            let service = service();
+            let collection = CollectionId::new("governed_intent_commit_docs");
+            h.put_schema(policy_test_schema(
+                collection.as_str(),
+                AccessControlPolicy {
+                    create: Some(allow_all_policy()),
+                    fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+                    ..Default::default()
+                },
+            ))
+            .expect("policy schema");
+
+            let mut denied_tx = crate::Transaction::new();
+            denied_tx
+                .create(Entity::new(
+                    collection.clone(),
+                    EntityId::new("denied"),
+                    json!({"owner_id": "blocked", "title": "denied", "secret": "classified"}),
+                ))
+                .expect("stage denied intent transaction");
+            let denied_operation = crate::canonical_staged_transaction_operation(&denied_tx);
+            let denied_intent = intent_with_operation(
+                "mint_governed_commit_denied",
+                denied_operation.clone(),
+                subject("blocked"),
+            );
+            let denied_token = h
+                .preview_mutation_intent(
+                    &service,
+                    PreviewMutationIntentRequest {
+                        intent: denied_intent.clone(),
+                        origin: None,
+                    },
+                )
+                .expect("denied fixture preview should persist")
+                .intent_token
+                .expect("allow intent gets token");
+            let err = h
+                .commit_mutation_intent_transaction(
+                    &service,
+                    crate::MutationIntentTransactionCommitRequest {
+                        scope: scope(),
+                        token: denied_token,
+                        transaction: denied_tx,
+                        canonical_operation: Some(denied_operation),
+                        current: commit_context(&denied_intent),
+                        now_ns: 1,
+                        actor: Some("blocked".into()),
+                        attribution: None,
+                    },
+                )
+                .expect_err("governed intent commit should revalidate transaction policy");
+            assert_eq!(err.error_code(), "intent_commit_failed");
+            assert!(
+                err.to_string().contains("field_write_denied"),
+                "unexpected error: {err}"
+            );
+            assert!(
+                h.get_entity(GetEntityRequest {
+                    collection: collection.clone(),
+                    id: EntityId::new("denied"),
+                })
+                .is_err(),
+                "policy-denied intent commit must not write the entity"
+            );
+
+            let mut allowed_tx = crate::Transaction::new();
+            allowed_tx
+                .create(Entity::new(
+                    collection.clone(),
+                    EntityId::new("allowed"),
+                    json!({"owner_id": "alice", "title": "allowed"}),
+                ))
+                .expect("stage allowed intent transaction");
+            let allowed_operation = crate::canonical_staged_transaction_operation(&allowed_tx);
+            let allowed_intent = intent_with_operation(
+                "mint_governed_commit_allowed",
+                allowed_operation.clone(),
+                subject("alice"),
+            );
+            let allowed_token = h
+                .preview_mutation_intent(
+                    &service,
+                    PreviewMutationIntentRequest {
+                        intent: allowed_intent.clone(),
+                        origin: None,
+                    },
+                )
+                .expect("allowed preview should persist")
+                .intent_token
+                .expect("allow intent gets token");
+            let committed = h
+                .commit_mutation_intent_transaction(
+                    &service,
+                    crate::MutationIntentTransactionCommitRequest {
+                        scope: scope(),
+                        token: allowed_token,
+                        transaction: allowed_tx,
+                        canonical_operation: Some(allowed_operation),
+                        current: commit_context(&allowed_intent),
+                        now_ns: 2,
+                        actor: Some("alice".into()),
+                        attribution: None,
+                    },
+                )
+                .expect("allowed governed intent commit should succeed");
+
+            assert_eq!(
+                committed.intent.approval_state,
+                crate::ApprovalState::Committed
+            );
+            assert_eq!(committed.written.len(), 1);
+            let audit = h
+                .query_application_audit(QueryAuditRequest {
+                    intent_id: Some(allowed_intent.intent_id.clone()),
+                    ..QueryAuditRequest::default()
+                })
+                .expect("application audit should query committed intent lineage");
+            assert!(audit
+                .entries
+                .iter()
+                .any(|entry| entry.mutation == MutationType::IntentPreview));
+            let entity_entry = audit
+                .entries
+                .iter()
+                .find(|entry| entry.mutation == MutationType::EntityCreate)
+                .expect("committed transaction entry has intent lineage");
+            assert_eq!(
+                entity_entry.transaction_id.as_deref(),
+                Some(committed.transaction_id.as_str())
+            );
+            assert_eq!(
+                entity_entry
+                    .intent_lineage
+                    .as_ref()
+                    .expect("entity audit has intent lineage")
+                    .intent_id,
+                allowed_intent.intent_id
+            );
+        }
+
+        #[test]
+        fn governed_handler_api_audit_queries_split_application_and_system_scope() {
+            let mut h = handler();
+            let service = service();
+            let public = CollectionId::new("governed_audit_docs");
+            h.create_collection(CreateCollectionRequest {
+                name: public.clone(),
+                schema: CollectionSchema::new(public.clone()),
+                actor: Some("admin".into()),
+            })
+            .expect("public collection should be registered");
+            h.create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: EntityId::new("doc-1"),
+                data: json!({"title": "application"}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("public entity should create application audit");
+
+            let intent = create_intent(
+                "mint_governed_system_audit",
+                CollectionId::new("governed_audit_intent_docs"),
+                EntityId::new("doc-2"),
+                "alice",
+            );
+            h.preview_mutation_intent(
+                &service,
+                PreviewMutationIntentRequest {
+                    intent,
+                    origin: None,
+                },
+            )
+            .expect("system intent preview should persist");
+
+            let app_audit = h
+                .query_application_audit(QueryAuditRequest {
+                    collection: Some(public),
+                    ..QueryAuditRequest::default()
+                })
+                .expect("application audit query should succeed for public collection");
+            assert!(app_audit
+                .entries
+                .iter()
+                .any(|entry| entry.mutation == MutationType::EntityCreate));
+
+            let system_collection = CollectionId::new(SystemCollection::mutation_intents().name());
+            let app_err = h
+                .query_application_audit(QueryAuditRequest {
+                    collection: Some(system_collection.clone()),
+                    ..QueryAuditRequest::default()
+                })
+                .expect_err("application audit must reject direct system collection filters");
+            assert_reserved_namespace_guard_error(app_err, system_collection.as_str(), OP_AUDIT);
+
+            let admin = administrative_audit_caller(
+                DEFAULT_DATABASE,
+                Some(TenantRole::Admin),
+                audit_grants(DEFAULT_DATABASE, vec![Op::Read, Op::Admin]),
+                false,
+            );
+            let system_audit = h
+                .query_governed_system_audit(
+                    QuerySystemAuditRequest {
+                        tenant_id: DEFAULT_DATABASE.into(),
+                        database: DEFAULT_DATABASE.into(),
+                        query: QueryAuditRequest {
+                            collection: Some(system_collection),
+                            operation: Some("intent.preview".into()),
+                            ..QueryAuditRequest::default()
+                        },
+                    },
+                    Some(&admin),
+                )
+                .expect("governed system audit should expose authorized system rows");
+            assert_eq!(system_audit.entries.len(), 1);
+            assert_eq!(
+                system_audit.entries[0].mutation,
+                MutationType::IntentPreview
+            );
         }
     }
 

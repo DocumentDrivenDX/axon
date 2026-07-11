@@ -10,6 +10,9 @@ use axon_schema::gates::GateResult;
 use axon_schema::rules::RuleViolation;
 use axon_schema::schema::CollectionSchema;
 
+use crate::intent::{
+    MutationIntent, MutationIntentCommitResult, MutationIntentPreviewRecord, MutationIntentToken,
+};
 use crate::policy::PolicyRequestSnapshot;
 
 pub const RESERVED_NAMESPACE_CODE: &str = "reserved_namespace";
@@ -397,6 +400,55 @@ pub struct AuthAuditRedactionV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueryAuthAuditResponse {
     pub entries: Vec<AuthAuditRedactionV1>,
+}
+
+/// Response after persisting a governed mutation-intent preview.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreviewMutationIntentResponse {
+    /// Server-side intent record persisted for lookup, approval, and commit.
+    pub intent: MutationIntent,
+    /// Executable token issued for `allow` or `needs_approval` intents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_token: Option<MutationIntentToken>,
+}
+
+impl From<MutationIntentPreviewRecord> for PreviewMutationIntentResponse {
+    fn from(record: MutationIntentPreviewRecord) -> Self {
+        Self {
+            intent: record.intent,
+            intent_token: record.intent_token,
+        }
+    }
+}
+
+/// Response after executing a staged transaction through the governed handler API.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecuteTransactionResponse {
+    /// Transaction ID shared by the written audit entries.
+    pub transaction_id: String,
+    /// Entity/link records written by the transaction commit path.
+    pub written: Vec<Entity>,
+}
+
+/// Response after consuming a mutation intent by committing its bound transaction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommitMutationIntentTransactionResponse {
+    /// Intent after it has been marked committed.
+    pub intent: MutationIntent,
+    /// Entity/link records written by the transaction commit path.
+    pub written: Vec<Entity>,
+    /// Transaction ID shared by the written audit entries.
+    pub transaction_id: String,
+}
+
+impl From<MutationIntentCommitResult> for CommitMutationIntentTransactionResponse {
+    fn from(result: MutationIntentCommitResult) -> Self {
+        Self {
+            intent: result.intent,
+            written: result.written,
+            transaction_id: result.transaction_id,
+        }
+    }
 }
 
 impl From<CredentialMetadata> for AuthAuditRedactionV1 {

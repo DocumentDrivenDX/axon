@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 
-use axon_audit::entry::AuditAttribution;
+use axon_audit::entry::{AuditAttribution, MutationIntentAuditOrigin};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use axon_core::id::{CollectionId, EntityId};
 use axon_schema::schema::CollectionSchema;
+
+use crate::intent::MutationIntent;
+use crate::transaction::Transaction;
 
 /// Request to create a new entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,6 +276,31 @@ pub struct QueryAuthAuditRequest {
     /// Optional stable user id filter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
+}
+
+/// Request to persist a governed mutation-intent preview through
+/// [`AxonHandler`](crate::handler::AxonHandler).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewMutationIntentRequest {
+    /// Server-side intent record produced by the policy/explain preview path.
+    pub intent: MutationIntent,
+    /// Optional transport/tool origin attached to the preview audit entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MutationIntentAuditOrigin>,
+}
+
+/// In-process request to execute a staged transaction through
+/// [`AxonHandler`](crate::handler::AxonHandler).
+///
+/// `Transaction` is a staged runtime object, not a transport DTO, so this
+/// request intentionally does not derive serde traits.
+pub struct ExecuteTransactionRequest {
+    /// Staged transaction to validate, authorize, commit, and audit.
+    pub transaction: Transaction,
+    /// Actor recorded on transaction audit entries.
+    pub actor: Option<String>,
+    /// Optional authenticated attribution recorded on transaction audit entries.
+    pub attribution: Option<AuditAttribution>,
 }
 
 /// Request to revert an entity to the `before` state recorded in an audit entry.
