@@ -15,6 +15,7 @@ members = [
     "crates/axon-cypher",
     "crates/axon-cypher-ast",
     "crates/axon-registry",
+    "xtask",
 ]
 resolver = "2"
 

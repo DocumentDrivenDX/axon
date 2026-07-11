@@ -1,0 +1,163 @@
+{
+  "rust_sources": ["src/entrypoints.rs"],
+  "sql_sources": [
+    {
+      "path": "migrations/001_schema.sql",
+      "enclosing_function": "<migration>",
+      "kind": "migration"
+    },
+    {
+      "path": "data/seed.sql",
+      "enclosing_function": "<data-only>",
+      "kind": "data-only"
+    }
+  ],
+  "governed_tables": [
+    "entities",
+    "entity_versions",
+    "entity_tombstones",
+    "schema_versions",
+    "audit_events",
+    "sqlite_shadow",
+    "entity_imports",
+    "audit_log",
+    "data_seed"
+  ],
+  "governed_routines": [
+    "enforce_entity_write",
+    "audit_entity_mutation",
+    "refresh_entity_projection"
+  ],
+  "records": [
+    {
+      "source_file": "src/entrypoints.rs",
+      "enclosing_function": "insert_with_query",
+      "touched_tables": ["entities"],
+      "touched_routines": [],
+      "capability": "table:entities:insert",
+      "mutation_class": "insert",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "insert_with_query_fault"
+    },
+    {
+      "source_file": "src/entrypoints.rs",
+      "enclosing_function": "scalar_update",
+      "touched_tables": ["entity_versions"],
+      "touched_routines": [],
+      "capability": "table:entity_versions:update",
+      "mutation_class": "update",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "scalar_update_fault"
+    },
+    {
+      "source_file": "src/entrypoints.rs",
+      "enclosing_function": "raw_delete",
+      "touched_tables": ["entity_tombstones"],
+      "touched_routines": [],
+      "capability": "table:entity_tombstones:delete",
+      "mutation_class": "delete",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "raw_delete_fault"
+    },
+    {
+      "source_file": "src/entrypoints.rs",
+      "enclosing_function": "macro_update",
+      "touched_tables": ["schema_versions"],
+      "touched_routines": [],
+      "capability": "table:schema_versions:update",
+      "mutation_class": "update",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "macro_update_fault"
+    },
+    {
+      "source_file": "src/entrypoints.rs",
+      "enclosing_function": "query_builder_insert",
+      "touched_tables": ["audit_events"],
+      "touched_routines": [],
+      "capability": "table:audit_events:insert",
+      "mutation_class": "insert",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "query_builder_insert_fault"
+    },
+    {
+      "source_file": "src/entrypoints.rs",
+      "enclosing_function": "sqlite_execute",
+      "touched_tables": ["sqlite_shadow"],
+      "touched_routines": [],
+      "capability": "table:sqlite_shadow:update",
+      "mutation_class": "update",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "sqlite_execute_fault"
+    },
+    {
+      "source_file": "src/entrypoints.rs",
+      "enclosing_function": "sqlite_batch",
+      "touched_tables": ["sqlite_shadow"],
+      "touched_routines": [],
+      "capability": "table:sqlite_shadow:delete",
+      "mutation_class": "delete",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "sqlite_batch_fault"
+    },
+    {
+      "source_file": "src/entrypoints.rs",
+      "enclosing_function": "copy_entities",
+      "touched_tables": ["entity_imports"],
+      "touched_routines": [],
+      "capability": "table:entity_imports:copy",
+      "mutation_class": "copy",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "copy_entities_fault"
+    },
+    {
+      "source_file": "migrations/001_schema.sql",
+      "enclosing_function": "<migration>",
+      "touched_tables": ["audit_log"],
+      "touched_routines": [],
+      "capability": "table:audit_log:create_table",
+      "mutation_class": "create_table",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "migration_audit_log_fault"
+    },
+    {
+      "source_file": "migrations/001_schema.sql",
+      "enclosing_function": "<migration>",
+      "touched_tables": ["entities"],
+      "touched_routines": ["enforce_entity_write"],
+      "capability": "routine:enforce_entity_write:manage",
+      "mutation_class": "create_trigger",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "trigger_fault"
+    },
+    {
+      "source_file": "migrations/001_schema.sql",
+      "enclosing_function": "<migration>",
+      "touched_tables": [],
+      "touched_routines": ["audit_entity_mutation"],
+      "capability": "routine:audit_entity_mutation:manage",
+      "mutation_class": "create_function",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "function_fault"
+    },
+    {
+      "source_file": "migrations/001_schema.sql",
+      "enclosing_function": "<migration>",
+      "touched_tables": [],
+      "touched_routines": ["refresh_entity_projection"],
+      "capability": "routine:refresh_entity_projection:manage",
+      "mutation_class": "create_procedure",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "procedure_fault"
+    },
+    {
+      "source_file": "data/seed.sql",
+      "enclosing_function": "<data-only>",
+      "touched_tables": ["data_seed"],
+      "touched_routines": [],
+      "capability": "table:data_seed:insert",
+      "mutation_class": "insert",
+      "co_commit": "axon-gap-closure-c2a9d8a6",
+      "fault_test": "data_seed_fault"
+    }
+  ]
+}
