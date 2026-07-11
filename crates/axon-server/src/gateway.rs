@@ -1968,7 +1968,7 @@ async fn query_audit_by_entity(
         Err(error) => return axon_error_response(error),
     };
     let handler = handler.lock().await;
-    match handler.query_audit_with_caller(
+    match handler.query_application_audit_with_caller(
         QueryAuditRequest {
             database: requested_database_scope.database().map(str::to_string),
             collection: Some(qualify_collection_name(&collection, &current_database)),
@@ -2073,7 +2073,7 @@ async fn query_audit(
     match handler
         .lock()
         .await
-        .query_audit_with_caller(req, &caller, None)
+        .query_application_audit_with_caller(req, &caller, None)
     {
         Ok(resp) => {
             let next_cursor = resp.next_cursor;
@@ -3096,8 +3096,17 @@ async fn commit_transaction(
             // stamp each broadcast ChangeEvent with a resume cursor. All
             // entries share the tx_id; match each to its (collection, id) pair.
             let tx_entries = h
-                .audit_log()
-                .query_by_transaction_id(&tx_id)
+                .query_application_audit(QueryAuditRequest {
+                    database: Some(current_database.as_str().to_string()),
+                    limit: Some(usize::MAX),
+                    ..QueryAuditRequest::default()
+                })
+                .map(|resp| {
+                    resp.entries
+                        .into_iter()
+                        .filter(|entry| entry.transaction_id.as_deref() == Some(tx_id.as_str()))
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             for entity in &written {
                 notify_entity_change(&mcp_sessions, &current_database, entity);

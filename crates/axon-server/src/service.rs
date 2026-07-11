@@ -589,7 +589,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .handler
             .lock()
             .await
-            .query_audit(QueryAuditRequest {
+            .query_application_audit(QueryAuditRequest {
                 database: requested_database.clone(),
                 collection: Some(qualify_collection_name(&req.collection, &current_database)),
                 entity_id: Some(EntityId::new(&req.entity_id)),
