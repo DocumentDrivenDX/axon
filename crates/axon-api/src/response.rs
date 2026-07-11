@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use axon_audit::entry::{AuditEntry, FieldDiff};
+use axon_core::auth::{CredentialMetadata, Grants, Op};
 use axon_core::error::AxonError;
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::GateResult;
@@ -367,6 +368,73 @@ pub struct QueryAuditResponse {
     pub entries: Vec<AuditEntry>,
     /// Cursor for the next page. `None` when no further results exist.
     pub next_cursor: Option<u64>,
+}
+
+/// Redacted credential grant metadata exposed by auth-audit queries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthAuditGrantRedactionV1 {
+    pub database: String,
+    pub ops: Vec<String>,
+}
+
+/// Redacted auth audit metadata exposed by the typed administrative API.
+///
+/// This view intentionally excludes raw credential material, hashes, salts,
+/// provider secrets, session state, and storage bytes. Stored grants JSON is
+/// parsed into an allow-listed shape instead of being passed through.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthAuditRedactionV1 {
+    pub jti: String,
+    pub user_id: String,
+    pub tenant_id: String,
+    pub issued_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub revoked: bool,
+    pub grants: Vec<AuthAuditGrantRedactionV1>,
+}
+
+/// Response from a typed auth audit query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryAuthAuditResponse {
+    pub entries: Vec<AuthAuditRedactionV1>,
+}
+
+impl From<CredentialMetadata> for AuthAuditRedactionV1 {
+    fn from(value: CredentialMetadata) -> Self {
+        Self {
+            jti: value.jti,
+            user_id: value.user_id.0,
+            tenant_id: value.tenant_id.0,
+            issued_at_ms: value.issued_at_ms,
+            expires_at_ms: value.expires_at_ms,
+            revoked: value.revoked,
+            grants: redact_auth_audit_grants(&value.grants_json),
+        }
+    }
+}
+
+fn redact_auth_audit_grants(grants_json: &str) -> Vec<AuthAuditGrantRedactionV1> {
+    let Ok(grants) = serde_json::from_str::<Grants>(grants_json) else {
+        return Vec::new();
+    };
+
+    grants
+        .databases
+        .into_iter()
+        .map(|grant| AuthAuditGrantRedactionV1 {
+            database: grant.name,
+            ops: grant.ops.into_iter().map(redact_auth_audit_op).collect(),
+        })
+        .collect()
+}
+
+fn redact_auth_audit_op(op: Op) -> String {
+    match op {
+        Op::Read => "read",
+        Op::Write => "write",
+        Op::Admin => "admin",
+    }
+    .to_string()
 }
 
 /// Response after reverting an entity to a previous state.

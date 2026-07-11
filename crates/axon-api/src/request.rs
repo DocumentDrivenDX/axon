@@ -250,6 +250,31 @@ pub struct QueryAuditRequest {
     pub limit: Option<usize>,
 }
 
+/// Request to query Axon-owned system audit rows through the typed
+/// administrative audit surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuerySystemAuditRequest {
+    /// Tenant being inspected.
+    pub tenant_id: String,
+    /// Database being inspected within the tenant.
+    pub database: String,
+    /// Audit filters. The typed system-audit surface forces the database scope
+    /// above and never uses this as generic collection access.
+    #[serde(default)]
+    pub query: QueryAuditRequest,
+}
+
+/// Request to query auth/credential audit metadata through the typed
+/// administrative audit surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryAuthAuditRequest {
+    /// Tenant whose auth audit metadata is being inspected.
+    pub tenant_id: String,
+    /// Optional stable user id filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+}
+
 /// Request to revert an entity to the `before` state recorded in an audit entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevertEntityRequest {

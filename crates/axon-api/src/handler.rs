@@ -78,7 +78,10 @@ use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdap
 use crate::intent::{
     MutationIntent, MutationOperationKind, MutationReviewSummary, PreImageBinding,
 };
-use crate::policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
+use crate::policy::{
+    authorize_system_audit_query, AdministrativeAuditCaller, PolicyRequestSnapshot,
+    PolicySubjectSnapshot, SystemAuditQueryError,
+};
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
     CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
@@ -88,10 +91,11 @@ use crate::request::{
     FilterOp, GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest,
     ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
     ListNamespacesRequest, PatchEntityRequest, PutCollectionTemplateRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevalidateRequest,
-    RevertEntityRequest, RollbackCollectionRequest, RollbackEntityRequest, RollbackEntityTarget,
-    RollbackTransactionRequest, SnapshotRequest, SortDirection, TransitionLifecycleRequest,
-    TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    QueryAuditRequest, QueryAuthAuditRequest, QueryEntitiesRequest, QuerySystemAuditRequest,
+    ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackCollectionRequest,
+    RollbackEntityRequest, RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest,
+    SortDirection, TransitionLifecycleRequest, TraverseDirection, TraverseRequest,
+    UpdateEntityRequest,
 };
 use crate::response::ReservedNamespaceError;
 use crate::response::{
@@ -105,11 +109,11 @@ use crate::response::{
     ListNamespaceCollectionsResponse, ListNamespacesResponse, PatchEntityResponse,
     PolicyApprovalEnvelopeSummary, PolicyExplanationResponse, PolicyQueryPlanDiagnostics,
     PolicyRuleMatch, PutCollectionTemplateResponse, PutSchemaResponse, QueryAuditResponse,
-    QueryEntitiesResponse, ReachableResponse, ReadWarning, RevalidateResponse,
-    RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
-    RollbackEntityResponse, RollbackTransactionEntityResult, RollbackTransactionResponse,
-    SnapshotResponse, TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse,
-    UpdateEntityResponse,
+    QueryAuthAuditResponse, QueryEntitiesResponse, ReachableResponse, ReadWarning,
+    RevalidateResponse, RevertEntityResponse, RollbackCollectionEntityResult,
+    RollbackCollectionResponse, RollbackEntityResponse, RollbackTransactionEntityResult,
+    RollbackTransactionResponse, SnapshotResponse, TransitionLifecycleResponse, TraverseHop,
+    TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -200,6 +204,13 @@ fn visible_audit_entries(entries: Vec<AuditEntry>) -> Vec<AuditEntry> {
         .collect()
 }
 
+fn system_audit_entries(entries: Vec<AuditEntry>) -> Vec<AuditEntry> {
+    entries
+        .into_iter()
+        .filter(|entry| is_reserved_collection(&entry.collection))
+        .collect()
+}
+
 fn visible_audit_page(entries: Vec<AuditEntry>, limit: usize) -> AuditPage {
     let mut entries = visible_audit_entries(entries);
     entries.sort_by_key(|entry| entry.id);
@@ -214,6 +225,51 @@ fn visible_audit_page(entries: Vec<AuditEntry>, limit: usize) -> AuditPage {
         entries,
         next_cursor,
     }
+}
+
+fn system_audit_page(entries: Vec<AuditEntry>, limit: usize) -> AuditPage {
+    let mut entries = system_audit_entries(entries);
+    entries.sort_by_key(|entry| entry.id);
+    let has_more = entries.len() > limit;
+    entries.truncate(limit);
+    let next_cursor = if has_more {
+        entries.last().map(|entry| entry.id)
+    } else {
+        None
+    };
+    AuditPage {
+        entries,
+        next_cursor,
+    }
+}
+
+fn audit_operation_filter(operation: Option<&str>) -> Result<Option<MutationType>, AxonError> {
+    let operation = match operation {
+        None => None,
+        Some("entity.create") => Some(MutationType::EntityCreate),
+        Some("entity.update") => Some(MutationType::EntityUpdate),
+        Some("entity.delete") => Some(MutationType::EntityDelete),
+        Some("entity.revert") => Some(MutationType::EntityRevert),
+        Some("link.create") => Some(MutationType::LinkCreate),
+        Some("link.delete") => Some(MutationType::LinkDelete),
+        Some("collection.create") => Some(MutationType::CollectionCreate),
+        Some("collection.drop") => Some(MutationType::CollectionDrop),
+        Some("template.create") => Some(MutationType::TemplateCreate),
+        Some("template.update") => Some(MutationType::TemplateUpdate),
+        Some("template.delete") => Some(MutationType::TemplateDelete),
+        Some("schema.update") => Some(MutationType::SchemaUpdate),
+        Some("mutation_intent.preview" | "intent.preview") => Some(MutationType::IntentPreview),
+        Some("intent.approve") => Some(MutationType::IntentApprove),
+        Some("intent.reject") => Some(MutationType::IntentReject),
+        Some("intent.expire") => Some(MutationType::IntentExpire),
+        Some("intent.commit") => Some(MutationType::IntentCommit),
+        Some(unknown) => {
+            return Err(AxonError::InvalidOperation(format!(
+                "unknown operation type: {unknown}"
+            )))
+        }
+    };
+    Ok(operation)
 }
 
 fn ensure_system_collection_capability(collection: &CollectionId) -> Result<(), AxonError> {
@@ -5677,33 +5733,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
         ensure_generic_collection_accesses(&req.collection_ids, OP_AUDIT)?;
 
-        use axon_audit::entry::MutationType as MT;
-
-        let operation: Option<MT> = match req.operation.as_deref() {
-            None => None,
-            Some("entity.create") => Some(MT::EntityCreate),
-            Some("entity.update") => Some(MT::EntityUpdate),
-            Some("entity.delete") => Some(MT::EntityDelete),
-            Some("entity.revert") => Some(MT::EntityRevert),
-            Some("link.create") => Some(MT::LinkCreate),
-            Some("link.delete") => Some(MT::LinkDelete),
-            Some("collection.create") => Some(MT::CollectionCreate),
-            Some("collection.drop") => Some(MT::CollectionDrop),
-            Some("template.create") => Some(MT::TemplateCreate),
-            Some("template.update") => Some(MT::TemplateUpdate),
-            Some("template.delete") => Some(MT::TemplateDelete),
-            Some("schema.update") => Some(MT::SchemaUpdate),
-            Some("mutation_intent.preview" | "intent.preview") => Some(MT::IntentPreview),
-            Some("intent.approve") => Some(MT::IntentApprove),
-            Some("intent.reject") => Some(MT::IntentReject),
-            Some("intent.expire") => Some(MT::IntentExpire),
-            Some("intent.commit") => Some(MT::IntentCommit),
-            Some(unknown) => {
-                return Err(AxonError::InvalidOperation(format!(
-                    "unknown operation type: {unknown}"
-                )))
-            }
-        };
+        let operation = audit_operation_filter(req.operation.as_deref())?;
 
         let requested_limit = req.limit.unwrap_or(HANDLER_AUDIT_DEFAULT_PAGE_SIZE);
         let mut query = AuditQuery {
@@ -5734,6 +5764,70 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entries,
             next_cursor: page.next_cursor,
         })
+    }
+
+    /// Query Axon-owned system audit rows through the typed administrative
+    /// audit API. This path authorizes by explicit administrative capability
+    /// and does not call the generic reserved-collection guard.
+    pub fn query_system_audit(
+        &self,
+        req: QuerySystemAuditRequest,
+        caller: Option<&AdministrativeAuditCaller>,
+    ) -> Result<QueryAuditResponse, SystemAuditQueryError> {
+        authorize_system_audit_query(caller, &req.tenant_id, &req.database)?;
+
+        if let Some(collection) = &req.query.collection {
+            ensure_system_collection_capability(collection)?;
+        }
+        for collection in &req.query.collection_ids {
+            ensure_system_collection_capability(collection)?;
+        }
+
+        let requested_limit = req.query.limit.unwrap_or(HANDLER_AUDIT_DEFAULT_PAGE_SIZE);
+        let operation = audit_operation_filter(req.query.operation.as_deref())?;
+        let mut query = AuditQuery {
+            database: Some(req.database),
+            collection: req.query.collection,
+            collection_ids: req.query.collection_ids,
+            entity_id: req.query.entity_id,
+            actor: req.query.actor,
+            operation,
+            intent_id: req.query.intent_id,
+            approval_id: req.query.approval_id,
+            since_ns: req.query.since_ns,
+            until_ns: req.query.until_ns,
+            after_id: req.query.after_id,
+            limit: req.query.limit,
+        };
+        query.limit = Some(usize::MAX);
+
+        let page = system_audit_page(
+            self.audit_log().query_paginated(query)?.entries,
+            requested_limit,
+        );
+        Ok(QueryAuditResponse {
+            entries: page.entries,
+            next_cursor: page.next_cursor,
+        })
+    }
+
+    /// Query auth/credential audit metadata through the typed administrative
+    /// audit API. The response is always the redacted V1 view.
+    pub fn query_auth_audit(
+        &self,
+        req: QueryAuthAuditRequest,
+    ) -> Result<QueryAuthAuditResponse, AxonError> {
+        let entries = self
+            .storage
+            .list_credentials(
+                axon_core::auth::TenantId::new(req.tenant_id),
+                req.user_id.map(axon_core::auth::UserId::new),
+            )?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        Ok(QueryAuthAuditResponse { entries })
     }
 
     pub fn redact_mutation_intent_for_read(
@@ -10545,9 +10639,13 @@ fn collect_policy_values_at_path<'a>(
 #[allow(clippy::manual_string_new, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::fmt::Display;
 
-    use axon_core::auth::Role;
+    use axon_core::auth::{
+        AuthError, CredentialMetadata, GrantedDatabase, Grants, Op, Role, TenantId, TenantRole,
+        UserId,
+    };
     use axon_core::id::{CollectionId, EntityId, Namespace, SystemCollection};
     use axon_schema::schema::{
         Cardinality, CollectionSchema, CollectionView, EsfDocument, IndexDef, IndexType,
@@ -10575,6 +10673,78 @@ mod tests {
             MemoryStorageAdapter::default(),
             capacity,
         )
+    }
+
+    #[derive(Default)]
+    struct AuthAuditStorageAdapter {
+        inner: MemoryStorageAdapter,
+        credentials: Vec<CredentialMetadata>,
+    }
+
+    impl StorageAdapter for AuthAuditStorageAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.inner.get(collection, id)
+        }
+
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.inner.put(entity)
+        }
+
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.inner.delete(collection, id)
+        }
+
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.inner.count(collection)
+        }
+
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.inner.range_scan(collection, start, end, limit)
+        }
+
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
+
+        fn list_credentials(
+            &self,
+            tenant_id: TenantId,
+            user_filter: Option<UserId>,
+        ) -> Result<Vec<CredentialMetadata>, AxonError> {
+            Ok(self
+                .credentials
+                .iter()
+                .filter(|credential| credential.tenant_id == tenant_id)
+                .filter(|credential| {
+                    user_filter
+                        .as_ref()
+                        .map_or(true, |user_id| &credential.user_id == user_id)
+                })
+                .cloned()
+                .collect())
+        }
     }
 
     #[derive(Default)]
@@ -10858,6 +11028,245 @@ mod tests {
 
         ensure_generic_collection_access(&CollectionId::new("tasks"), OP_ENTITY)
             .expect("ordinary user collection remains allowed");
+    }
+
+    fn audit_grants(database: &str, ops: Vec<Op>) -> Grants {
+        Grants {
+            databases: vec![GrantedDatabase {
+                name: database.into(),
+                ops,
+            }],
+        }
+    }
+
+    fn administrative_audit_caller(
+        tenant_id: &str,
+        tenant_role: Option<TenantRole>,
+        grants: Grants,
+        deployment_admin: bool,
+    ) -> AdministrativeAuditCaller {
+        AdministrativeAuditCaller {
+            user_id: "user-admin".into(),
+            tenant_id: tenant_id.into(),
+            tenant_role,
+            grants,
+            deployment_admin,
+        }
+    }
+
+    fn assert_system_audit_auth_error(
+        result: Result<QueryAuditResponse, SystemAuditQueryError>,
+        expected: AuthError,
+    ) {
+        match result {
+            Err(SystemAuditQueryError::Auth(actual)) => assert_eq!(actual, expected),
+            other => panic!("expected system audit auth error {expected:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn query_system_audit_authorization() {
+        let mut h = handler();
+        let reserved = CollectionId::new(SystemCollection::cdc_cursors().name());
+        let reserved_id = EntityId::new("cursor-tenant-a");
+        let audit_id =
+            append_reserved_audit_entry(&mut h, &reserved, &reserved_id, "system-daemon", None);
+        let req = QuerySystemAuditRequest {
+            tenant_id: "tenant-a".into(),
+            database: DEFAULT_DATABASE.into(),
+            query: QueryAuditRequest {
+                collection: Some(reserved.clone()),
+                limit: Some(10),
+                ..QueryAuditRequest::default()
+            },
+        };
+
+        assert_eq!(
+            authorize_system_audit_query(None, "tenant-a", DEFAULT_DATABASE),
+            Err(AuthError::Unauthenticated)
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), None),
+            AuthError::Unauthenticated,
+        );
+
+        let wrong_tenant = administrative_audit_caller(
+            "tenant-b",
+            Some(TenantRole::Admin),
+            audit_grants(DEFAULT_DATABASE, vec![Op::Admin]),
+            false,
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), Some(&wrong_tenant)),
+            AuthError::CredentialWrongTenant,
+        );
+
+        let tenant_reader = administrative_audit_caller(
+            "tenant-a",
+            Some(TenantRole::Read),
+            audit_grants(DEFAULT_DATABASE, vec![Op::Admin]),
+            false,
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), Some(&tenant_reader)),
+            AuthError::OpNotGranted,
+        );
+
+        let under_scoped_admin = administrative_audit_caller(
+            "tenant-a",
+            Some(TenantRole::Admin),
+            audit_grants(DEFAULT_DATABASE, vec![Op::Read]),
+            false,
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), Some(&under_scoped_admin)),
+            AuthError::OpNotGranted,
+        );
+
+        let ungranted_database = administrative_audit_caller(
+            "tenant-a",
+            Some(TenantRole::Admin),
+            audit_grants("analytics", vec![Op::Admin]),
+            false,
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), Some(&ungranted_database)),
+            AuthError::DatabaseNotGranted,
+        );
+
+        let tenant_admin = administrative_audit_caller(
+            "tenant-a",
+            Some(TenantRole::Admin),
+            audit_grants(DEFAULT_DATABASE, vec![Op::Admin]),
+            false,
+        );
+        let typed = h
+            .query_system_audit(req.clone(), Some(&tenant_admin))
+            .expect("tenant admin should query typed system audit");
+        assert_eq!(typed.entries.len(), 1);
+        assert_eq!(typed.entries[0].id, audit_id);
+        assert_eq!(typed.entries[0].collection, reserved);
+
+        let generic = h
+            .query_audit(QueryAuditRequest {
+                collection: Some(reserved.clone()),
+                limit: Some(10),
+                ..QueryAuditRequest::default()
+            })
+            .expect_err("generic audit path must still reject reserved collection access");
+        assert_reserved_namespace_guard_error(generic, reserved.as_str(), OP_AUDIT);
+
+        let deployment_admin =
+            administrative_audit_caller("tenant-b", None, Grants { databases: vec![] }, true);
+        let deployment = h
+            .query_system_audit(req, Some(&deployment_admin))
+            .expect("deployment admin should query typed system audit across tenants");
+        assert_eq!(deployment.entries.len(), 1);
+        assert_eq!(deployment.entries[0].id, audit_id);
+    }
+
+    #[test]
+    fn query_auth_audit_redaction() {
+        let tenant_id = TenantId::new("tenant-redaction");
+        let user_id = UserId::new("user-redaction");
+        let jti = "credential-redacted-001";
+        let grants_json_with_secret_shaped_noise = json!({
+            "databases": [{
+                "name": DEFAULT_DATABASE,
+                "ops": ["read", "admin"],
+                "credential_secret": "credential-secret-value",
+                "token": "jwt-token-value",
+                "provider_secret": "provider-secret-value"
+            }],
+            "hash": "hash-value",
+            "salt": "salt-value",
+            "pepper": "pepper-value",
+            "kdf": "argon2id",
+            "key": "signing-key-value",
+            "session": "session-value",
+            "internal_storage_bytes": "deadbeef"
+        })
+        .to_string();
+        let h = AxonHandler::new(AuthAuditStorageAdapter {
+            inner: MemoryStorageAdapter::default(),
+            credentials: vec![CredentialMetadata {
+                jti: jti.into(),
+                user_id: user_id.clone(),
+                tenant_id: tenant_id.clone(),
+                issued_at_ms: 10,
+                expires_at_ms: 20,
+                revoked: false,
+                grants_json: grants_json_with_secret_shaped_noise,
+            }],
+        });
+
+        let response = h
+            .query_auth_audit(QueryAuthAuditRequest {
+                tenant_id: tenant_id.to_string(),
+                user_id: Some(user_id.to_string()),
+            })
+            .expect("auth audit query should succeed");
+
+        assert_eq!(response.entries.len(), 1);
+        let entry = &response.entries[0];
+        assert_eq!(entry.jti, jti);
+        assert_eq!(entry.user_id, user_id.to_string());
+        assert_eq!(entry.tenant_id, tenant_id.to_string());
+        assert_eq!(entry.issued_at_ms, 10);
+        assert_eq!(entry.expires_at_ms, 20);
+        assert_eq!(entry.grants.len(), 1);
+        assert_eq!(entry.grants[0].database, DEFAULT_DATABASE);
+        assert_eq!(entry.grants[0].ops, vec!["read", "admin"]);
+
+        let value = serde_json::to_value(&response).expect("response should serialize");
+        let entry_keys: BTreeSet<_> = value["entries"][0]
+            .as_object()
+            .expect("redacted entry should be an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            entry_keys,
+            BTreeSet::from([
+                "expires_at_ms",
+                "grants",
+                "issued_at_ms",
+                "jti",
+                "revoked",
+                "tenant_id",
+                "user_id",
+            ])
+        );
+
+        let serialized = value.to_string();
+        for forbidden in [
+            "credential_secret",
+            "credential-secret-value",
+            "hash",
+            "hash-value",
+            "salt",
+            "salt-value",
+            "pepper",
+            "pepper-value",
+            "kdf",
+            "argon2id",
+            "key",
+            "signing-key-value",
+            "token",
+            "jwt-token-value",
+            "session",
+            "session-value",
+            "provider_secret",
+            "provider-secret-value",
+            "internal_storage_bytes",
+            "deadbeef",
+            "grants_json",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "AuthAuditRedactionV1 leaked forbidden auth audit material: {forbidden}"
+            );
+        }
     }
 
     fn seed_reserved_physical_collection(
