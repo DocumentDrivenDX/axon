@@ -92,14 +92,14 @@ use crate::request::{
     DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, DropDatabaseRequest,
     DropNamespaceRequest, ExecuteTransactionRequest, ExplainActorOverride, ExplainPolicyRequest,
     FieldFilter, FilterNode, FilterOp, GetCollectionTemplateRequest, GetEntityRequest,
-    GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
-    PreviewMutationIntentRequest, PutCollectionTemplateRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryAuthAuditRequest, QueryEntitiesRequest, QuerySystemAuditRequest,
-    ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackCollectionRequest,
-    RollbackEntityRequest, RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest,
-    SortDirection, TransitionLifecycleRequest, TraverseDirection, TraverseRequest,
-    UpdateEntityRequest,
+    GetMutationIntentRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
+    ListMutationIntentsRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
+    PatchEntityRequest, PreviewMutationIntentRequest, PutCollectionTemplateRequest,
+    PutSchemaRequest, QueryAuditRequest, QueryAuthAuditRequest, QueryEntitiesRequest,
+    QuerySystemAuditRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest,
+    ReviewMutationIntentRequest, RollbackCollectionRequest, RollbackEntityRequest,
+    RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest, SortDirection,
+    TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::ReservedNamespaceError;
 use crate::response::{
@@ -109,13 +109,14 @@ use crate::response::{
     DeleteCollectionTemplateResponse, DeleteEntityResponse, DeleteLinkResponse,
     DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse, DropDatabaseResponse,
     DropNamespaceResponse, EffectivePolicyResponse, ExecuteTransactionResponse,
-    GetCollectionTemplateResponse, GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse,
-    InvalidEntity, ListCollectionsResponse, ListDatabasesResponse,
-    ListNamespaceCollectionsResponse, ListNamespacesResponse, PatchEntityResponse,
-    PolicyApprovalEnvelopeSummary, PolicyExplanationResponse, PolicyQueryPlanDiagnostics,
-    PolicyRuleMatch, PreviewMutationIntentResponse, PutCollectionTemplateResponse,
-    PutSchemaResponse, QueryAuditResponse, QueryAuthAuditResponse, QueryEntitiesResponse,
-    ReachableResponse, ReadWarning, RevalidateResponse, RevertEntityResponse,
+    GetCollectionTemplateResponse, GetEntityMarkdownResponse, GetEntityResponse,
+    GetMutationIntentResponse, GetSchemaResponse, InvalidEntity, ListCollectionsResponse,
+    ListDatabasesResponse, ListMutationIntentsResponse, ListNamespaceCollectionsResponse,
+    ListNamespacesResponse, PatchEntityResponse, PolicyApprovalEnvelopeSummary,
+    PolicyExplanationResponse, PolicyQueryPlanDiagnostics, PolicyRuleMatch,
+    PreviewMutationIntentResponse, PutCollectionTemplateResponse, PutSchemaResponse,
+    QueryAuditResponse, QueryAuthAuditResponse, QueryEntitiesResponse, ReachableResponse,
+    ReadWarning, RevalidateResponse, RevertEntityResponse, ReviewMutationIntentResponse,
     RollbackCollectionEntityResult, RollbackCollectionResponse, RollbackEntityResponse,
     RollbackTransactionEntityResult, RollbackTransactionResponse, SnapshotResponse,
     TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
@@ -3982,6 +3983,137 @@ impl<S: StorageAdapter> AxonHandler<S> {
         service
             .create_preview_record_with_origin(&mut self.storage, req.intent, req.origin)
             .map(Into::into)
+    }
+
+    /// Read a mutation intent through this handler's governed namespace and
+    /// lifecycle boundary, first materializing due expiry audit records.
+    pub fn get_mutation_intent(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: GetMutationIntentRequest,
+    ) -> Result<GetMutationIntentResponse, MutationIntentLifecycleError> {
+        service.expire_due_with_audit(&mut self.storage, &req.scope, req.now_ns, None)?;
+        let intent = self
+            .storage
+            .get_mutation_intent(&req.scope.tenant_id, &req.scope.database_id, &req.intent_id)
+            .map_err(MutationIntentLifecycleError::from)?;
+        if let Some(intent) = &intent {
+            ensure_generic_mutation_intent_access(intent)
+                .map_err(MutationIntentLifecycleError::from)?;
+        }
+        Ok(GetMutationIntentResponse { intent })
+    }
+
+    /// List mutation intents through this handler's governed namespace and
+    /// lifecycle boundary, first materializing due expiry audit records.
+    pub fn list_mutation_intents(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: ListMutationIntentsRequest,
+    ) -> Result<ListMutationIntentsResponse, MutationIntentLifecycleError> {
+        service.expire_due_with_audit(&mut self.storage, &req.scope, req.now_ns, None)?;
+        let intents = if req.states.is_empty() {
+            let mut pending = self
+                .storage
+                .list_pending_mutation_intents(
+                    &req.scope.tenant_id,
+                    &req.scope.database_id,
+                    req.now_ns,
+                    None,
+                )
+                .map_err(MutationIntentLifecycleError::from)?;
+            if req.include_expired {
+                pending.extend(
+                    self.storage
+                        .list_mutation_intents_by_state(
+                            &req.scope.tenant_id,
+                            &req.scope.database_id,
+                            crate::ApprovalState::Expired,
+                            None,
+                        )
+                        .map_err(MutationIntentLifecycleError::from)?,
+                );
+            }
+            pending
+        } else {
+            let mut by_state = Vec::new();
+            for state in req.states {
+                by_state.extend(
+                    self.storage
+                        .list_mutation_intents_by_state(
+                            &req.scope.tenant_id,
+                            &req.scope.database_id,
+                            state,
+                            None,
+                        )
+                        .map_err(MutationIntentLifecycleError::from)?,
+                );
+            }
+            by_state
+        };
+
+        for intent in &intents {
+            ensure_generic_mutation_intent_access(intent)
+                .map_err(MutationIntentLifecycleError::from)?;
+        }
+        Ok(ListMutationIntentsResponse { intents })
+    }
+
+    /// Approve a mutation intent through this handler's governed namespace and
+    /// audited lifecycle boundary.
+    pub fn approve_mutation_intent(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: ReviewMutationIntentRequest,
+    ) -> Result<ReviewMutationIntentResponse, MutationIntentLifecycleError> {
+        self.review_mutation_intent_inner(service, req, true)
+    }
+
+    /// Reject a mutation intent through this handler's governed namespace and
+    /// audited lifecycle boundary.
+    pub fn reject_mutation_intent(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: ReviewMutationIntentRequest,
+    ) -> Result<ReviewMutationIntentResponse, MutationIntentLifecycleError> {
+        self.review_mutation_intent_inner(service, req, false)
+    }
+
+    fn review_mutation_intent_inner(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: ReviewMutationIntentRequest,
+        approve: bool,
+    ) -> Result<ReviewMutationIntentResponse, MutationIntentLifecycleError> {
+        service.expire_due_with_audit(&mut self.storage, &req.scope, req.now_ns, None)?;
+        let intent = self
+            .storage
+            .get_mutation_intent(&req.scope.tenant_id, &req.scope.database_id, &req.intent_id)
+            .map_err(MutationIntentLifecycleError::from)?
+            .ok_or_else(|| MutationIntentLifecycleError::NotFound {
+                intent_id: req.intent_id.clone(),
+            })?;
+        ensure_generic_mutation_intent_access(&intent)
+            .map_err(MutationIntentLifecycleError::from)?;
+
+        let intent = if approve {
+            service.approve_with_audit(
+                &mut self.storage,
+                &req.scope,
+                &req.intent_id,
+                req.metadata,
+                req.now_ns,
+            )
+        } else {
+            service.reject_with_audit(
+                &mut self.storage,
+                &req.scope,
+                &req.intent_id,
+                req.metadata,
+                req.now_ns,
+            )
+        }?;
+        Ok(ReviewMutationIntentResponse { intent })
     }
 
     /// Execute a staged transaction through the same namespace, schema, policy,

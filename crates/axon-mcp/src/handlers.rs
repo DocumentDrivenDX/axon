@@ -31,8 +31,9 @@ use axon_api::intent::{
 use axon_api::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateEntityRequest,
     DeleteEntityRequest, ExplainPolicyRequest, FilterNode, FindLinkCandidatesRequest,
-    GetEntityRequest, ListCollectionsRequest, ListNamespaceCollectionsRequest,
-    ListNamespacesRequest, ListNeighborsRequest, PatchEntityRequest, QueryEntitiesRequest,
+    GetEntityRequest, GetMutationIntentRequest, ListCollectionsRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, ListNeighborsRequest,
+    PatchEntityRequest, PreviewMutationIntentRequest, QueryEntitiesRequest,
     TransitionLifecycleRequest, TraverseDirection, TraverseRequest,
 };
 use axon_api::response::{
@@ -740,16 +741,18 @@ fn execute_intent_preview<S: StorageAdapter>(
     };
 
     let service = mcp_intent_lifecycle_service();
-    let record = service
-        .create_preview_record_with_origin(
-            handler.storage_mut(),
-            intent,
-            Some(MutationIntentAuditOrigin {
-                surface: MutationIntentAuditOriginSurface::Mcp,
-                tool_name,
-                request_id: None,
-                operation_hash: Some(operation.operation_hash.clone()),
-            }),
+    let record = handler
+        .preview_mutation_intent(
+            &service,
+            PreviewMutationIntentRequest {
+                intent,
+                origin: Some(MutationIntentAuditOrigin {
+                    surface: MutationIntentAuditOriginSurface::Mcp,
+                    tool_name,
+                    request_id: None,
+                    operation_hash: Some(operation.operation_hash.clone()),
+                }),
+            },
         )
         .map_err(|error| ToolError::Internal(error.to_string()))?;
     match (&record.intent.decision, record.intent_token.as_ref()) {
@@ -785,18 +788,24 @@ fn execute_intent_commit<S: StorageAdapter>(
             return intent_tool_result(McpMutationIntentOutcome::from_token_lookup_error(error))
         }
     };
-    let stored_intent = match handler.storage_ref().get_mutation_intent(
-        &scope.tenant_id,
-        &scope.database_id,
-        &token_intent_id,
+    let now_ns = current_time_ns();
+    let stored_intent = match handler.get_mutation_intent(
+        &service,
+        GetMutationIntentRequest {
+            scope: scope.clone(),
+            intent_id: token_intent_id,
+            now_ns,
+        },
     ) {
-        Ok(Some(intent)) => intent,
-        Ok(None) => {
-            return intent_tool_result(McpMutationIntentOutcome::from_token_lookup_error(
-                MutationIntentTokenLookupError::NotFound,
-            ))
-        }
-        Err(error) => return Err(to_tool_error(error)),
+        Ok(response) => match response.intent {
+            Some(intent) => intent,
+            None => {
+                return intent_tool_result(McpMutationIntentOutcome::from_token_lookup_error(
+                    MutationIntentTokenLookupError::NotFound,
+                ))
+            }
+        },
+        Err(error) => return Err(ToolError::Internal(error.to_string())),
     };
     let operation = stored_intent.operation.clone();
     let operation_payload = canonical_operation_payload(&operation)?;
@@ -810,9 +819,8 @@ fn execute_intent_commit<S: StorageAdapter>(
         caller_authorized: caller.check(Operation::Write).is_ok(),
     };
     let transaction = transaction_from_intent_operation(handler, &operation)?;
-    let now_ns = current_time_ns();
-    match service.commit_transaction_intent(
-        handler.storage_mut(),
+    match handler.commit_mutation_intent_transaction_with_caller(
+        &service,
         MutationIntentTransactionCommitRequest {
             scope,
             token,
@@ -823,6 +831,8 @@ fn execute_intent_commit<S: StorageAdapter>(
             actor: Some(caller.actor.clone()),
             attribution: None,
         },
+        caller,
+        None,
     ) {
         Ok(result) => intent_tool_result(McpMutationIntentOutcome::committed(
             &result.intent,
@@ -3834,6 +3844,164 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn governed_handler_routes_preview_and_commit_use_handler_policy_audit() {
+        let handler = make_graph_handler();
+        let mut guarded_schema = {
+            let guard = handler.lock().expect("handler should lock for schema read");
+            guard
+                .get_schema(&CollectionId::new("tasks"))
+                .expect("schema read should succeed")
+                .expect("tasks schema should exist")
+        };
+        guarded_schema.entity_schema = Some(json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "status": { "type": "string" },
+                "points": { "type": "integer" },
+                "secret": { "type": "string" }
+            }
+        }));
+        guarded_schema.access_control = Some(
+            serde_json::from_value::<axon_schema::access_control::AccessControlPolicy>(json!({
+                "identity": {
+                    "user_id": "subject.user_id",
+                    "tenant_role": "subject.tenant_role"
+                },
+                "create": { "allow": [{ "name": "allow-create" }] },
+                "fields": {
+                    "secret": {
+                        "write": {
+                            "deny": [{
+                                "name": "blocked-cannot-write-secret",
+                                "when": { "subject": "user_id", "eq": "blocked" }
+                            }]
+                        }
+                    }
+                }
+            }))
+            .expect("access_control should deserialize"),
+        );
+        {
+            let mut guard = handler
+                .lock()
+                .expect("handler should lock for schema update");
+            guard
+                .put_schema(guarded_schema)
+                .expect("policy update should persist");
+        }
+
+        let preview_tools = build_crud_tools(
+            "tasks",
+            Arc::clone(&handler),
+            CallerIdentity::new("alice", axon_core::auth::Role::Write),
+        );
+        let commit_tools = build_crud_tools(
+            "tasks",
+            Arc::clone(&handler),
+            CallerIdentity::new("blocked", axon_core::auth::Role::Write),
+        );
+        let preview_create_tool = preview_tools
+            .iter()
+            .find(|tool| tool.name == "tasks.create")
+            .expect("tasks.create preview tool should exist");
+        let commit_create_tool = commit_tools
+            .iter()
+            .find(|tool| tool.name == "tasks.create")
+            .expect("tasks.create commit tool should exist");
+
+        let preview_denied = invoke_tool(
+            preview_create_tool,
+            json!({
+                "id": "mcp-denied",
+                "data": { "title": "Denied", "secret": "classified" },
+                "intent_mode": "preview"
+            }),
+        );
+        let denied_token = preview_denied["structuredContent"]["intent_token"]
+            .as_str()
+            .expect("preview should return an intent token")
+            .to_string();
+
+        let denied_commit = invoke_tool(
+            commit_create_tool,
+            json!({
+                "intent_mode": "commit",
+                "intent_token": denied_token
+            }),
+        );
+        assert_eq!(denied_commit["isError"], true);
+        assert_eq!(denied_commit["structuredContent"]["outcome"], "conflict");
+        assert!(
+            denied_commit["structuredContent"]["message"]
+                .as_str()
+                .expect("conflict should include message")
+                .contains("field_write_denied"),
+            "unexpected conflict payload: {denied_commit}"
+        );
+        {
+            let guard = handler
+                .lock()
+                .expect("handler should lock for denied entity check");
+            assert!(
+                guard
+                    .get_entity(GetEntityRequest {
+                        collection: CollectionId::new("tasks"),
+                        id: EntityId::new("mcp-denied"),
+                    })
+                    .is_err(),
+                "handler-routed commit must not write after policy denial"
+            );
+        }
+
+        let preview_allowed = invoke_tool(
+            commit_create_tool,
+            json!({
+                "id": "mcp-allowed",
+                "data": { "title": "Allowed" },
+                "intent_mode": "preview"
+            }),
+        );
+        let allowed_intent_id = preview_allowed["structuredContent"]["intent_id"]
+            .as_str()
+            .expect("preview should return intent id")
+            .to_string();
+        let allowed_token = preview_allowed["structuredContent"]["intent_token"]
+            .as_str()
+            .expect("preview should return intent token");
+        let committed = invoke_tool(
+            commit_create_tool,
+            json!({
+                "intent_mode": "commit",
+                "intent_token": allowed_token
+            }),
+        );
+        assert_eq!(committed["structuredContent"]["outcome"], "committed");
+        let transaction_id = committed["structuredContent"]["transaction_id"]
+            .as_str()
+            .expect("commit should return transaction id");
+
+        let guard = handler.lock().expect("handler should lock for audit check");
+        let audit = guard
+            .query_application_audit(axon_api::request::QueryAuditRequest {
+                intent_id: Some(allowed_intent_id),
+                ..axon_api::request::QueryAuditRequest::default()
+            })
+            .expect("handler audit query should expose intent lineage");
+        assert!(
+            audit
+                .entries
+                .iter()
+                .any(
+                    |entry| entry.transaction_id.as_deref() == Some(transaction_id)
+                        && entry.collection == CollectionId::new("tasks")
+                ),
+            "committed entity audit entry should carry intent lineage: {:?}",
+            audit.entries
+        );
     }
 
     #[test]

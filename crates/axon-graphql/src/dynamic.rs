@@ -30,11 +30,10 @@ use crate::subscriptions::BroadcastBroker;
 use axon_api::handler::AxonHandler;
 use axon_api::intent::{
     canonicalize_intent_operation, ApprovalState, CanonicalOperationMetadata,
-    MutationApprovalRoute, MutationIntent, MutationIntentCommitValidationAuditRequest,
-    MutationIntentCommitValidationContext, MutationIntentCommitValidationError,
-    MutationIntentDecision, MutationIntentLifecycleService, MutationIntentReviewMetadata,
-    MutationIntentScopeBinding, MutationIntentSubjectBinding, MutationIntentToken,
-    MutationIntentTokenLookupError, MutationIntentTokenSigner,
+    MutationApprovalRoute, MutationIntent, MutationIntentCommitValidationContext,
+    MutationIntentCommitValidationError, MutationIntentDecision, MutationIntentLifecycleService,
+    MutationIntentReviewMetadata, MutationIntentScopeBinding, MutationIntentSubjectBinding,
+    MutationIntentToken, MutationIntentTokenLookupError, MutationIntentTokenSigner,
     MutationIntentTransactionCommitRequest, MutationOperationKind, MutationReviewSummary,
     PreImageBinding,
 };
@@ -43,9 +42,11 @@ use axon_api::request::{
     DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
     DescribeCollectionRequest, DropCollectionRequest, ExplainActorOverride, ExplainPolicyRequest,
     FieldFilter, FilterNode, FilterOp, FindLinkCandidatesRequest, GateFilter,
-    GetCollectionTemplateRequest, GetEntityRequest, ListCollectionsRequest, PatchEntityRequest,
-    PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
-    RevertEntityRequest, RollbackEntityRequest, RollbackEntityTarget, SortDirection, SortField,
+    GetCollectionTemplateRequest, GetEntityRequest, GetMutationIntentRequest,
+    ListCollectionsRequest, ListMutationIntentsRequest, PatchEntityRequest,
+    PreviewMutationIntentRequest, PutCollectionTemplateRequest, PutSchemaRequest,
+    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, ReviewMutationIntentRequest,
+    RollbackEntityRequest, RollbackEntityTarget, SortDirection, SortField,
     TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::ReservedNamespaceError;
@@ -6180,13 +6181,17 @@ async fn mutation_intent_resolver<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
-    service
-        .expire_due_with_audit(guard.storage_mut(), &scope, now_ns, None)
-        .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let intent = guard
-        .storage_ref()
-        .get_mutation_intent(&scope.tenant_id, &scope.database_id, &intent_id)
-        .map_err(axon_error_to_gql)?;
+        .get_mutation_intent(
+            &service,
+            GetMutationIntentRequest {
+                scope,
+                intent_id,
+                now_ns,
+            },
+        )
+        .map_err(mutation_intent_lifecycle_error_to_gql)?
+        .intent;
 
     match intent {
         Some(mut intent) => {
@@ -6213,38 +6218,18 @@ async fn pending_mutation_intents_resolver<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
-    service
-        .expire_due_with_audit(guard.storage_mut(), &scope, now_ns, None)
-        .map_err(mutation_intent_lifecycle_error_to_gql)?;
-    let mut intents = if filter.states.is_empty() {
-        let mut pending = service
-            .list_pending(guard.storage_mut(), &scope, now_ns, None)
-            .map_err(mutation_intent_lifecycle_error_to_gql)?;
-        if filter.include_expired {
-            pending.extend(
-                service
-                    .list_by_state(
-                        guard.storage_mut(),
-                        &scope,
-                        ApprovalState::Expired,
-                        now_ns,
-                        None,
-                    )
-                    .map_err(mutation_intent_lifecycle_error_to_gql)?,
-            );
-        }
-        pending
-    } else {
-        let mut by_state = Vec::new();
-        for state in &filter.states {
-            by_state.extend(
-                service
-                    .list_by_state(guard.storage_mut(), &scope, state.clone(), now_ns, None)
-                    .map_err(mutation_intent_lifecycle_error_to_gql)?,
-            );
-        }
-        by_state
-    };
+    let mut intents = guard
+        .list_mutation_intents(
+            &service,
+            ListMutationIntentsRequest {
+                scope,
+                states: filter.states,
+                include_expired: filter.include_expired,
+                now_ns,
+            },
+        )
+        .map_err(mutation_intent_lifecycle_error_to_gql)?
+        .intents;
 
     if let Some(decision) = filter.decision {
         intents.retain(|intent| intent.decision == decision);
@@ -6312,13 +6297,17 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
-    service
-        .expire_due_with_audit(guard.storage_mut(), &scope, now_ns, None)
-        .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let intent = guard
-        .storage_ref()
-        .get_mutation_intent(&scope.tenant_id, &scope.database_id, &intent_id)
-        .map_err(axon_error_to_gql)?
+        .get_mutation_intent(
+            &service,
+            GetMutationIntentRequest {
+                scope: scope.clone(),
+                intent_id: intent_id.clone(),
+                now_ns,
+            },
+        )
+        .map_err(mutation_intent_lifecycle_error_to_gql)?
+        .intent
         .ok_or_else(|| {
             mutation_intent_lifecycle_error_to_gql(
                 axon_api::intent::MutationIntentLifecycleError::NotFound {
@@ -6329,11 +6318,28 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     authorize_mutation_intent_review(&guard, &caller, &intent)?;
 
     let intent = if approve {
-        service.approve_with_audit(guard.storage_mut(), &scope, &intent_id, metadata, now_ns)
+        guard.approve_mutation_intent(
+            &service,
+            ReviewMutationIntentRequest {
+                scope,
+                intent_id,
+                metadata,
+                now_ns,
+            },
+        )
     } else {
-        service.reject_with_audit(guard.storage_mut(), &scope, &intent_id, metadata, now_ns)
+        guard.reject_mutation_intent(
+            &service,
+            ReviewMutationIntentRequest {
+                scope,
+                intent_id,
+                metadata,
+                now_ns,
+            },
+        )
     }
-    .map_err(mutation_intent_lifecycle_error_to_gql)?;
+    .map_err(mutation_intent_lifecycle_error_to_gql)?
+    .intent;
 
     Ok(Some(json_to_field_value(mutation_intent_json(&intent))))
 }
@@ -6623,9 +6629,16 @@ async fn commit_mutation_intent_resolver<S: StorageAdapter + 'static>(
 
     let mut guard = handler.lock().await;
     let stored_intent = guard
-        .storage_ref()
-        .get_mutation_intent(&scope.tenant_id, &scope.database_id, &token_intent_id)
-        .map_err(axon_error_to_gql)?
+        .get_mutation_intent(
+            &service,
+            GetMutationIntentRequest {
+                scope: scope.clone(),
+                intent_id: token_intent_id,
+                now_ns,
+            },
+        )
+        .map_err(mutation_intent_lifecycle_error_to_gql)?
+        .intent
         .ok_or_else(|| {
             mutation_intent_commit_error_to_gql(MutationIntentCommitValidationError::Token(
                 MutationIntentTokenLookupError::NotFound,
@@ -6646,24 +6659,10 @@ async fn commit_mutation_intent_resolver<S: StorageAdapter + 'static>(
         operation_hash: operation.operation_hash.clone(),
         caller_authorized: caller.check(Operation::Write).is_ok(),
     };
-    {
-        service
-            .validate_commit_bindings_with_audit(
-                guard.storage_mut(),
-                MutationIntentCommitValidationAuditRequest {
-                    scope: &scope,
-                    token: &token,
-                    current: &current,
-                    now_ns,
-                    actor: Some(&caller.actor),
-                },
-            )
-            .map_err(mutation_intent_commit_error_to_gql)?;
-    }
     let transaction = transaction_from_intent_operation(&guard, &operation)?;
-    let result = service
-        .commit_transaction_intent(
-            guard.storage_mut(),
+    let result = guard
+        .commit_mutation_intent_transaction_with_caller(
+            &service,
             MutationIntentTransactionCommitRequest {
                 scope,
                 token,
@@ -6674,6 +6673,8 @@ async fn commit_mutation_intent_resolver<S: StorageAdapter + 'static>(
                 actor: Some(caller.actor.clone()),
                 attribution: None,
             },
+            &caller,
+            None,
         )
         .map_err(mutation_intent_commit_error_to_gql)?;
 
@@ -6783,16 +6784,18 @@ async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
         review_summary,
     };
     let service = graphql_intent_lifecycle_service();
-    let record = service
-        .create_preview_record_with_origin(
-            guard.storage_mut(),
-            intent,
-            Some(MutationIntentAuditOrigin {
-                surface: MutationIntentAuditOriginSurface::Graphql,
-                tool_name: None,
-                request_id: None,
-                operation_hash: Some(canonical_operation.operation_hash.clone()),
-            }),
+    let record = guard
+        .preview_mutation_intent(
+            &service,
+            PreviewMutationIntentRequest {
+                intent,
+                origin: Some(MutationIntentAuditOrigin {
+                    surface: MutationIntentAuditOriginSurface::Graphql,
+                    tool_name: None,
+                    request_id: None,
+                    operation_hash: Some(canonical_operation.operation_hash.clone()),
+                }),
+            },
         )
         .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let intent_json = mutation_intent_json(&record.intent);
@@ -12236,6 +12239,187 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn governed_handler_routes_preview_and_commit_use_handler_policy_audit() {
+        let mut schema_def = test_schema();
+        schema_def.entity_schema = Some(json!({
+            "type": "object",
+            "required": ["title"],
+            "properties": {
+                "title": { "type": "string" },
+                "status": { "type": "string" },
+                "priority": { "type": "integer" },
+                "secret": { "type": "string" }
+            }
+        }));
+        schema_def.access_control = Some(
+            serde_json::from_value::<AccessControlPolicy>(json!({
+                "identity": {
+                    "user_id": "subject.user_id",
+                    "tenant_role": "subject.tenant_role"
+                },
+                "create": { "allow": [{ "name": "allow-create" }] },
+                "fields": {
+                    "secret": {
+                        "write": {
+                            "deny": [{
+                                "name": "blocked-cannot-write-secret",
+                                "when": { "subject": "user_id", "eq": "blocked" }
+                            }]
+                        }
+                    }
+                }
+            }))
+            .expect("access_control should deserialize"),
+        );
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let schema = build_schema_with_handler(&[schema_def], Arc::clone(&handler))
+            .expect("GraphQL schema should build");
+        let preview_caller = CallerIdentity::new("alice", axon_core::auth::Role::Write);
+        let blocked_caller = CallerIdentity::new("blocked", axon_core::auth::Role::Write);
+
+        let preview_denied = response_data(
+            schema
+                .schema
+                .execute(
+                    async_graphql::Request::new(
+                        r#"mutation {
+                            previewMutation(input: {
+                                operation: {
+                                    operationKind: "create",
+                                    operation: {
+                                        collection: "tasks",
+                                        id: "gql-denied",
+                                        data: { title: "Denied", secret: "classified" }
+                                    }
+                                }
+                            }) {
+                                intent { id }
+                                intentToken
+                            }
+                        }"#,
+                    )
+                    .data(preview_caller.clone()),
+                )
+                .await,
+        );
+        let denied_token = preview_denied["previewMutation"]["intentToken"]
+            .as_str()
+            .expect("preview should return token")
+            .to_string();
+
+        let denied_commit = schema
+            .schema
+            .execute(
+                async_graphql::Request::new(format!(
+                    r#"mutation {{
+                        commitMutationIntent(input: {{ intentToken: "{denied_token}" }}) {{
+                            committed
+                        }}
+                    }}"#
+                ))
+                .data(blocked_caller.clone()),
+            )
+            .await;
+        assert_eq!(
+            denied_commit.errors.len(),
+            1,
+            "policy-revalidated commit should fail: {:?}",
+            denied_commit.errors
+        );
+        assert!(
+            denied_commit.errors[0]
+                .message
+                .contains("field_write_denied"),
+            "unexpected error: {:?}",
+            denied_commit.errors[0]
+        );
+        {
+            let guard = handler.lock().await;
+            assert!(
+                guard
+                    .get_entity(GetEntityRequest {
+                        collection: CollectionId::new("tasks"),
+                        id: EntityId::new("gql-denied"),
+                    })
+                    .is_err(),
+                "handler-routed commit must not write after policy denial"
+            );
+        }
+
+        let preview_allowed = response_data(
+            schema
+                .schema
+                .execute(
+                    async_graphql::Request::new(
+                        r#"mutation {
+                            previewMutation(input: {
+                                operation: {
+                                    operationKind: "create",
+                                    operation: {
+                                        collection: "tasks",
+                                        id: "gql-allowed",
+                                        data: { title: "Allowed" }
+                                    }
+                                }
+                            }) {
+                                intent { id }
+                                intentToken
+                            }
+                        }"#,
+                    )
+                    .data(blocked_caller.clone()),
+                )
+                .await,
+        );
+        let allowed_intent_id = preview_allowed["previewMutation"]["intent"]["id"]
+            .as_str()
+            .expect("preview should return intent id")
+            .to_string();
+        let allowed_token = preview_allowed["previewMutation"]["intentToken"]
+            .as_str()
+            .expect("preview should return token");
+        let committed = response_data(
+            schema
+                .schema
+                .execute(
+                    async_graphql::Request::new(format!(
+                        r#"mutation {{
+                            commitMutationIntent(input: {{ intentToken: "{allowed_token}" }}) {{
+                                committed
+                                transactionId
+                            }}
+                        }}"#
+                    ))
+                    .data(blocked_caller),
+                )
+                .await,
+        );
+        let transaction_id = committed["commitMutationIntent"]["transactionId"]
+            .as_str()
+            .expect("commit should return transaction id");
+        assert_eq!(committed["commitMutationIntent"]["committed"], true);
+
+        let guard = handler.lock().await;
+        let audit = guard
+            .query_application_audit(QueryAuditRequest {
+                intent_id: Some(allowed_intent_id),
+                ..QueryAuditRequest::default()
+            })
+            .expect("handler audit query should expose intent lineage");
+        assert!(
+            audit
+                .entries
+                .iter()
+                .any(
+                    |entry| entry.transaction_id.as_deref() == Some(transaction_id)
+                        && entry.collection == CollectionId::new("tasks")
+                ),
+            "committed entity audit entry should carry intent lineage: {:?}",
+            audit.entries
+        );
     }
 
     #[test]

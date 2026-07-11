@@ -421,6 +421,27 @@ impl From<MutationIntentPreviewRecord> for PreviewMutationIntentResponse {
     }
 }
 
+/// Response containing an optional governed mutation-intent record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetMutationIntentResponse {
+    /// Intent visible through the governed handler API, when found.
+    pub intent: Option<MutationIntent>,
+}
+
+/// Response containing governed mutation-intent records.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListMutationIntentsResponse {
+    /// Intents visible through the governed handler API.
+    pub intents: Vec<MutationIntent>,
+}
+
+/// Response after approving or rejecting a governed mutation intent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewMutationIntentResponse {
+    /// Intent after the review lifecycle transition.
+    pub intent: MutationIntent,
+}
+
 /// Response after executing a staged transaction through the governed handler API.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecuteTransactionResponse {

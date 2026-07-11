@@ -7,7 +7,9 @@ use serde_json::Value;
 use axon_core::id::{CollectionId, EntityId};
 use axon_schema::schema::CollectionSchema;
 
-use crate::intent::MutationIntent;
+use crate::intent::{
+    ApprovalState, MutationIntent, MutationIntentReviewMetadata, MutationIntentScopeBinding,
+};
 use crate::transaction::Transaction;
 
 /// Request to create a new entity.
@@ -287,6 +289,45 @@ pub struct PreviewMutationIntentRequest {
     /// Optional transport/tool origin attached to the preview audit entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<MutationIntentAuditOrigin>,
+}
+
+/// Request to read a governed mutation-intent record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetMutationIntentRequest {
+    /// Tenant/database scope bound to the intent.
+    pub scope: MutationIntentScopeBinding,
+    /// Stable server-side intent id.
+    pub intent_id: String,
+    /// Current time in nanoseconds, used to materialize due expirations first.
+    pub now_ns: u64,
+}
+
+/// Request to list governed mutation-intent records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListMutationIntentsRequest {
+    /// Tenant/database scope to list within.
+    pub scope: MutationIntentScopeBinding,
+    /// Explicit approval states to include. Empty means pending review intents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<ApprovalState>,
+    /// Include expired intents when listing the default pending set.
+    #[serde(default)]
+    pub include_expired: bool,
+    /// Current time in nanoseconds, used to materialize due expirations first.
+    pub now_ns: u64,
+}
+
+/// Request to approve or reject a governed mutation intent.
+#[derive(Debug, Clone)]
+pub struct ReviewMutationIntentRequest {
+    /// Tenant/database scope bound to the intent.
+    pub scope: MutationIntentScopeBinding,
+    /// Stable server-side intent id.
+    pub intent_id: String,
+    /// Review decision metadata recorded in audit lineage.
+    pub metadata: MutationIntentReviewMetadata,
+    /// Current time in nanoseconds, used for expiry checks.
+    pub now_ns: u64,
 }
 
 /// In-process request to execute a staged transaction through
