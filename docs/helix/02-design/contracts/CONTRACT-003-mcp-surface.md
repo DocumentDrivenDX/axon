@@ -7,13 +7,13 @@ ddx:
     - ADR-019
     - FEAT-016
   review:
-    self_hash: 1d3728b682b95873fd717b5333a9e86f10b4e3f432ece93cafa1138433793586
+    self_hash: 125d5dbc284b57adc22540ec1091d812beac9907e6fdc8d4bfdc9937b08dfd89
     deps:
       ADR-013: 3c5d06aa567303e3947976b4f827908cf6f7fd881f93c865666dcf56ca478f59
-      ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
-      ADR-019: 3d6482363128cb8e6bc2cb86023a0a66c6a1c3027fab72ad99938d8136bb9732
+      ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
+      ADR-019: 3ec156d9ec6696d67e0f12a6c80495c9166470525128ac475b95dae0b5647f7e
       FEAT-016: 9a2522adbeae59163b67207dc28717d0abc0f7ff65bdb155bd6b23d490d1ba5e
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 
 # Contract
@@ -224,9 +224,9 @@ Resource read: `axon://acme/default/beads/bead-42/audit`
 
 ## Non-Normative Notes
 
-- Subscription delivery is implemented by audit-log polling in V1 (same
-  mechanism as GraphQL subscriptions); this is an implementation detail,
-  not contract surface. Target notification latency < 500ms.
+- V1 subscription delivery may use audit-log polling, matching the GraphQL
+  subscription mechanism; this remains an implementation detail, not contract
+  surface. Target notification latency < 500ms.
 
 ## Validation Checklist
 

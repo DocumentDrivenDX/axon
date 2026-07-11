@@ -9,11 +9,11 @@ ddx:
   review:
     self_hash: 84e03f413aeb60869e30cab5035b2e41e2c0b64e604c5c7889d1c44854bbb644
     deps:
-      ADR-004: 4c8ee66b80980bed2298d511d223f7faaace03864610faf8333af8659c4ce570
+      ADR-004: a58eda0c55e1ac9c4e8cd6fc69d213455354b62286d62be2579de9add3ad01d2
       FEAT-003: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
-      FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
+      FEAT-008: 398492902a4c9d62e5fe6f2d8629ba67cb6175878128036f77f33e40e00d5f6a
       FEAT-023: 24416c13b9a48e864ae43e3967c63d2711763c745905850dbb4f03768ffc7949
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T04:22:33Z"
 ---
 # ADR-015: Rollback and Recovery — Compensating Transaction Semantics
 

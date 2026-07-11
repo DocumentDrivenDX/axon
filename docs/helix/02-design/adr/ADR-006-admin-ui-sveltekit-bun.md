@@ -10,8 +10,8 @@ ddx:
     deps:
       ADR-005: 86046c9a1474abf0f42a1962eedade8582212487f7face55f5256fefa800ff98
       FEAT-005: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:33Z"
 ---
 # ADR-006: Admin UI — SvelteKit + Bun + Vite
 

@@ -6,8 +6,8 @@ ddx:
   review:
     self_hash: 926aafe1f5bdedd6dd2a49f3343bfaaae3c100fd01333a424c22401596b21041
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:32Z"
 ---
 # ADR-001: Rust as Implementation Language
 

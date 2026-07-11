@@ -13,7 +13,7 @@ ddx:
     - FEAT-026
     - FEAT-029
   review:
-    self_hash: dba7833be1c4bdf643ff7c45c7f3faac5224013a7d4855ac8769067505bd453e
+    self_hash: 6802fb83894ddfddd4307516c1d90fc61e83f0c7da9719f1868115b0e7a24fb8
     deps:
       ADR-016: d023701c0bedc5ada8a9121fa850a6b78d7b2b2f39d2b7ac41d7d2c48de7a1b9
       ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
@@ -25,7 +25,7 @@ ddx:
       FEAT-023: 24416c13b9a48e864ae43e3967c63d2711763c745905850dbb4f03768ffc7949
       FEAT-026: 8751e34ac2140fb80077b881290769d82b1d39e7cb1fbaa60404bc82eae1b07b
       FEAT-029: f548dd83b06d298a7e8c575870ae1a06e5e9c53e94d6ccb64b2b876daf7b3b0c
-    reviewed_at: "2026-07-11T03:00:17Z"
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 
 # Contract
@@ -91,9 +91,9 @@ MUST nest under `/control`:
   `/tenants/{t}/databases/{d}/axon.EntityService/CreateEntity`.
 
 Legacy un-prefixed routes (`GET /auth/me`, `/databases/...`,
-`/collections/...`) are live in the current gateway and are **deprecated**:
-they MUST be removed in favor of the prefixed forms below and the
-control-plane GraphQL `currentUser` query (CONTRACT-002).
+`/collections/...`), where still present in a pre-release implementation, are
+**deprecated**: they MUST be removed in favor of the prefixed forms below and
+the control-plane GraphQL `currentUser` query (CONTRACT-002).
 
 ### Data-plane route inventory
 

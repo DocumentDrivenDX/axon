@@ -6,6 +6,14 @@ ddx:
     - ADR-004
     - ADR-026
     - FEAT-008
+  review:
+    self_hash: 83e3318504b589b74d263cce3448f6a26766ede4d9cd8c0b846a8ec9dc2bae86
+    deps:
+      ADR-004: a58eda0c55e1ac9c4e8cd6fc69d213455354b62286d62be2579de9add3ad01d2
+      ADR-026: f406c725f93ffdab41af5ddce6ea6f293adc65c4a3954bbeddc436a7783264d3
+      FEAT-008: 398492902a4c9d62e5fe6f2d8629ba67cb6175878128036f77f33e40e00d5f6a
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 # ADR-027: Serializable Snapshot Isolation (SSI) — Precise, Minimal-Abort Serializability
 

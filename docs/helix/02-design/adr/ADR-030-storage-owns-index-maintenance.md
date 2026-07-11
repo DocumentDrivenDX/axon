@@ -6,6 +6,14 @@ ddx:
     - FEAT-013
     - ADR-029
     - ADR-004
+  review:
+    self_hash: c01a672fc4f9960f5e12f23a280eda02a07d514671f88f0e5d9e9a241066b9f4
+    deps:
+      ADR-004: a58eda0c55e1ac9c4e8cd6fc69d213455354b62286d62be2579de9add3ad01d2
+      ADR-029: 620099bb22be72c64d5d056c397b28222537069f171fa8cc23742e71f6ad121f
+      FEAT-013: e218b7499012d56e569acc094cc40b47360b34fda601b473ac425af2cec09b27
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 # ADR-030: Storage Owns Index Maintenance — Atomic by Construction
 

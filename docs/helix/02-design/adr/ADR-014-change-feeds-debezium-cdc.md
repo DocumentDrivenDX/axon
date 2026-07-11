@@ -9,16 +9,15 @@ ddx:
     - FEAT-015
     - FEAT-021
   review:
-    # TODO: refresh review stamp (2026-06-27 amendment: client local replica as projection consumer)
-    self_hash: d0be4bb4fa8f98ca5e4518b4b1c0bc4a46882a42098d38931c6d5b649cbb9655
+    self_hash: 6b9f2190081dd7dae202942b25247ee638b0359a4ead7109987b5bc4440c7347
     deps:
-      ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
+      ADR-003: 056f2f887152bb12c36cfae79ee6ced4c33a6b6de4d73c2500cd087fd7fd1025
       ADR-010: 80dcbb947056ff9555019c8cbc3c3a6e9dbe67cdaa668402b15d7bbc5d905930
       ADR-012: cea81e56e4101b53f6b9a2e98c796278756bc657b895398ae226b6bc4f1f0188
       FEAT-003: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
       FEAT-015: c75ebd606ba19b7ac509eefcd0bb47c229433b5a14b1110fcae70d6c3898bd6f
       FEAT-021: 6165a271de0b5e5c978f97ab9393596e651a680c51db80153fb85167ed93d993
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T04:22:33Z"
 ---
 # ADR-014: Change Feeds — Debezium-Compatible CDC with Kafka and Schema Registry
 

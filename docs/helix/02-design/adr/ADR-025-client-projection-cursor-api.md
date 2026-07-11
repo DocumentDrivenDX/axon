@@ -9,14 +9,13 @@ ddx:
     references:
       - CONTRACT-006
       - CONTRACT-009
-    # TODO: refresh review stamp (new ADR authored 2026-06-27; deps unstamped)
   review:
-    self_hash: 692a6ee9e1b7616b71f1ee9b1fe07217c7449d99e4ad28aafad7a4107bb3193b
+    self_hash: 44fd65fb85d5dfc58aa7ec04039f44f397e66a45a1095738acff0fd6fafb79ef
     deps:
       ADR-014: 6b9f2190081dd7dae202942b25247ee638b0359a4ead7109987b5bc4440c7347
       FEAT-021: 6165a271de0b5e5c978f97ab9393596e651a680c51db80153fb85167ed93d993
-      FEAT-032: 3e5368c0b1a62ee03f0996e5e892b4ce61558af17599eab234133f188df1ef93
-    reviewed_at: "2026-07-11T02:26:23Z"
+      FEAT-032: 8102df1f7f6c66bd3b06f2158d7eb719547aad0f2b5c71d2867fe5aba9e0a3f2
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 # ADR-025: Client-Projection Cursor API — Opaque, Restart/Schema-Stable Resume Tokens
 

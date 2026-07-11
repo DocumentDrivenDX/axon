@@ -15,11 +15,10 @@ ddx:
     - ADR-020
     - ADR-021
   review:
-    # TODO: refresh review stamp (read-side subsection + local-replica consumer added, 2026-06-27)
-    self_hash: 31ea2c1044ec737c0030658c1f48b5da1fb0e159e18eb4f90dd86a64fdb94735
+    self_hash: 2b8f67b0d5bde000a0bd4d9e59b40a5df06c5e685e5b3954bfcca9939bd1fc0d
     deps:
-      ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
-      ADR-004: de71b28d07985455c869a2157afbc61158b726134c81f5d13caa5f5f341cedd1
+      ADR-003: 056f2f887152bb12c36cfae79ee6ced4c33a6b6de4d73c2500cd087fd7fd1025
+      ADR-004: a58eda0c55e1ac9c4e8cd6fc69d213455354b62286d62be2579de9add3ad01d2
       ADR-010: 80dcbb947056ff9555019c8cbc3c3a6e9dbe67cdaa668402b15d7bbc5d905930
       ADR-011: 128732e07720a3aee6e4d88295cae04893d5c661d8744246532cccb1e667ea58
       ADR-014: 6b9f2190081dd7dae202942b25247ee638b0359a4ead7109987b5bc4440c7347
@@ -30,7 +29,7 @@ ddx:
       ADR-020: ed351273fc7b4c46f5114aa6f0e1e942ae3fcd2e7ca74ad989b23ea730d23790
       ADR-021: 7672758c3841fb3871bc2b8f90aeb7c63d5453c42dae5bedf5cf27d6394dda78
       helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
-    reviewed_at: "2026-07-11T02:44:22Z"
+    reviewed_at: "2026-07-11T04:22:35Z"
 ---
 
 # Architecture
@@ -115,7 +114,7 @@ this document does not redefine any stage.
 
 **Non-bypass invariant.** Every surface — GraphQL, MCP, REST, CLI, SDK, the
 admin UI, and the embedded in-process API — is a view over this one path. No
-surface bypasses any stage; parity is verified by shared fixtures. When a
+surface may bypass any stage; parity must be verified by shared fixtures. When a
 feature appears to need a bypass, the handler path changes instead. This is
 Principle 1, "Guardrails Are the Product"
 ([principles.md](../01-frame/principles.md)).
@@ -140,14 +139,15 @@ redaction stages above:
   "what changed, in order, resumably."
 
 The **client local read replica** (FEAT-032, FR-32) is a *consumer* of the
-event-derived projection: the SDK's `LocalReplica` and the storage-backed
-`StorageCursorStore` already exist, and the server snapshot bootstrap path
-already emits `op: "r"` bootstrap events. The replica boots from a snapshot and
-tails the change stream using the same opaque, restart/schema-stable cursor
-vocabulary (ADR-025), maintaining a client-resident read model for responsive
+event-derived projection. FEAT-032 records the current partial substrate
+(`LocalReplica`, `StorageCursorStore`, and snapshot bootstrap events); this
+architecture treats that substrate as incomplete until every public stream
+consumer uses the same opaque, restart/schema-stable cursor vocabulary
+(ADR-025, CONTRACT-006). The intended replica boots from a snapshot and tails
+the change stream, maintaining a client-resident read model for responsive
 search/sort/filter without server round-trips. Redaction is applied at
 projection time so the replica never holds data the subject may not see
-(ADR-019). The boundary is still partial/unwired end-to-end: GraphQL
+(ADR-019). The boundary remains partial/unwired end-to-end: GraphQL
 subscriptions continue to expose raw `audit_id` reconnects, and the single
 opaque cursor vocabulary has not yet replaced every consumer. Replica
 writeback remains out of scope (FR-33, deferred).
@@ -158,7 +158,7 @@ writeback remains out of scope (FR-33, deferred).
 |-----------|------------|------------------|---------------|
 | Axon server | Rust, axum + tonic (single `axon` binary, FEAT-028) | Hosts the governed request path; serves GraphQL, MCP, REST, gRPC; stateless — any instance serves any request | HTTP/1.1+2, JSON / GraphQL / MCP, path-based routing (ADR-018) |
 | Embedded Axon | Rust library (same crates, no server) | Same handler path in-process for dev/test/edge | Native Rust traits |
-| Backing store | SQLite/libSQL (embedded) or PostgreSQL 16 (server, 0.4.x pilot qualification only) | Durable storage of entities, links, EAV indexes, audit, schemas; replication and failover | SQL over `rusqlite` / `tokio-postgres` (ADR-003) |
+| Backing store | SQLite/libSQL (embedded) or PostgreSQL 16 (server, 0.4.x pilot qualification only) | Durable storage of entities, links, EAV indexes, audit, schemas; replication and failover | SQL adapters through `sqlx` (ADR-003) |
 | CDC publisher | `rdkafka` producer inside the server | Tails audit log by cursor, emits Debezium envelopes, at-least-once | Kafka protocol; Confluent Schema Registry façade (ADR-014) |
 | Control plane | Rust (`axon-control-plane`) + PostgreSQL metadata DB | Tenant registry, health snapshots (60 s polling), tenant config, node registry / database placement; never reads entity data | HTTPS, HMAC-signed registration and instance tokens (ADR-017/018) |
 | Admin UI | SvelteKit + Bun + Vite (ADR-006) | Operator console: schemas, policy, intents, audit, tenants | GraphQL against the Axon server |
@@ -280,8 +280,9 @@ addressing), ADR-020 (data model), CONTRACT-010 (ESF).
 
 ## Deployment
 
-Three shapes, smallest to largest. All three run the identical governed
-request path and pass the identical correctness suite.
+Three shapes, smallest to largest. All three are required to run the identical
+governed request path and pass the identical correctness suite before claiming
+mode parity.
 
 | Component | Infrastructure | Instances | Scaling | Backup / Recovery |
 |-----------|----------------|-----------|---------|-------------------|
@@ -362,14 +363,15 @@ technical-requirements umbrella; verification methods are binding.
 | Guardrail overhead | <1 ms per request | In-process sliding-window limiter and entity filters (ADR-016/024) | Microbenchmarks; shared-fixture parity tests |
 | Query bounds | Traversal depth ≤10; cardinality budget 1 M rows; 30 s timeout | Streaming Cypher executor with explicit path bounds (ADR-021) | Executor budget tests |
 | Availability | Any instance serves any request; horizontal scaling linear with backing store | Stateless servers — no consensus, no leader election; durability delegated (ADR-003) | Operational acceptance: `/health` with store connectivity; graceful SIGTERM drain; connection pooling |
-| Correctness | All invariants hold under fault injection: no lost updates, audit completeness/immutability, schema enforcement, link integrity, version monotonicity, transaction atomicity | Deterministic simulation with BUGGIFY (disk/network/clock/crash faults), seed-reproducible | `axon-sim` suite; identical suite passes in embedded and server modes (mode parity) |
+| Correctness | All invariants hold under fault injection: no lost updates, audit completeness/immutability, schema enforcement, link integrity, version monotonicity, transaction atomicity | Deterministic simulation with BUGGIFY (disk/network/clock/crash faults), seed-reproducible | `axon-sim` suite; identical suite must pass in embedded and server modes before mode parity is claimed |
 | Security | Every request authorized against `(user, tenant, database)`; grants ≤ issuer role ceiling; 401 vs 403 distinction; all rejections audited | JWT credentials with per-tenant `aud` (ADR-018); guardrails (ADR-016/024); policy (ADR-019); non-bypass invariant | Shared-fixture surface-parity tests; threat-model controls (`01-frame/threat-model.md`) |
 | Observability | OpenTelemetry traces and metrics for all operations; backing-store capacity metrics | Instrumented middleware in `axon-server` | Operational acceptance criteria |
 | Disaster recovery | RPO: 0 for committed transactions on restart-durable backends (durable in backing store at commit; post-commit audit gap closed by startup recovery scan). Memory remains process-lifetime only. RTO: bounded by backing-store restore — embedded: single-file copy; server: PostgreSQL PITR | Durability fully delegated to the backing store; documented backup/restore procedure; transient store failures yield retryable errors, never corruption | Backup/restore drills per operational acceptance criteria; audit-gap count ratchet (toward 0) |
 
 Embedded-mode acceptance: zero external processes, single-file database
 (entities, links, audit, schemas), in-process API with the same Rust traits
-as server mode, full test-suite parity.
+as server mode, and full test-suite parity before an embedded-mode readiness
+claim.
 
 ## Decisions and Tradeoffs
 

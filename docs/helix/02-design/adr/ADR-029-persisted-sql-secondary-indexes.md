@@ -6,6 +6,14 @@ ddx:
     - FEAT-013
     - ADR-028
     - ADR-004
+  review:
+    self_hash: 620099bb22be72c64d5d056c397b28222537069f171fa8cc23742e71f6ad121f
+    deps:
+      ADR-004: a58eda0c55e1ac9c4e8cd6fc69d213455354b62286d62be2579de9add3ad01d2
+      ADR-028: 82a972d29f478ad094cd7911c9166afe617d40f8727d338be87a13fa163e6417
+      FEAT-013: e218b7499012d56e569acc094cc40b47360b34fda601b473ac425af2cec09b27
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 # ADR-029: Persisted Byte-Keyed Secondary Indexes — Backend Parity & Query Performance
 

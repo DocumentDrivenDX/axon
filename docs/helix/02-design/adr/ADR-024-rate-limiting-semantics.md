@@ -10,10 +10,10 @@ ddx:
     self_hash: 4b62772a355802aa5e4972eb22ad23c908eded8459621ee56d26958eb7c0642f
     deps:
       ADR-016: d023701c0bedc5ada8a9121fa850a6b78d7b2b2f39d2b7ac41d7d2c48de7a1b9
-      ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
-      ADR-019: 3d6482363128cb8e6bc2cb86023a0a66c6a1c3027fab72ad99938d8136bb9732
+      ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
+      ADR-019: 3ec156d9ec6696d67e0f12a6c80495c9166470525128ac475b95dae0b5647f7e
       FEAT-022: 63ecd2aff32e4cc0aa516c6cc8632ffb5ed3a004a6b633edf60dfc0b038f0fc6
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 # ADR-024: Rate Limiting Semantics — Per-Actor Sliding Window
 

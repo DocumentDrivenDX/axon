@@ -7,9 +7,9 @@ ddx:
   review:
     self_hash: 128732e07720a3aee6e4d88295cae04893d5c661d8744246532cccb1e667ea58
     deps:
-      ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
+      ADR-003: 056f2f887152bb12c36cfae79ee6ced4c33a6b6de4d73c2500cd087fd7fd1025
       ADR-010: 80dcbb947056ff9555019c8cbc3c3a6e9dbe67cdaa668402b15d7bbc5d905930
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T04:22:33Z"
 ---
 # ADR-011: Multi-Tenancy, Namespace Hierarchy, and Node Topology
 
