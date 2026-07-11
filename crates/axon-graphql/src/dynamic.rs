@@ -48,12 +48,13 @@ use axon_api::request::{
     RevertEntityRequest, RollbackEntityRequest, RollbackEntityTarget, SortDirection, SortField,
     TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
+use axon_api::response::ReservedNamespaceError;
 use axon_api::transaction::Transaction;
 use axon_api::PolicySubjectSnapshot;
 use axon_audit::entry::compute_diff;
 use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId, LinkId};
+use axon_core::id::{CollectionId, EntityId, LinkId, SystemCollection};
 use axon_core::types::{Entity, Link};
 use axon_cypher::ast::{
     ComparisonOp, Direction as CypherDirection, Expression, Literal, LogicalOp, MatchClause,
@@ -4581,6 +4582,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                 let collection = ctx.args.try_get("collection")?.string()?.to_owned();
                 let id = ctx.args.try_get("id")?.string()?.to_owned();
                 let collection_id = CollectionId::new(collection);
+                ensure_graphql_generic_collection_access(&collection_id, "entity")?;
                 let guard = handler.lock().await;
                 let schema = guard
                     .get_schema(&collection_id)
@@ -4757,6 +4759,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                     let has_previous_page = after_id.is_some();
 
                     let collection_id = CollectionId::new(collection);
+                    ensure_graphql_generic_collection_access(&collection_id, "query")?;
                     let guard = handler.lock().await;
                     let schema = guard
                         .get_schema(&collection_id)
@@ -4828,6 +4831,10 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                         limit
                     };
 
+                    ensure_graphql_generic_collection_access(
+                        &CollectionId::new(&source_collection),
+                        "link",
+                    )?;
                     let guard = handler.lock().await;
                     let response = guard
                         .find_link_candidates_with_caller(
@@ -4889,6 +4896,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                     let after = parse_relationship_after(&ctx)?;
                     let collection_id = CollectionId::new(&collection);
                     let entity_id = EntityId::new(&id);
+                    ensure_graphql_generic_collection_access(&collection_id, "traverse")?;
                     let directions = match direction {
                         Some(TraverseDirection::Forward) => {
                             vec![(TraverseDirection::Forward, "outbound")]
@@ -5009,6 +5017,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                 let handler = Arc::clone(&handler_collection);
                 FieldFuture::new(async move {
                     let name = ctx.args.try_get("name")?.string()?.to_owned();
+                    ensure_graphql_generic_collection_access(&CollectionId::new(&name), "query")?;
                     let guard = handler.lock().await;
                     match guard.describe_collection(DescribeCollectionRequest {
                         name: CollectionId::new(name),
@@ -5032,6 +5041,10 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                 let handler = Arc::clone(&handler_collection_template);
                 FieldFuture::new(async move {
                     let collection = ctx.args.try_get("collection")?.string()?.to_owned();
+                    ensure_graphql_generic_collection_access(
+                        &CollectionId::new(&collection),
+                        "template",
+                    )?;
                     let guard = handler.lock().await;
                     match guard.get_collection_template(GetCollectionTemplateRequest {
                         collection: CollectionId::new(collection),
@@ -5064,6 +5077,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                     let id = ctx.args.try_get("id")?.string()?.to_owned();
                     let collection_id = CollectionId::new(collection);
                     let entity_id = EntityId::new(id);
+                    ensure_graphql_generic_collection_access(&collection_id, "entity")?;
                     let guard = handler.lock().await;
                     let schema = guard
                         .get_schema(&collection_id)
@@ -5145,6 +5159,9 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                         .and_then(|v| v.i64().ok())
                         .map(|v| v as usize);
                     let has_previous_page = after_id.is_some();
+                    if let Some(collection) = &collection {
+                        ensure_graphql_generic_collection_access(collection, "audit")?;
+                    }
 
                     let guard = handler.lock().await;
                     match guard.query_audit_with_caller(
@@ -5384,6 +5401,37 @@ fn caller_from_ctx(ctx: &async_graphql::dynamic::ResolverContext<'_>) -> CallerI
         .unwrap_or_else(|_| CallerIdentity::anonymous())
 }
 
+fn reserved_namespace_gql_error(collection: &CollectionId, operation: &str) -> GqlError {
+    axon_error_to_gql(ReservedNamespaceError::new(collection.as_str(), operation).into_axon_error())
+}
+
+fn ensure_graphql_generic_collection_access(
+    collection: &CollectionId,
+    operation: &str,
+) -> Result<(), GqlError> {
+    if SystemCollection::from_collection_name(collection.as_str()).is_some() {
+        return Err(reserved_namespace_gql_error(collection, operation));
+    }
+    Ok(())
+}
+
+fn reserved_namespace_extension_error(
+    message: String,
+    reserved: ReservedNamespaceError,
+) -> GqlError {
+    GqlError::new(format!("invalid argument: {message}")).extend_with(move |_err, ext| {
+        ext.set("code", "INVALID_ARGUMENT");
+        ext.set("applicationCode", reserved.code.as_str());
+        ext.set("reason", reserved.reason.as_str());
+        if let Ok(detail) = GqlValue::from_json(json!({
+            "name": reserved.detail.name,
+            "operation": reserved.detail.operation,
+        })) {
+            ext.set("detail", detail);
+        }
+    })
+}
+
 /// Convert an `AxonError` into an `async-graphql` `Error` with structured
 /// extensions for OCC conflicts and other error kinds.
 fn axon_error_to_gql(err: AxonError) -> GqlError {
@@ -5473,10 +5521,17 @@ fn axon_error_to_gql(err: AxonError) -> GqlError {
             ext.set("code", "LIFECYCLE_NOT_FOUND");
             ext.set("lifecycleName", lifecycle_name.as_str());
         }),
-        AxonError::InvalidArgument(msg) => GqlError::new(format!("invalid argument: {msg}"))
-            .extend_with(|_err, ext| {
-                ext.set("code", "INVALID_ARGUMENT");
-            }),
+        AxonError::InvalidArgument(msg) => {
+            let reserved =
+                ReservedNamespaceError::from_axon_error(&AxonError::InvalidArgument(msg.clone()));
+            if let Some(reserved) = reserved {
+                reserved_namespace_extension_error(msg, reserved)
+            } else {
+                GqlError::new(format!("invalid argument: {msg}")).extend_with(|_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                })
+            }
+        }
         AxonError::InvalidOperation(msg) => GqlError::new(format!("invalid operation: {msg}"))
             .extend_with(|_err, ext| {
                 ext.set("code", "INVALID_OPERATION");
@@ -6784,6 +6839,7 @@ fn preview_create_entity<S: StorageAdapter>(
     let collection = CollectionId::new(required_str(operation, "collection", 0)?);
     let id = EntityId::new(required_str(operation, "id", 0)?);
     let data = operation.get("data").cloned().unwrap_or(Value::Null);
+    ensure_graphql_generic_collection_access(&collection, "intent")?;
     let schema = required_schema(handler, &collection)?;
     validate(&schema, &data).map_err(axon_error_to_gql)?;
     if handler
@@ -6813,6 +6869,7 @@ fn preview_update_entity<S: StorageAdapter>(
     let id = EntityId::new(required_str(operation, "id", 0)?);
     let expected_version = operation.get("expected_version").and_then(Value::as_u64);
     let data = operation.get("data").cloned().unwrap_or(Value::Null);
+    ensure_graphql_generic_collection_access(&collection, "intent")?;
     let schema = required_schema(handler, &collection)?;
     validate(&schema, &data).map_err(axon_error_to_gql)?;
     let current = required_entity(handler, &collection, &id)?;
@@ -6839,6 +6896,7 @@ fn preview_patch_entity<S: StorageAdapter>(
     let id = EntityId::new(required_str(operation, "id", 0)?);
     let expected_version = operation.get("expected_version").and_then(Value::as_u64);
     let patch = operation.get("patch").cloned().unwrap_or(Value::Null);
+    ensure_graphql_generic_collection_access(&collection, "intent")?;
     let schema = required_schema(handler, &collection)?;
     let current = required_entity(handler, &collection, &id)?;
     check_expected_version(&current, expected_version)?;
@@ -6866,6 +6924,7 @@ fn preview_delete_entity<S: StorageAdapter>(
     let collection = CollectionId::new(required_str(operation, "collection", 0)?);
     let id = EntityId::new(required_str(operation, "id", 0)?);
     let expected_version = operation.get("expected_version").and_then(Value::as_u64);
+    ensure_graphql_generic_collection_access(&collection, "intent")?;
     let schema = required_schema(handler, &collection)?;
     let current = required_entity(handler, &collection, &id)?;
     check_expected_version(&current, expected_version)?;
@@ -6891,6 +6950,7 @@ fn preview_transition<S: StorageAdapter>(
     let lifecycle_name = input_string(operation, "lifecycle_name")?;
     let target_state = input_string(operation, "target_state")?;
     let expected_version = operation.get("expected_version").and_then(Value::as_u64);
+    ensure_graphql_generic_collection_access(&collection, "intent")?;
     let schema = required_schema(handler, &collection)?;
     let current = required_entity(handler, &collection, &id)?;
     check_expected_version(&current, expected_version)?;
@@ -6922,6 +6982,8 @@ fn preview_create_link<S: StorageAdapter>(
     operation: &serde_json::Map<String, Value>,
 ) -> Result<MutationPreviewComputation, GqlError> {
     let link = link_from_operation(operation)?;
+    ensure_graphql_generic_collection_access(&link.source_collection, "intent")?;
+    ensure_graphql_generic_collection_access(&link.target_collection, "intent")?;
     let source = required_entity(handler, &link.source_collection, &link.source_id)?;
     let target = required_entity(handler, &link.target_collection, &link.target_id)?;
     let schema_version = max_schema_version_for_entities(handler, &[&source, &target])?;
@@ -6958,6 +7020,8 @@ fn preview_delete_link<S: StorageAdapter>(
     operation: &serde_json::Map<String, Value>,
 ) -> Result<MutationPreviewComputation, GqlError> {
     let link = link_from_operation(operation)?;
+    ensure_graphql_generic_collection_access(&link.source_collection, "intent")?;
+    ensure_graphql_generic_collection_access(&link.target_collection, "intent")?;
     let link_id = Link::storage_id(
         &link.source_collection,
         &link.source_id,
@@ -7002,6 +7066,9 @@ fn preview_rollback<S: StorageAdapter>(
         .and_then(Value::as_str)
         .unwrap_or("entity");
     if scope != "entity" {
+        if let Some(collection) = operation.get("collection").and_then(Value::as_str) {
+            ensure_graphql_generic_collection_access(&CollectionId::new(collection), "intent")?;
+        }
         let mut request = empty_explain_policy_request("rollback");
         request.collection = operation
             .get("collection")
@@ -7011,6 +7078,7 @@ fn preview_rollback<S: StorageAdapter>(
     }
     let collection = CollectionId::new(required_str(operation, "collection", 0)?);
     let id = EntityId::new(required_str(operation, "id", 0)?);
+    ensure_graphql_generic_collection_access(&collection, "intent")?;
     let target = operation
         .get("target")
         .and_then(Value::as_object)
@@ -8162,6 +8230,7 @@ async fn rollback_entity_resolver<S: StorageAdapter + 'static>(
         .unwrap_or(false);
 
     let collection_id = CollectionId::new(collection);
+    ensure_graphql_generic_collection_access(&collection_id, "rollback")?;
     let mut guard = handler.lock().await;
     let schema = guard
         .get_schema(&collection_id)
@@ -8207,6 +8276,29 @@ fn op_error(err: GqlError, op_index: usize) -> GqlError {
     err.extend_with(move |_err, ext| {
         ext.set("operationIndex", op_index as i32);
     })
+}
+
+fn ensure_graphql_transaction_payload_access(
+    variant: &str,
+    payload: &serde_json::Map<String, Value>,
+    index: usize,
+) -> Result<(), GqlError> {
+    let ensure_collection = |collection: &str| {
+        ensure_graphql_generic_collection_access(&CollectionId::new(collection), "transaction")
+            .map_err(|err| op_error(err, index))
+    };
+
+    match variant {
+        "readEntity" | "createEntity" | "updateEntity" | "patchEntity" | "deleteEntity" => {
+            ensure_collection(&required_str(payload, "collection", index)?)
+        }
+        "createLink" | "deleteLink" => {
+            ensure_collection(&required_str(payload, "sourceCollection", index)?)?;
+            ensure_collection(&required_str(payload, "targetCollection", index)?)
+        }
+        "readNamedQuery" => Ok(()),
+        _ => Ok(()),
+    }
 }
 
 fn transaction_payload_value(tx_id: &str, written: &[Entity], replay_hit: bool) -> Value {
@@ -8363,6 +8455,7 @@ async fn commit_transaction_resolver<S: StorageAdapter + 'static>(
 
         let (variant, payload) = variants[0];
         let payload = required_object(payload, variant, index)?;
+        ensure_graphql_transaction_payload_access(variant, payload, index)?;
         let stage_result = match variant {
             // ── Auto-capturing reads (FEAT-008 TXN-05) ──────────────────────
             // Read ops stage NO write; they record a read footprint into `tx`.
@@ -11968,6 +12061,181 @@ mod tests {
         }
 
         handler
+    }
+
+    fn reserved_namespace_graphql_document(
+        vector: &axon_api::test_fixtures::ReservedNamespaceSurfaceParityVector,
+    ) -> String {
+        let name = vector.detail_name;
+        match vector.detail_operation {
+            "entity" => format!(
+                r#"{{
+                    entity(collection: "{name}", id: "reserved-id") {{ id }}
+                }}"#
+            ),
+            "schema" => format!(
+                r#"mutation {{
+                    putSchema(input: {{
+                        collection: "{name}",
+                        schema: {{ entitySchema: {{ type: "object" }} }},
+                        dryRun: true
+                    }}) {{ dryRun }}
+                }}"#
+            ),
+            "template" => format!(
+                r#"{{
+                    collectionTemplate(collection: "{name}") {{ collection }}
+                }}"#
+            ),
+            "link" => format!(
+                r#"{{
+                    linkCandidates(
+                        sourceCollection: "{name}",
+                        sourceId: "reserved-id",
+                        linkType: "depends-on"
+                    ) {{ targetCollection }}
+                }}"#
+            ),
+            "rollback" => format!(
+                r#"mutation {{
+                    rollbackEntity(input: {{
+                        collection: "{name}",
+                        id: "reserved-id",
+                        toVersion: 1,
+                        dryRun: true
+                    }}) {{ dryRun }}
+                }}"#
+            ),
+            "intent" => format!(
+                r#"mutation {{
+                    previewMutation(input: {{
+                        operation: {{
+                            operationKind: "create",
+                            operation: {{
+                                collection: "{name}",
+                                id: "reserved-id",
+                                data: {{ title: "reserved" }}
+                            }}
+                        }}
+                    }}) {{ decision }}
+                }}"#
+            ),
+            "query" => format!(
+                r#"{{
+                    entities(collection: "{name}") {{ totalCount }}
+                }}"#
+            ),
+            "traverse" => format!(
+                r#"{{
+                    neighbors(collection: "{name}", id: "reserved-id") {{ totalCount }}
+                }}"#
+            ),
+            "transaction" => format!(
+                r#"mutation {{
+                    commitTransaction(input: {{
+                        operations: [
+                            {{
+                                createEntity: {{
+                                    collection: "{name}",
+                                    id: "reserved-id",
+                                    data: {{ title: "reserved" }}
+                                }}
+                            }}
+                        ]
+                    }}) {{ transactionId }}
+                }}"#
+            ),
+            "audit" => format!(
+                r#"{{
+                    auditLog(collection: "{name}") {{ totalCount }}
+                }}"#
+            ),
+            other => panic!("operation `{other}` is not exposed through generic GraphQL roots"),
+        }
+    }
+
+    fn assert_graphql_reserved_namespace_error(
+        error: &async_graphql::ServerError,
+        vector: &axon_api::test_fixtures::ReservedNamespaceSurfaceParityVector,
+    ) {
+        let extensions = error.extensions.as_ref().expect("GraphQL extensions");
+        assert!(
+            error.message.contains(vector.code),
+            "message should preserve application code: {}",
+            error.message
+        );
+        assert!(
+            matches!(extensions.get("code"), Some(GqlValue::String(code)) if code == "INVALID_ARGUMENT"),
+            "transport code mismatch: {:?}",
+            extensions.get("code")
+        );
+        assert!(
+            matches!(extensions.get("applicationCode"), Some(GqlValue::String(code)) if code == vector.code),
+            "application code mismatch: {:?}",
+            extensions.get("applicationCode")
+        );
+        assert!(
+            matches!(extensions.get("reason"), Some(GqlValue::String(reason)) if reason == vector.reason),
+            "reason mismatch: {:?}",
+            extensions.get("reason")
+        );
+        let Some(GqlValue::Object(detail)) = extensions.get("detail") else {
+            panic!("detail extension should be an object: {extensions:?}");
+        };
+        assert!(
+            matches!(detail.get("name"), Some(GqlValue::String(name)) if name == vector.detail_name),
+            "detail.name mismatch: {:?}",
+            detail.get("name")
+        );
+        assert!(
+            matches!(detail.get("operation"), Some(GqlValue::String(operation)) if operation == vector.detail_operation),
+            "detail.operation mismatch: {:?}",
+            detail.get("operation")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reserved_namespace_surface_parity() {
+        use axon_api::test_fixtures::{
+            reserved_namespace_graphql_surface_parity_cases, ReservedNamespaceSurfaceExposure,
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler = make_counting_handler(&[], Arc::clone(&calls)).await;
+        let schema = build_schema_with_handler(&[], handler).expect("GraphQL schema should build");
+
+        for case in reserved_namespace_graphql_surface_parity_cases() {
+            let vector = case.vector;
+            match case.exposure {
+                ReservedNamespaceSurfaceExposure::NotExposed { reason } => {
+                    assert!(
+                        !reason.is_empty(),
+                        "not-exposed disposition for {} must explain why",
+                        vector.detail_operation
+                    );
+                }
+                ReservedNamespaceSurfaceExposure::Exposed => {
+                    let response = schema
+                        .schema
+                        .execute(reserved_namespace_graphql_document(&vector))
+                        .await;
+                    assert_eq!(
+                        response.errors.len(),
+                        1,
+                        "expected one GraphQL error for {:?}, got {:?}",
+                        vector,
+                        response.errors
+                    );
+                    assert_graphql_reserved_namespace_error(&response.errors[0], &vector);
+                    assert_eq!(
+                        calls.load(Ordering::SeqCst),
+                        0,
+                        "reserved namespace {:?} reached storage",
+                        vector
+                    );
+                }
+            }
+        }
     }
 
     #[test]

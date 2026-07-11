@@ -35,13 +35,17 @@ use axon_api::request::{
     ListNamespacesRequest, ListNeighborsRequest, PatchEntityRequest, QueryEntitiesRequest,
     TransitionLifecycleRequest, TraverseDirection, TraverseRequest,
 };
-use axon_api::response::{EffectivePolicyResponse, PolicyExplanationResponse};
+use axon_api::response::{
+    EffectivePolicyResponse, PolicyExplanationResponse, ReservedNamespaceError,
+};
 use axon_api::transaction::Transaction;
 use axon_audit::entry::compute_diff;
 use axon_audit::entry::{MutationIntentAuditOrigin, MutationIntentAuditOriginSurface};
 use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::{AxonError, PolicyDenial};
-use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
+use axon_core::id::{
+    CollectionId, EntityId, Namespace, SystemCollection, DEFAULT_DATABASE, DEFAULT_SCHEMA,
+};
 use axon_core::types::{Entity, Link};
 use axon_schema::validation::validate;
 use axon_schema::{
@@ -60,6 +64,8 @@ use crate::tools::{
 
 static MCP_INTENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 const MCP_INTENT_TOKEN_SECRET: &[u8] = b"axon-graphql-mutation-intents-v1";
+const OP_INTENT: &str = "intent";
+const OP_LIFECYCLE: &str = "lifecycle";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IntentToolMode {
@@ -244,6 +250,18 @@ fn text_tool_response<T: Serialize>(payload: &T) -> Result<Value, ToolError> {
             "text": text
         }]
     }))
+}
+
+fn ensure_mcp_generic_collection_access(
+    collection: &CollectionId,
+    operation: &str,
+) -> Result<(), ToolError> {
+    if SystemCollection::from_collection_name(collection.as_str()).is_some() {
+        return Err(to_tool_error(
+            ReservedNamespaceError::new(collection.as_str(), operation).into_axon_error(),
+        ));
+    }
+    Ok(())
 }
 
 fn policy_denial_tool_response(
@@ -1972,6 +1990,7 @@ fn execute_create<S: StorageAdapter>(
         attribution: None,
     };
     if intent_mode(args)? == IntentToolMode::Preview {
+        ensure_mcp_generic_collection_access(&request.collection, OP_INTENT)?;
         let operation = canonical_create_entity_operation(&request);
         let preview = preview_create_entity(handler, &request)?;
         return execute_intent_preview(
@@ -2058,6 +2077,7 @@ fn execute_patch<S: StorageAdapter>(
         attribution: None,
     };
     if intent_mode(args)? == IntentToolMode::Preview {
+        ensure_mcp_generic_collection_access(&request.collection, OP_INTENT)?;
         let operation = canonical_patch_entity_operation(&request);
         let preview = preview_patch_entity(handler, &request)?;
         return execute_intent_preview(
@@ -2119,6 +2139,7 @@ fn execute_delete<S: StorageAdapter>(
         attribution: None,
     };
     if intent_mode(args)? == IntentToolMode::Preview {
+        ensure_mcp_generic_collection_access(&request.collection, OP_INTENT)?;
         let expected_version = args.get("expected_version").and_then(Value::as_u64);
         let operation = if expected_version.is_some() {
             canonicalize_intent_operation(
@@ -2726,7 +2747,8 @@ pub fn build_transition_lifecycle_tool<S: StorageAdapter + 'static>(
         })),
         handler: Box::new(move |args| {
             let caller = CallerIdentity::anonymous();
-            if intent_mode(args)? == IntentToolMode::Commit {
+            let mode = intent_mode(args)?;
+            if mode == IntentToolMode::Commit {
                 let mut guard = lock_handler(&handler)?;
                 return execute_intent_commit(
                     &mut guard,
@@ -2743,6 +2765,12 @@ pub fn build_transition_lifecycle_tool<S: StorageAdapter + 'static>(
 
             let cid = CollectionId::new(&collection_id);
             let eid = EntityId::new(&entity_id);
+            let reserved_operation = if mode == IntentToolMode::Preview {
+                OP_INTENT
+            } else {
+                OP_LIFECYCLE
+            };
+            ensure_mcp_generic_collection_access(&cid, reserved_operation)?;
 
             let expected_version = match args.get("expected_version") {
                 Some(Value::Null) | None => {
@@ -2772,7 +2800,7 @@ pub fn build_transition_lifecycle_tool<S: StorageAdapter + 'static>(
                 audit_metadata: None,
                 attribution: None,
             };
-            if intent_mode(args)? == IntentToolMode::Preview {
+            if mode == IntentToolMode::Preview {
                 let operation = canonical_transition_lifecycle_operation(&request);
                 let preview = preview_transition_entity(&guard, &request)?;
                 return execute_intent_preview(
@@ -3273,18 +3301,222 @@ mod tests {
     use crate::tools::ToolDef;
     use axon_api::handler::AxonHandler;
     use axon_api::request::{CreateCollectionRequest, CreateLinkRequest};
-    use axon_api::test_fixtures::seed_procurement_fixture;
+    use axon_api::test_fixtures::{
+        reserved_namespace_mcp_surface_parity_cases, seed_procurement_fixture,
+        ReservedNamespaceSurfaceExposure, ReservedNamespaceSurfaceParityVector,
+        RESERVED_NAMESPACE_SURFACE_PARITY_NAMES,
+    };
+    use axon_audit::entry::AuditEntry;
+    use axon_audit::log::{AuditPage, AuditQuery};
     use axon_schema::schema::{
         Cardinality, CollectionSchema, IndexDef, IndexType, LinkTypeDef, NamedQueryDef,
         NamedQueryParameter,
     };
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::{json, Value};
+    use std::sync::atomic::AtomicUsize;
 
     fn make_handler() -> Arc<Mutex<AxonHandler<MemoryStorageAdapter>>> {
         Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ))
+    }
+
+    struct CountingStorageAdapter {
+        inner: MemoryStorageAdapter,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingStorageAdapter {
+        fn new(calls: Arc<AtomicUsize>) -> Self {
+            Self {
+                inner: MemoryStorageAdapter::default(),
+                calls,
+            }
+        }
+
+        fn record(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl StorageAdapter for CountingStorageAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.record();
+            self.inner.get(collection, id)
+        }
+
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.record();
+            self.inner.put(entity)
+        }
+
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.record();
+            self.inner.delete(collection, id)
+        }
+
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.record();
+            self.inner.count(collection)
+        }
+
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.record();
+            self.inner.range_scan(collection, start, end, limit)
+        }
+
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.record();
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.record();
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
+
+        fn begin_tx(&mut self) -> Result<(), AxonError> {
+            self.record();
+            self.inner.begin_tx()
+        }
+
+        fn commit_tx(&mut self) -> Result<(), AxonError> {
+            self.record();
+            self.inner.commit_tx()
+        }
+
+        fn abort_tx(&mut self) -> Result<(), AxonError> {
+            self.record();
+            self.inner.abort_tx()
+        }
+
+        fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+            self.record();
+            self.inner.append_audit_entry(entry)
+        }
+
+        fn owns_audit_log(&self) -> bool {
+            self.record();
+            self.inner.owns_audit_log()
+        }
+
+        fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+            self.record();
+            self.inner.query_audit_paginated(query)
+        }
+
+        fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+            self.record();
+            self.inner.put_schema(schema)
+        }
+
+        fn get_schema(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionSchema>, AxonError> {
+            self.record();
+            self.inner.get_schema(collection)
+        }
+
+        fn list_namespaces(&self, database: &str) -> Result<Vec<String>, AxonError> {
+            self.record();
+            self.inner.list_namespaces(database)
+        }
+
+        fn list_namespace_collections(
+            &self,
+            namespace: &Namespace,
+        ) -> Result<Vec<CollectionId>, AxonError> {
+            self.record();
+            self.inner.list_namespace_collections(namespace)
+        }
+
+        fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
+            self.record();
+            self.inner.list_collections()
+        }
+
+        fn put_link(&mut self, link: &Link) -> Result<(), AxonError> {
+            self.record();
+            self.inner.put_link(link)
+        }
+
+        fn delete_link(
+            &mut self,
+            source_collection: &CollectionId,
+            source_id: &EntityId,
+            link_type: &str,
+            target_collection: &CollectionId,
+            target_id: &EntityId,
+        ) -> Result<(), AxonError> {
+            self.record();
+            self.inner.delete_link(
+                source_collection,
+                source_id,
+                link_type,
+                target_collection,
+                target_id,
+            )
+        }
+
+        fn get_link(
+            &self,
+            source_collection: &CollectionId,
+            source_id: &EntityId,
+            link_type: &str,
+            target_collection: &CollectionId,
+            target_id: &EntityId,
+        ) -> Result<Option<Link>, AxonError> {
+            self.record();
+            self.inner.get_link(
+                source_collection,
+                source_id,
+                link_type,
+                target_collection,
+                target_id,
+            )
+        }
+
+        fn list_outbound_links(
+            &self,
+            source_collection: &CollectionId,
+            source_id: &EntityId,
+            link_type: Option<&str>,
+        ) -> Result<Vec<Link>, AxonError> {
+            self.record();
+            self.inner
+                .list_outbound_links(source_collection, source_id, link_type)
+        }
+
+        fn list_inbound_links(
+            &self,
+            target_collection: &CollectionId,
+            target_id: &EntityId,
+            link_type: Option<&str>,
+        ) -> Result<Vec<Link>, AxonError> {
+            self.record();
+            self.inner
+                .list_inbound_links(target_collection, target_id, link_type)
+        }
     }
 
     fn make_graph_handler() -> Arc<Mutex<AxonHandler<MemoryStorageAdapter>>> {
@@ -3417,6 +3649,191 @@ mod tests {
 
     fn invoke_tool_err(tool: &ToolDef, args: Value) -> ToolError {
         (tool.handler)(&args).expect_err("tool invocation should fail")
+    }
+
+    enum ReservedNamespaceMcpInvocation {
+        Tool { name: String, arguments: Value },
+        Resource { uri: String },
+    }
+
+    fn reserved_namespace_mcp_invocation(
+        vector: ReservedNamespaceSurfaceParityVector,
+    ) -> ReservedNamespaceMcpInvocation {
+        let name = vector.detail_name;
+        match vector.detail_operation {
+            "entity" => ReservedNamespaceMcpInvocation::Tool {
+                name: format!("{name}.get"),
+                arguments: json!({ "id": "reserved-id" }),
+            },
+            "schema" => ReservedNamespaceMcpInvocation::Resource {
+                uri: format!("axon://_schemas/{name}"),
+            },
+            "lifecycle" => ReservedNamespaceMcpInvocation::Tool {
+                name: "axon.transition_lifecycle".into(),
+                arguments: json!({
+                    "collection_id": name,
+                    "entity_id": "reserved-id",
+                    "lifecycle_name": "workflow",
+                    "target_state": "done",
+                    "expected_version": 1
+                }),
+            },
+            "link" => ReservedNamespaceMcpInvocation::Tool {
+                name: format!("{name}.link_candidates"),
+                arguments: json!({
+                    "id": "reserved-id",
+                    "link_type": "depends-on"
+                }),
+            },
+            "intent" => ReservedNamespaceMcpInvocation::Tool {
+                name: format!("{name}.create"),
+                arguments: json!({
+                    "id": "reserved-id",
+                    "data": { "title": "reserved" },
+                    "intent_mode": "preview"
+                }),
+            },
+            "query" => ReservedNamespaceMcpInvocation::Tool {
+                name: format!("{name}.aggregate"),
+                arguments: json!({ "function": "count" }),
+            },
+            "audit" => ReservedNamespaceMcpInvocation::Resource {
+                uri: format!("axon://{name}/reserved-id/audit"),
+            },
+            other => panic!("operation `{other}` is not exposed through MCP"),
+        }
+    }
+
+    fn reserved_namespace_mcp_server(calls: Arc<AtomicUsize>) -> crate::protocol::McpServer {
+        let handler = Arc::new(Mutex::new(AxonHandler::new(CountingStorageAdapter::new(
+            calls,
+        ))));
+        let mut tools = crate::tools::ToolRegistry::new();
+        for name in RESERVED_NAMESPACE_SURFACE_PARITY_NAMES {
+            for tool in
+                build_crud_tools(name.name, Arc::clone(&handler), CallerIdentity::anonymous())
+            {
+                tools.register(tool);
+            }
+            tools.register(build_aggregate_tool(name.name, Arc::clone(&handler)));
+            tools.register(build_link_candidates_tool(name.name, Arc::clone(&handler)));
+            tools.register(build_neighbors_tool(name.name, Arc::clone(&handler)));
+        }
+        tools.register(build_transition_lifecycle_tool(Arc::clone(&handler)));
+
+        let resource_handler = Arc::clone(&handler);
+        let resources = crate::resources::ResourceRegistry::new(
+            Vec::new(),
+            Vec::new(),
+            Box::new(move |uri| {
+                let guard = resource_handler
+                    .lock()
+                    .map_err(|err| crate::protocol::McpError::Internal(err.to_string()))?;
+                crate::resources::read_resource_from_handler(&guard, DEFAULT_DATABASE, uri)
+            }),
+        );
+
+        crate::protocol::McpServer::new(tools, resources, crate::prompts::PromptRegistry::default())
+    }
+
+    fn mcp_request(server: &mut crate::protocol::McpServer, method: &str, params: Value) -> Value {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        });
+        let response = server
+            .handle_message(&request.to_string())
+            .expect("MCP request should return a response");
+        serde_json::from_str(&response).expect("MCP response should be JSON")
+    }
+
+    fn assert_mcp_reserved_namespace_payload(
+        payload: &Value,
+        vector: ReservedNamespaceSurfaceParityVector,
+    ) {
+        assert_eq!(payload["code"], vector.code);
+        assert_eq!(payload["reason"], vector.reason);
+        assert_eq!(payload["detail"]["name"], vector.detail_name);
+        assert_eq!(payload["detail"]["operation"], vector.detail_operation);
+    }
+
+    fn assert_mcp_tool_reserved_namespace_error(
+        response: &Value,
+        vector: ReservedNamespaceSurfaceParityVector,
+    ) {
+        assert!(
+            response.get("error").is_none(),
+            "tools/call should return a tool error result, got {response}"
+        );
+        let result = &response["result"];
+        assert_eq!(result["isError"], true);
+        let message = result["content"][0]["text"]
+            .as_str()
+            .expect("tool error text");
+        assert!(message.contains(vector.code), "tool text: {message}");
+        assert!(
+            message.contains(vector.reason),
+            "tool text should preserve reason: {message}"
+        );
+        assert_mcp_reserved_namespace_payload(&result["structuredContent"], vector);
+    }
+
+    fn assert_mcp_jsonrpc_reserved_namespace_error(
+        response: &Value,
+        vector: ReservedNamespaceSurfaceParityVector,
+    ) {
+        let error = response.get("error").expect("JSON-RPC error");
+        assert_eq!(error["code"], -32602);
+        let message = error["message"].as_str().expect("JSON-RPC message");
+        assert!(
+            message.contains("Invalid params"),
+            "unexpected JSON-RPC message: {message}"
+        );
+        assert_mcp_reserved_namespace_payload(&error["data"], vector);
+    }
+
+    #[test]
+    fn reserved_namespace_surface_parity() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut server = reserved_namespace_mcp_server(Arc::clone(&calls));
+
+        for case in reserved_namespace_mcp_surface_parity_cases() {
+            let vector = case.vector;
+            match case.exposure {
+                ReservedNamespaceSurfaceExposure::NotExposed { reason } => {
+                    assert!(
+                        !reason.is_empty(),
+                        "not-exposed disposition for {} must explain why",
+                        vector.detail_operation
+                    );
+                }
+                ReservedNamespaceSurfaceExposure::Exposed => {
+                    match reserved_namespace_mcp_invocation(vector) {
+                        ReservedNamespaceMcpInvocation::Tool { name, arguments } => {
+                            let response = mcp_request(
+                                &mut server,
+                                "tools/call",
+                                json!({ "name": name, "arguments": arguments }),
+                            );
+                            assert_mcp_tool_reserved_namespace_error(&response, vector);
+                        }
+                        ReservedNamespaceMcpInvocation::Resource { uri } => {
+                            let response =
+                                mcp_request(&mut server, "resources/read", json!({ "uri": uri }));
+                            assert_mcp_jsonrpc_reserved_namespace_error(&response, vector);
+                        }
+                    }
+                    assert_eq!(
+                        calls.load(Ordering::SeqCst),
+                        0,
+                        "reserved namespace {:?} reached storage",
+                        vector
+                    );
+                }
+            }
+        }
     }
 
     #[test]

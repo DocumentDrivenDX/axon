@@ -6,7 +6,10 @@ use axon_api::request::{
     ListNamespacesRequest, ListNeighborsRequest, QueryAuditRequest, QueryEntitiesRequest,
     TraverseDirection,
 };
-use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
+use axon_api::response::ReservedNamespaceError;
+use axon_core::id::{
+    CollectionId, EntityId, Namespace, SystemCollection, DEFAULT_DATABASE, DEFAULT_SCHEMA,
+};
 use axon_storage::adapter::StorageAdapter;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -17,6 +20,11 @@ use crate::protocol::McpError;
 const DEFAULT_COLLECTION_LIMIT: usize = 50;
 const DEFAULT_AUDIT_LIMIT: usize = 20;
 const JSON_MIME_TYPE: &str = "application/json";
+const OP_ENTITY: &str = "entity";
+const OP_SCHEMA: &str = "schema";
+const OP_LINK: &str = "link";
+const OP_QUERY: &str = "query";
+const OP_AUDIT: &str = "audit";
 
 /// Resource handler function.
 pub type ResourceHandler = Box<dyn Fn(&str) -> Result<Value, McpError> + Send + Sync>;
@@ -129,6 +137,18 @@ fn visible_collection_name(qualified_name: &str, current_database: &str) -> Stri
         return collection;
     }
     format!("{}.{}", namespace.schema, collection)
+}
+
+fn ensure_mcp_resource_collection_access(
+    collection: &CollectionId,
+    operation: &str,
+) -> Result<(), McpError> {
+    if SystemCollection::from_collection_name(collection.as_str()).is_some() {
+        return Err(map_axon_error(
+            ReservedNamespaceError::new(collection.as_str(), operation).into_axon_error(),
+        ));
+    }
+    Ok(())
 }
 
 /// Discover collections visible within the current database scope.
@@ -505,6 +525,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
             resource_result(uri, &json!({ "schemas": schemas }))
         }
         ParsedResource::Schema { collection } => {
+            ensure_mcp_resource_collection_access(&CollectionId::new(&collection), OP_SCHEMA)?;
             let collection_id = qualify_collection_name(&collection, current_database);
             let schema = handler
                 .get_schema(&collection_id)
@@ -515,6 +536,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
             resource_result(uri, &json!({ "schema": schema }))
         }
         ParsedResource::Collection { collection } => {
+            ensure_mcp_resource_collection_access(&CollectionId::new(&collection), OP_QUERY)?;
             let collection_id = qualify_collection_name(&collection, current_database);
             let describe = handler
                 .describe_collection(DescribeCollectionRequest {
@@ -542,9 +564,11 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
             resource_result(uri, &payload)
         }
         ParsedResource::Entity { collection, id } => {
+            ensure_mcp_resource_collection_access(&CollectionId::new(&collection), OP_ENTITY)?;
+            let collection_id = qualify_collection_name(&collection, current_database);
             let response = handler
                 .get_entity(GetEntityRequest {
-                    collection: qualify_collection_name(&collection, current_database),
+                    collection: collection_id,
                     id: EntityId::new(&id),
                 })
                 .map_err(map_axon_error)?;
@@ -555,9 +579,11 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
             id,
             view,
         } => {
+            ensure_mcp_resource_collection_access(&CollectionId::new(&collection), OP_LINK)?;
+            let collection_id = qualify_collection_name(&collection, current_database);
             let response = handler
                 .list_neighbors(ListNeighborsRequest {
-                    collection: qualify_collection_name(&collection, current_database),
+                    collection: collection_id,
                     id: EntityId::new(&id),
                     link_type: None,
                     direction: Some(match view {
@@ -579,10 +605,12 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
             )
         }
         ParsedResource::Audit { collection, id } => {
+            ensure_mcp_resource_collection_access(&CollectionId::new(&collection), OP_AUDIT)?;
+            let collection_id = qualify_collection_name(&collection, current_database);
             let response = handler
                 .query_audit(QueryAuditRequest {
                     database: Some(current_database.to_string()),
-                    collection: Some(qualify_collection_name(&collection, current_database)),
+                    collection: Some(collection_id),
                     collection_ids: Vec::new(),
                     entity_id: Some(EntityId::new(&id)),
                     actor: None,
