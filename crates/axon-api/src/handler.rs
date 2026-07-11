@@ -141,6 +141,11 @@ fn system_collection_class(collection: &CollectionId) -> Option<SystemCollection
     SystemCollection::from_collection_name(collection.as_str()).map(|collection| collection.class())
 }
 
+fn link_visible_to_generic_scans(link: &Link) -> bool {
+    !is_reserved_collection(&link.source_collection)
+        && !is_reserved_collection(&link.target_collection)
+}
+
 // Direct named access rejects every system collection. Incidental all-collection
 // scans hide physical internals without removing typed surfaces such as beads,
 // link audit events, or mutation-intent lineage from their existing APIs.
@@ -8486,7 +8491,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         attribution: Option<&AuditAttribution>,
     ) -> Result<TraverseResponse, AxonError> {
         ensure_generic_collection_access(&req.collection, OP_TRAVERSE)?;
-        self.traverse_with_read_context_unchecked(req, caller, attribution)
+        self.traverse_with_read_context_unchecked(req, caller, attribution, false)
     }
 
     pub(crate) fn traverse_system_collection(
@@ -8494,7 +8499,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: TraverseRequest,
     ) -> Result<TraverseResponse, AxonError> {
         ensure_system_collection_capability(&req.collection)?;
-        self.traverse_with_read_context_unchecked(req, None, None)
+        self.traverse_with_read_context_unchecked(req, None, None, true)
     }
 
     fn traverse_with_read_context_unchecked(
@@ -8502,6 +8507,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: TraverseRequest,
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
+        include_system_links: bool,
     ) -> Result<TraverseResponse, AxonError> {
         let max_depth = req
             .max_depth
@@ -8519,7 +8525,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
         }
 
-        let all_links = self.load_all_links()?;
+        let all_links = if include_system_links {
+            self.load_all_links()?
+        } else {
+            self.load_generic_links()?
+        };
         let reverse = req.direction == TraverseDirection::Reverse;
 
         let mut visited: HashSet<(String, String)> = HashSet::new();
@@ -8651,7 +8661,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<ReachableResponse, AxonError> {
         ensure_generic_collection_access(&req.source_collection, OP_TRAVERSE)?;
         ensure_generic_collection_access(&req.target_collection, OP_TRAVERSE)?;
-        self.reachable_with_read_context_unchecked(req, caller, attribution)
+        self.reachable_with_read_context_unchecked(req, caller, attribution, false)
     }
 
     pub(crate) fn reachable_system_collection(
@@ -8660,7 +8670,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<ReachableResponse, AxonError> {
         ensure_system_collection_capability(&req.source_collection)?;
         ensure_system_collection_capability(&req.target_collection)?;
-        self.reachable_with_read_context_unchecked(req, None, None)
+        self.reachable_with_read_context_unchecked(req, None, None, true)
     }
 
     fn reachable_with_read_context_unchecked(
@@ -8668,13 +8678,18 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: ReachableRequest,
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
+        include_system_links: bool,
     ) -> Result<ReachableResponse, AxonError> {
         let max_depth = req
             .max_depth
             .unwrap_or(DEFAULT_MAX_DEPTH)
             .min(MAX_DEPTH_CAP);
 
-        let all_links = self.load_all_links()?;
+        let all_links = if include_system_links {
+            self.load_all_links()?
+        } else {
+            self.load_generic_links()?
+        };
         let reverse = req.direction == TraverseDirection::Reverse;
         let target_key = (req.target_collection.to_string(), req.target_id.to_string());
 
@@ -8847,7 +8862,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .unwrap_or_else(|| "unknown".into());
 
         // Get all existing links of this type from the source.
-        let all_links = self.load_all_links()?;
+        let all_links = self.load_generic_links()?;
         let mut existing_targets = HashSet::new();
         for link in all_links.iter().filter(|link| {
             link.source_collection == req.source_collection
@@ -8979,7 +8994,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
-        let all_links = self.load_all_links()?;
+        let all_links = self.load_generic_links()?;
 
         // group key: (link_type, direction)
         let mut groups: BTreeMap<(String, String), Vec<Entity>> = BTreeMap::new();
@@ -9071,6 +9086,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let links_col = Link::links_collection();
         let entities = self.storage.range_scan(&links_col, None, None, None)?;
         Ok(entities.iter().filter_map(Link::from_entity).collect())
+    }
+
+    /// Load only links whose endpoints are ordinary user collections.
+    fn load_generic_links(&self) -> Result<Vec<Link>, AxonError> {
+        Ok(self
+            .load_all_links()?
+            .into_iter()
+            .filter(link_visible_to_generic_scans)
+            .collect())
     }
 
     /// Transition an entity through a named lifecycle state machine (FEAT-015).
@@ -11028,6 +11052,251 @@ mod tests {
 
         ensure_generic_collection_access(&CollectionId::new("tasks"), OP_ENTITY)
             .expect("ordinary user collection remains allowed");
+    }
+
+    #[test]
+    fn generic_system_rows_unobservable_forward_reverse_index_checkpoint() {
+        let mut h = handler();
+        let public = CollectionId::new("public_system_scan_anchor");
+        let source_id = EntityId::new("source");
+        let target_id = EntityId::new("target");
+        let checkpoint = CollectionId::new(SystemCollection::cdc_cursors().name());
+        let checkpoint_id = EntityId::new("replica\x1fpublic_system_scan_anchor");
+
+        h.create_collection(CreateCollectionRequest {
+            name: public.clone(),
+            schema: CollectionSchema::new(public.clone()),
+            actor: Some("fixture".into()),
+        })
+        .expect("public collection should be registered");
+        for id in [&source_id, &target_id] {
+            h.create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: id.clone(),
+                data: json!({ "title": id.as_str() }),
+                actor: Some("fixture".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("public row should be created through generic API");
+        }
+
+        for collection in [
+            Link::links_collection(),
+            Link::links_rev_collection(),
+            checkpoint.clone(),
+        ] {
+            h.storage_mut()
+                .register_collection_in_namespace(&collection, &Namespace::default_ns())
+                .expect("system collection fixture should be registered below API");
+        }
+
+        let mut checkpoint_schema = CollectionSchema::new(checkpoint.clone());
+        checkpoint_schema.indexes = vec![IndexDef {
+            field: "sink".into(),
+            index_type: IndexType::String,
+            unique: false,
+        }];
+        h.storage_mut()
+            .put_schema(&checkpoint_schema)
+            .expect("system checkpoint schema should be stored below API");
+        h.storage_mut()
+            .put(Entity::new(
+                checkpoint.clone(),
+                checkpoint_id.clone(),
+                json!({
+                    "sink": "replica",
+                    "collection": public.as_str(),
+                    "audit_id": 42,
+                    "secret": "checkpoint row"
+                }),
+            ))
+            .expect("checkpoint row should be stored below API");
+
+        let indexed_ids = h
+            .storage_ref()
+            .index_lookup(
+                &checkpoint,
+                "sink",
+                &axon_storage::IndexValue::String("replica".into()),
+            )
+            .expect("fixture should create a secondary index row internally");
+        assert_eq!(indexed_ids, vec![checkpoint_id.clone()]);
+
+        let link_type = "system-hop";
+        let public_to_system = Link {
+            source_collection: public.clone(),
+            source_id: source_id.clone(),
+            target_collection: checkpoint.clone(),
+            target_id: checkpoint_id.clone(),
+            link_type: link_type.into(),
+            metadata: json!({"kind": "forward row"}),
+        };
+        let system_to_public = Link {
+            source_collection: checkpoint.clone(),
+            source_id: checkpoint_id.clone(),
+            target_collection: public.clone(),
+            target_id: target_id.clone(),
+            link_type: link_type.into(),
+            metadata: json!({"kind": "reverse row"}),
+        };
+        h.storage_mut()
+            .put_link(&public_to_system)
+            .expect("forward system link row should be stored below API");
+        h.storage_mut()
+            .put_link(&system_to_public)
+            .expect("reverse system link row should be stored below API");
+
+        let forward_rows = h
+            .storage_ref()
+            .range_scan(&Link::links_collection(), None, None, None)
+            .expect("raw forward rows should remain readable internally");
+        assert!(forward_rows.iter().any(|row| {
+            row.id == Link::storage_id(&public, &source_id, link_type, &checkpoint, &checkpoint_id)
+        }));
+        let reverse_rows = h
+            .storage_ref()
+            .range_scan(&Link::links_rev_collection(), None, None, None)
+            .expect("raw reverse rows should remain readable internally");
+        assert!(reverse_rows.iter().any(|row| {
+            row.id
+                == Link::rev_storage_id(&public, &target_id, &checkpoint, &checkpoint_id, link_type)
+        }));
+
+        for collection in [
+            Link::links_collection(),
+            Link::links_rev_collection(),
+            checkpoint.clone(),
+        ] {
+            let err = h
+                .query_entities(QueryEntitiesRequest {
+                    collection: collection.clone(),
+                    ..Default::default()
+                })
+                .expect_err("direct generic system collection scan must be rejected");
+            assert_reserved_namespace_guard_error(err, collection.as_str(), OP_QUERY);
+        }
+        let index_err = h
+            .query_entities(QueryEntitiesRequest {
+                collection: checkpoint.clone(),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "sink".into(),
+                    op: FilterOp::Eq,
+                    value: json!("replica"),
+                })),
+                ..Default::default()
+            })
+            .expect_err("generic indexed checkpoint query must be rejected before planning");
+        assert_reserved_namespace_guard_error(index_err, checkpoint.as_str(), OP_QUERY);
+        let checkpoint_get_err = h
+            .get_entity(GetEntityRequest {
+                collection: checkpoint.clone(),
+                id: checkpoint_id.clone(),
+            })
+            .expect_err("direct generic checkpoint row read must be rejected");
+        assert_reserved_namespace_guard_error(checkpoint_get_err, checkpoint.as_str(), OP_ENTITY);
+
+        let collections = h
+            .list_collections(ListCollectionsRequest {})
+            .expect("generic collection list should succeed");
+        assert_eq!(collections.collections.len(), 1);
+        assert_eq!(collections.collections[0].name, public.as_str());
+
+        let snapshot = h
+            .snapshot_entities(SnapshotRequest {
+                collections: None,
+                limit: Some(2),
+                after_page_token: None,
+            })
+            .expect("generic snapshot should succeed");
+        assert_eq!(snapshot.entities.len(), 2);
+        assert!(snapshot
+            .entities
+            .iter()
+            .all(|entity| entity.collection == public));
+        assert_eq!(snapshot.next_page_token, None);
+        let snapshot_json = serde_json::to_string(&snapshot).expect("snapshot serializes");
+        assert!(!snapshot_json.contains(checkpoint.as_str()));
+        assert!(!snapshot_json.contains("checkpoint row"));
+
+        let forward = h
+            .traverse(TraverseRequest {
+                collection: public.clone(),
+                id: source_id.clone(),
+                link_type: Some(link_type.into()),
+                max_depth: Some(2),
+                direction: TraverseDirection::Forward,
+                hop_filter: None,
+            })
+            .expect("generic forward traversal should succeed");
+        assert!(forward.entities.is_empty());
+        assert!(forward.links.is_empty());
+        assert!(forward.paths.is_empty());
+
+        let reverse = h
+            .traverse(TraverseRequest {
+                collection: public.clone(),
+                id: target_id.clone(),
+                link_type: Some(link_type.into()),
+                max_depth: Some(2),
+                direction: TraverseDirection::Reverse,
+                hop_filter: None,
+            })
+            .expect("generic reverse traversal should succeed");
+        assert!(reverse.entities.is_empty());
+        assert!(reverse.links.is_empty());
+        assert!(reverse.paths.is_empty());
+
+        let reachable = h
+            .reachable(ReachableRequest {
+                source_collection: public.clone(),
+                source_id: source_id.clone(),
+                target_collection: public.clone(),
+                target_id: target_id.clone(),
+                link_type: Some(link_type.into()),
+                max_depth: Some(2),
+                direction: TraverseDirection::Forward,
+            })
+            .expect("generic reachability should succeed");
+        assert!(!reachable.reachable);
+
+        let neighbors = h
+            .list_neighbors(crate::request::ListNeighborsRequest {
+                collection: public.clone(),
+                id: source_id.clone(),
+                link_type: Some(link_type.into()),
+                direction: Some(TraverseDirection::Forward),
+            })
+            .expect("generic link enumeration should succeed");
+        assert_eq!(neighbors.total_count, 0);
+        assert!(neighbors.groups.is_empty());
+
+        let typed_checkpoint_query = h
+            .query_entities_in_system_collection(QueryEntitiesRequest {
+                collection: checkpoint.clone(),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "sink".into(),
+                    op: FilterOp::Eq,
+                    value: json!("replica"),
+                })),
+                ..Default::default()
+            })
+            .expect("typed system query should still see checkpoint/index rows");
+        assert_eq!(typed_checkpoint_query.total_count, 1);
+        assert_eq!(typed_checkpoint_query.entities[0].id, checkpoint_id);
+
+        let typed_system_traversal = h
+            .traverse_system_collection(TraverseRequest {
+                collection: checkpoint,
+                id: typed_checkpoint_query.entities[0].id.clone(),
+                link_type: Some(link_type.into()),
+                max_depth: Some(1),
+                direction: TraverseDirection::Forward,
+                hop_filter: None,
+            })
+            .expect("typed system traversal should still use raw link rows");
+        assert_eq!(typed_system_traversal.entities.len(), 1);
+        assert_eq!(typed_system_traversal.entities[0].id, target_id);
     }
 
     fn audit_grants(database: &str, ops: Vec<Op>) -> Grants {
