@@ -1,0 +1,339 @@
+{
+  "version": 1,
+  "required_names": [
+    {
+      "name": "__axon_links__",
+      "class": "system_collection.link_forward_store"
+    },
+    {
+      "name": "__axon_links_rev__",
+      "class": "system_collection.link_reverse_index"
+    },
+    {
+      "name": "_cdc_cursors",
+      "class": "system_collection.checkpoint_cursor_store"
+    },
+    {
+      "name": "link_set_version",
+      "class": "derived_metadata.link_set_version"
+    },
+    {
+      "name": "__axon_beads__",
+      "class": "system_collection.bead_catalog"
+    },
+    {
+      "name": "__mutation_intents",
+      "class": "system_collection.mutation_intent_audit_subject"
+    },
+    {
+      "name": "__axon_policies__",
+      "class": "system_collection.legacy_policy_alias"
+    },
+    {
+      "name": "auth",
+      "class": "auth_catalog.tenancy_and_credentials"
+    },
+    {
+      "name": "schemas",
+      "class": "storage_catalog.schema_history"
+    },
+    {
+      "name": "indexes",
+      "class": "storage_catalog.secondary_index"
+    },
+    {
+      "name": "audit",
+      "class": "audit_log.physical_append_log"
+    },
+    {
+      "name": "idempotency",
+      "class": "idempotency.in_process_retry_cache"
+    },
+    {
+      "name": "projections",
+      "class": "projection.derived_read_model"
+    }
+  ],
+  "collection_id_rules": [
+    {
+      "id": "core-id-materialization-and-tests",
+      "path": "crates/axon-core/src/id.rs",
+      "class": "collection_id.core_materialization_or_test_fixture"
+    },
+    {
+      "id": "core-types-tests",
+      "path": "crates/axon-core/src/types.rs",
+      "class": "collection_id.test_fixture"
+    },
+    {
+      "id": "core-intent-link-system-fixture",
+      "path": "crates/axon-core/src/intent.rs",
+      "contains": "__axon_links__",
+      "class": "system_collection.link_forward_store"
+    },
+    {
+      "id": "core-intent-tests",
+      "path": "crates/axon-core/src/intent.rs",
+      "not_contains": ["__axon_links__"],
+      "class": "collection_id.test_fixture"
+    },
+    {
+      "id": "storage-adapter-derived",
+      "path": "crates/axon-storage/src/adapter.rs",
+      "class": "collection_id.storage_derived"
+    },
+    {
+      "id": "storage-memory-public-or-test",
+      "path": "crates/axon-storage/src/memory.rs",
+      "class": "collection_id.storage_public_or_test_fixture"
+    },
+    {
+      "id": "storage-sqlite-public-or-test",
+      "path": "crates/axon-storage/src/sqlite.rs",
+      "class": "collection_id.storage_public_or_test_fixture"
+    },
+    {
+      "id": "storage-postgres-public-or-test",
+      "path": "crates/axon-storage/src/postgres.rs",
+      "class": "collection_id.storage_public_or_test_fixture"
+    },
+    {
+      "id": "storage-conformance-test-fixtures",
+      "path": "crates/axon-storage/src/conformance.rs",
+      "class": "collection_id.conformance_test_fixture"
+    },
+    {
+      "id": "storage-proptest-fixtures",
+      "path": "crates/axon-storage/src/proptest_storage.rs",
+      "class": "collection_id.proptest_fixture"
+    },
+    {
+      "id": "storage-index-builder-tests",
+      "path": "crates/axon-storage/src/index_builder.rs",
+      "class": "collection_id.index_builder_test_fixture"
+    },
+    {
+      "id": "storage-postgres-isolation-test",
+      "path": "crates/axon-storage/tests/postgres_tenant_isolation.rs",
+      "class": "collection_id.integration_test_fixture"
+    }
+  ],
+  "physical_objects": [
+    {
+      "name": "audit_log",
+      "kind": "table",
+      "class": "audit_log.physical_append_log"
+    },
+    {
+      "name": "collections",
+      "kind": "table",
+      "class": "storage_catalog.collection_catalog"
+    },
+    {
+      "name": "collection_views",
+      "kind": "table",
+      "class": "projection.collection_view_cache"
+    },
+    {
+      "name": "credential_issuances",
+      "kind": "table",
+      "class": "auth_catalog.credentials"
+    },
+    {
+      "name": "credential_revocations",
+      "kind": "table",
+      "class": "auth_catalog.credentials"
+    },
+    {
+      "name": "databases",
+      "kind": "table",
+      "class": "storage_catalog.database_catalog"
+    },
+    {
+      "name": "entities",
+      "kind": "table",
+      "class": "governed_write.entity_store"
+    },
+    {
+      "name": "entity_compound_index",
+      "kind": "table",
+      "class": "storage_catalog.secondary_index"
+    },
+    {
+      "name": "entity_index",
+      "kind": "table",
+      "class": "storage_catalog.secondary_index"
+    },
+    {
+      "name": "idx_collections_namespace",
+      "kind": "index",
+      "class": "storage_catalog.collection_catalog_index"
+    },
+    {
+      "name": "idx_entity_compound_index_range",
+      "kind": "index",
+      "class": "storage_catalog.secondary_index"
+    },
+    {
+      "name": "idx_entity_index_range",
+      "kind": "index",
+      "class": "storage_catalog.secondary_index"
+    },
+    {
+      "name": "idx_mutation_intents_expired",
+      "kind": "index",
+      "class": "system_collection.mutation_intent_index"
+    },
+    {
+      "name": "idx_mutation_intents_pending",
+      "kind": "index",
+      "class": "system_collection.mutation_intent_index"
+    },
+    {
+      "name": "mutation_intents",
+      "kind": "table",
+      "class": "system_collection.mutation_intent_store"
+    },
+    {
+      "name": "namespaces",
+      "kind": "table",
+      "class": "storage_catalog.namespace_catalog"
+    },
+    {
+      "name": "schemas",
+      "kind": "table",
+      "class": "storage_catalog.schema_history"
+    },
+    {
+      "name": "schema_versions",
+      "kind": "table",
+      "class": "storage_catalog.schema_history"
+    },
+    {
+      "name": "tenant_databases",
+      "kind": "table",
+      "class": "auth_catalog.tenancy"
+    },
+    {
+      "name": "tenant_retention_policies",
+      "kind": "table",
+      "class": "auth_catalog.retention_policy"
+    },
+    {
+      "name": "tenant_users",
+      "kind": "table",
+      "class": "auth_catalog.tenancy"
+    },
+    {
+      "name": "tenants",
+      "kind": "table",
+      "class": "auth_catalog.tenancy"
+    },
+    {
+      "name": "user_identities",
+      "kind": "table",
+      "class": "auth_catalog.identity"
+    },
+    {
+      "name": "users",
+      "kind": "table",
+      "class": "auth_catalog.identity"
+    }
+  ],
+  "raw_mutation_targets": [
+    {
+      "name": "audit_log",
+      "class": "audit_log.append"
+    },
+    {
+      "name": "collections",
+      "class": "storage_catalog.collection_catalog"
+    },
+    {
+      "name": "collection_views",
+      "class": "projection.collection_view_cache"
+    },
+    {
+      "name": "credential_issuances",
+      "class": "auth_catalog.credentials"
+    },
+    {
+      "name": "credential_revocations",
+      "class": "auth_catalog.credentials"
+    },
+    {
+      "name": "databases",
+      "class": "storage_catalog.database_catalog"
+    },
+    {
+      "name": "entities",
+      "class": "governed_write.entity_store"
+    },
+    {
+      "name": "entity_compound_index",
+      "class": "storage_catalog.secondary_index"
+    },
+    {
+      "name": "entity_index",
+      "class": "storage_catalog.secondary_index"
+    },
+    {
+      "name": "mutation_intents",
+      "class": "system_collection.mutation_intent_store"
+    },
+    {
+      "name": "namespaces",
+      "class": "storage_catalog.namespace_catalog"
+    },
+    {
+      "name": "schemas",
+      "class": "storage_catalog.schema_history"
+    },
+    {
+      "name": "schema_versions",
+      "class": "storage_catalog.schema_history"
+    },
+    {
+      "name": "tenant_databases",
+      "class": "auth_catalog.tenancy"
+    },
+    {
+      "name": "tenant_retention_policies",
+      "class": "auth_catalog.retention_policy"
+    },
+    {
+      "name": "tenant_users",
+      "class": "auth_catalog.tenancy"
+    },
+    {
+      "name": "tenants",
+      "class": "auth_catalog.tenancy"
+    },
+    {
+      "name": "user_identities",
+      "class": "auth_catalog.identity"
+    },
+    {
+      "name": "users",
+      "class": "auth_catalog.identity"
+    }
+  ],
+  "migration_exceptions": [
+    {
+      "name": "collection_views_legacy",
+      "class": "migration_exception.sqlite_namespace_upgrade_temp_table"
+    },
+    {
+      "name": "collections_legacy",
+      "class": "migration_exception.sqlite_namespace_upgrade_temp_table"
+    },
+    {
+      "name": "entities_legacy",
+      "class": "migration_exception.sqlite_namespace_upgrade_temp_table"
+    },
+    {
+      "name": "schema_versions_legacy",
+      "class": "migration_exception.sqlite_namespace_upgrade_temp_table"
+    }
+  ]
+}

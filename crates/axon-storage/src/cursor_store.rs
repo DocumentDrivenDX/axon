@@ -8,7 +8,7 @@
 //! durable offset after a restart.
 
 use axon_audit::cursor::CdcCursorStore;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, SystemCollection};
 use axon_core::types::Entity;
 use serde_json::json;
 
@@ -57,7 +57,7 @@ impl<S: StorageAdapter> StorageCursorStore<S> {
     }
 
     fn collection() -> CollectionId {
-        CollectionId::new(CDC_CURSORS_COLLECTION)
+        SystemCollection::cdc_cursors().collection_id()
     }
 
     fn cursor_id(sink_name: &str, collection: &str) -> EntityId {

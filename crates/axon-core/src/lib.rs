@@ -25,8 +25,9 @@ pub use guardrails::{
     GuardrailsConfig, GuardrailsLayer, RateLimitConfig, RejectionReason, TokenBucket,
 };
 pub use id::{
-    CollectionId, EntityId, LinkId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE,
-    DEFAULT_SCHEMA,
+    AuditSubject, AuditSubjectClass, CheckpointCapability, CollectionId, EntityId, GovernedWriteTx,
+    LinkId, MigrationCapability, Namespace, QualifiedCollectionId, SystemCollection,
+    SystemCollectionClass, DEFAULT_DATABASE, DEFAULT_SCHEMA,
 };
 pub use intent::{
     ApprovalState, CanonicalOperationMetadata, ExecutableMutationIntent, MutationApprovalRoute,

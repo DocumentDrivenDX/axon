@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::id::{CollectionId, EntityId};
+use crate::id::{CollectionId, EntityId, SystemCollection};
 
 /// The name of the internal collection used to store links.
 pub const LINKS_COLLECTION: &str = "__axon_links__";
@@ -56,12 +56,12 @@ impl Link {
 
     /// Returns the internal collection that holds all links.
     pub fn links_collection() -> CollectionId {
-        CollectionId::new(LINKS_COLLECTION)
+        SystemCollection::links().collection_id()
     }
 
     /// Returns the reverse-index collection for inbound-link queries.
     pub fn links_rev_collection() -> CollectionId {
-        CollectionId::new(LINKS_REV_COLLECTION)
+        SystemCollection::links_rev().collection_id()
     }
 
     /// Computes the reverse-index storage ID for an inbound-link entry.
