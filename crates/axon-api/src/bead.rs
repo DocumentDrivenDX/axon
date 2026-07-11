@@ -13,8 +13,10 @@ use axon_storage::adapter::StorageAdapter;
 
 use crate::handler::AxonHandler;
 use crate::request::{
-    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, QueryEntitiesRequest,
-    TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    CreateGovernedSystemEntityRequest, CreateGovernedSystemLinkRequest,
+    EnsureGovernedSystemCollectionRequest, QueryGovernedSystemEntitiesRequest,
+    ReachableGovernedSystemRequest, TraverseDirection, TraverseGovernedSystemRequest,
+    UpdateGovernedSystemEntityRequest,
 };
 
 /// The collection name for beads.
@@ -152,22 +154,13 @@ pub fn bead_schema() -> CollectionSchema {
 
 /// Initialize the bead collection if it doesn't exist.
 pub fn init_beads<S: StorageAdapter>(handler: &mut AxonHandler<S>) -> Result<(), AxonError> {
-    // Check if collection already exists.
-    let existing = handler
-        .list_collections(crate::request::ListCollectionsRequest {})?
-        .collections
-        .iter()
-        .any(|c| c.name == BEAD_COLLECTION);
-
-    if existing {
-        return Ok(());
-    }
-
-    handler.create_collection(CreateCollectionRequest {
-        name: bead_collection(),
-        schema: bead_schema(),
-        actor: Some("system".into()),
-    })?;
+    handler.ensure_governed_system_collection(
+        BEAD_SYSTEM_CAPABILITY,
+        EnsureGovernedSystemCollectionRequest {
+            schema: bead_schema(),
+            actor: Some("system".into()),
+        },
+    )?;
     Ok(())
 }
 
@@ -209,8 +202,7 @@ pub fn create_bead<S: StorageAdapter>(
 
     handler.create_entity_in_system_collection(
         BEAD_SYSTEM_CAPABILITY,
-        CreateEntityRequest {
-            collection: bead_collection(),
+        CreateGovernedSystemEntityRequest {
             id: EntityId::new(params.id),
             data: data.clone(),
             actor: Some("bead-system".into()),
@@ -269,8 +261,7 @@ pub fn transition_bead<S: StorageAdapter>(
 
     handler.update_entity_in_system_collection(
         BEAD_SYSTEM_CAPABILITY,
-        UpdateEntityRequest {
-            collection: col,
+        UpdateGovernedSystemEntityRequest {
             id: eid,
             data: new_data,
             expected_version: entity.version,
@@ -306,10 +297,8 @@ pub fn add_dependency<S: StorageAdapter>(
     // Check for cycles: if dep_id can already reach bead_id, adding this edge creates a cycle.
     let reachable = handler.reachable_system_collection(
         BEAD_SYSTEM_CAPABILITY,
-        crate::request::ReachableRequest {
-            source_collection: col.clone(),
+        ReachableGovernedSystemRequest {
             source_id: EntityId::new(dep_id),
-            target_collection: col.clone(),
             target_id: EntityId::new(bead_id),
             link_type: Some(DEPENDS_ON_LINK.into()),
             max_depth: Some(10),
@@ -325,10 +314,8 @@ pub fn add_dependency<S: StorageAdapter>(
 
     handler.create_link_in_system_collection(
         BEAD_SYSTEM_CAPABILITY,
-        CreateLinkRequest {
-            source_collection: col.clone(),
+        CreateGovernedSystemLinkRequest {
             source_id: EntityId::new(bead_id),
-            target_collection: col,
             target_id: EntityId::new(dep_id),
             link_type: DEPENDS_ON_LINK.into(),
             metadata: json!(null),
@@ -347,8 +334,7 @@ pub fn list_beads<S: StorageAdapter>(
 ) -> Result<Vec<Bead>, AxonError> {
     let resp = handler.query_entities_in_system_collection(
         BEAD_SYSTEM_CAPABILITY,
-        QueryEntitiesRequest {
-            collection: bead_collection(),
+        QueryGovernedSystemEntitiesRequest {
             limit: Some(1000),
             ..Default::default()
         },
@@ -372,15 +358,13 @@ pub fn list_beads<S: StorageAdapter>(
 /// Compute the ready queue: beads in `pending` status where all dependencies are `done`.
 pub fn ready_queue<S: StorageAdapter>(handler: &AxonHandler<S>) -> Result<Vec<Bead>, AxonError> {
     let pending = list_beads(handler, Some("pending"))?;
-    let col = bead_collection();
 
     let mut ready = Vec::new();
     for bead in pending {
         // Find all dependencies (outbound depends-on links).
         let deps = handler.traverse_system_collection(
             BEAD_SYSTEM_CAPABILITY,
-            TraverseRequest {
-                collection: col.clone(),
+            TraverseGovernedSystemRequest {
                 id: EntityId::new(&bead.id),
                 link_type: Some(DEPENDS_ON_LINK.into()),
                 max_depth: Some(1),
@@ -406,11 +390,9 @@ pub fn dependency_tree<S: StorageAdapter>(
     handler: &AxonHandler<S>,
     bead_id: &str,
 ) -> Result<Vec<Bead>, AxonError> {
-    let col = bead_collection();
     let resp = handler.traverse_system_collection(
         BEAD_SYSTEM_CAPABILITY,
-        TraverseRequest {
-            collection: col,
+        TraverseGovernedSystemRequest {
             id: EntityId::new(bead_id),
             link_type: Some(DEPENDS_ON_LINK.into()),
             max_depth: Some(10),
@@ -478,8 +460,7 @@ pub fn import_beads<S: StorageAdapter>(
 
         handler.create_entity_in_system_collection(
             BEAD_SYSTEM_CAPABILITY,
-            CreateEntityRequest {
-                collection: col.clone(),
+            CreateGovernedSystemEntityRequest {
                 id: EntityId::new(&bead.id),
                 data: entity_data,
                 actor: Some("bead-import".into()),

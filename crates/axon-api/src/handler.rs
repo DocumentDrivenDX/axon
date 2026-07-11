@@ -88,19 +88,23 @@ use crate::policy::{
 };
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
-    CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
+    CreateDatabaseRequest, CreateEntityRequest, CreateGovernedSystemEntityRequest,
+    CreateGovernedSystemLinkRequest, CreateLinkRequest, CreateNamespaceRequest,
     DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
     DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, DropDatabaseRequest,
-    DropNamespaceRequest, ExecuteTransactionRequest, ExplainActorOverride, ExplainPolicyRequest,
-    FieldFilter, FilterNode, FilterOp, GetCollectionTemplateRequest, GetEntityRequest,
-    GetMutationIntentRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListMutationIntentsRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
-    PatchEntityRequest, PreviewMutationIntentRequest, PutCollectionTemplateRequest,
+    DropNamespaceRequest, EnsureGovernedSystemCollectionRequest, ExecuteTransactionRequest,
+    ExplainActorOverride, ExplainPolicyRequest, FieldFilter, FilterNode, FilterOp,
+    GetCollectionTemplateRequest, GetEntityRequest, GetMutationIntentRequest, GetSchemaRequest,
+    ListCollectionsRequest, ListDatabasesRequest, ListMutationIntentsRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
+    PreviewMutationIntentRequest, PutCollectionTemplateRequest, PutGovernedSystemSchemaRequest,
     PutSchemaRequest, QueryAuditRequest, QueryAuthAuditRequest, QueryEntitiesRequest,
-    QuerySystemAuditRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest,
-    ReviewMutationIntentRequest, RollbackCollectionRequest, RollbackEntityRequest,
-    RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest, SortDirection,
-    TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    QueryGovernedSystemEntitiesRequest, QuerySystemAuditRequest, ReachableGovernedSystemRequest,
+    ReachableRequest, RevalidateRequest, RevertEntityRequest, ReviewMutationIntentRequest,
+    RollbackCollectionRequest, RollbackEntityRequest, RollbackEntityTarget,
+    RollbackTransactionRequest, SnapshotRequest, SortDirection, TransitionLifecycleRequest,
+    TraverseDirection, TraverseGovernedSystemRequest, TraverseRequest, UpdateEntityRequest,
+    UpdateGovernedSystemEntityRequest,
 };
 use crate::response::ReservedNamespaceError;
 use crate::response::{
@@ -294,19 +298,10 @@ fn ensure_manifest_system_collection(collection: &CollectionId) -> Result<(), Ax
     )))
 }
 
-fn ensure_governed_system_capability<C: GovernedSystemCollection>(
+fn governed_system_collection<C: GovernedSystemCollection>(
     capability: GovernedSystemCapability<C>,
-    collection: &CollectionId,
-) -> Result<(), AxonError> {
-    let allowed = capability.collection();
-    if collection.as_str() == allowed.name() {
-        return Ok(());
-    }
-    Err(AxonError::InvalidArgument(format!(
-        "governed system capability for '{}' cannot address collection '{}'",
-        allowed.name(),
-        collection
-    )))
+) -> CollectionId {
+    capability.collection().collection_id()
 }
 
 fn ensure_generic_transaction_access(
@@ -4546,10 +4541,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
     pub(crate) fn create_entity_in_system_collection<C: GovernedSystemCollection>(
         &mut self,
         capability: GovernedSystemCapability<C>,
-        req: CreateEntityRequest,
+        req: CreateGovernedSystemEntityRequest,
     ) -> Result<CreateEntityResponse, AxonError> {
-        ensure_governed_system_capability(capability, &req.collection)?;
-        self.create_entity_inner_unchecked(req, None)
+        self.create_entity_inner_unchecked(
+            CreateEntityRequest {
+                collection: governed_system_collection(capability),
+                id: req.id,
+                data: req.data,
+                actor: req.actor,
+                audit_metadata: req.audit_metadata,
+                attribution: req.attribution,
+            },
+            None,
+        )
     }
 
     fn create_entity_inner_unchecked(
@@ -5062,10 +5066,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
     pub(crate) fn update_entity_in_system_collection<C: GovernedSystemCollection>(
         &mut self,
         capability: GovernedSystemCapability<C>,
-        req: UpdateEntityRequest,
+        req: UpdateGovernedSystemEntityRequest,
     ) -> Result<UpdateEntityResponse, AxonError> {
-        ensure_governed_system_capability(capability, &req.collection)?;
-        self.update_entity_inner_unchecked(req, None)
+        self.update_entity_inner_unchecked(
+            UpdateEntityRequest {
+                collection: governed_system_collection(capability),
+                id: req.id,
+                data: req.data,
+                expected_version: req.expected_version,
+                actor: req.actor,
+                audit_metadata: req.audit_metadata,
+                attribution: req.attribution,
+            },
+            None,
+        )
     }
 
     fn update_entity_inner_unchecked(
@@ -5518,10 +5532,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
     pub(crate) fn query_entities_in_system_collection<C: GovernedSystemCollection>(
         &self,
         capability: GovernedSystemCapability<C>,
-        req: QueryEntitiesRequest,
+        req: QueryGovernedSystemEntitiesRequest,
     ) -> Result<QueryEntitiesResponse, AxonError> {
-        ensure_governed_system_capability(capability, &req.collection)?;
-        self.query_entities_with_read_context_unchecked(req, None, None)
+        self.query_entities_with_read_context_unchecked(
+            QueryEntitiesRequest {
+                collection: governed_system_collection(capability),
+                filter: req.filter,
+                sort: req.sort,
+                limit: req.limit,
+                after_id: req.after_id,
+                count_only: req.count_only,
+            },
+            None,
+            None,
+        )
     }
 
     fn query_entities_with_read_context_unchecked(
@@ -7681,6 +7705,57 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: CreateCollectionRequest,
     ) -> Result<CreateCollectionResponse, AxonError> {
+        ensure_generic_collection_access(&req.name, OP_SCHEMA)?;
+        self.create_collection_inner(req)
+    }
+
+    pub(crate) fn ensure_governed_system_collection<C: GovernedSystemCollection>(
+        &mut self,
+        capability: GovernedSystemCapability<C>,
+        req: EnsureGovernedSystemCollectionRequest,
+    ) -> Result<CreateCollectionResponse, AxonError> {
+        let name = governed_system_collection(capability);
+        let mut schema = req.schema;
+        schema.collection = name.clone();
+        let (namespace, bare_name) = Namespace::parse(name.as_str());
+        let bare_collection = CollectionId::new(&bare_name);
+        if self
+            .storage
+            .collection_registered_in_namespace(&bare_collection, &namespace)?
+        {
+            let should_update_schema = self
+                .storage
+                .get_schema(&name)?
+                .as_ref()
+                .map_or(true, |existing| existing.version < schema.version);
+            if should_update_schema {
+                self.handle_put_schema_in_system_collection(
+                    capability,
+                    PutGovernedSystemSchemaRequest {
+                        schema,
+                        actor: req.actor,
+                        force: false,
+                        dry_run: false,
+                        explain_inputs: Vec::new(),
+                    },
+                )?;
+            }
+            return Ok(CreateCollectionResponse {
+                name: name.to_string(),
+            });
+        }
+
+        self.create_collection_inner(CreateCollectionRequest {
+            name,
+            schema,
+            actor: req.actor,
+        })
+    }
+
+    fn create_collection_inner(
+        &mut self,
+        req: CreateCollectionRequest,
+    ) -> Result<CreateCollectionResponse, AxonError> {
         let (namespace, bare_name) = Namespace::parse(req.name.as_str());
         let bare_collection = CollectionId::new(&bare_name);
 
@@ -8015,7 +8090,30 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<PutSchemaResponse, AxonError> {
         let collection = req.schema.collection.clone();
         ensure_generic_collection_access(&collection, OP_SCHEMA)?;
+        self.handle_put_schema_inner(req)
+    }
 
+    pub(crate) fn handle_put_schema_in_system_collection<C: GovernedSystemCollection>(
+        &mut self,
+        capability: GovernedSystemCapability<C>,
+        req: PutGovernedSystemSchemaRequest,
+    ) -> Result<PutSchemaResponse, AxonError> {
+        let mut schema = req.schema;
+        schema.collection = governed_system_collection(capability);
+        self.handle_put_schema_inner(PutSchemaRequest {
+            schema,
+            actor: req.actor,
+            force: req.force,
+            dry_run: req.dry_run,
+            explain_inputs: req.explain_inputs,
+        })
+    }
+
+    fn handle_put_schema_inner(
+        &mut self,
+        req: PutSchemaRequest,
+    ) -> Result<PutSchemaResponse, AxonError> {
+        let collection = req.schema.collection.clone();
         // Compatibility check against existing schema.
         let existing = self.storage.get_schema(&collection)?;
         let old_entity_schema = existing.as_ref().and_then(|s| s.entity_schema.as_ref());
@@ -8547,11 +8645,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
     pub(crate) fn create_link_in_system_collection<C: GovernedSystemCollection>(
         &mut self,
         capability: GovernedSystemCapability<C>,
-        req: CreateLinkRequest,
+        req: CreateGovernedSystemLinkRequest,
     ) -> Result<CreateLinkResponse, AxonError> {
-        ensure_governed_system_capability(capability, &req.source_collection)?;
-        ensure_governed_system_capability(capability, &req.target_collection)?;
-        self.create_link_inner(req)
+        let collection = governed_system_collection(capability);
+        self.create_link_inner(CreateLinkRequest {
+            source_collection: collection.clone(),
+            source_id: req.source_id,
+            target_collection: collection,
+            target_id: req.target_id,
+            link_type: req.link_type,
+            metadata: req.metadata,
+            actor: req.actor,
+            attribution: req.attribution,
+        })
     }
 
     fn create_link_inner(
@@ -8823,10 +8929,21 @@ impl<S: StorageAdapter> AxonHandler<S> {
     pub(crate) fn traverse_system_collection<C: GovernedSystemCollection>(
         &self,
         capability: GovernedSystemCapability<C>,
-        req: TraverseRequest,
+        req: TraverseGovernedSystemRequest,
     ) -> Result<TraverseResponse, AxonError> {
-        ensure_governed_system_capability(capability, &req.collection)?;
-        self.traverse_with_read_context_unchecked(req, None, None, true)
+        self.traverse_with_read_context_unchecked(
+            TraverseRequest {
+                collection: governed_system_collection(capability),
+                id: req.id,
+                link_type: req.link_type,
+                max_depth: req.max_depth,
+                direction: req.direction,
+                hop_filter: req.hop_filter,
+            },
+            None,
+            None,
+            true,
+        )
     }
 
     fn traverse_with_read_context_unchecked(
@@ -8994,11 +9111,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
     pub(crate) fn reachable_system_collection<C: GovernedSystemCollection>(
         &self,
         capability: GovernedSystemCapability<C>,
-        req: ReachableRequest,
+        req: ReachableGovernedSystemRequest,
     ) -> Result<ReachableResponse, AxonError> {
-        ensure_governed_system_capability(capability, &req.source_collection)?;
-        ensure_governed_system_capability(capability, &req.target_collection)?;
-        self.reachable_with_read_context_unchecked(req, None, None, true)
+        let collection = governed_system_collection(capability);
+        self.reachable_with_read_context_unchecked(
+            ReachableRequest {
+                source_collection: collection.clone(),
+                source_id: req.source_id,
+                target_collection: collection,
+                target_id: req.target_id,
+                link_type: req.link_type,
+                max_depth: req.max_depth,
+                direction: req.direction,
+            },
+            None,
+            None,
+            true,
+        )
     }
 
     fn reachable_with_read_context_unchecked(
@@ -11473,6 +11602,126 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FailingAuditMemoryAdapter {
+        inner: MemoryStorageAdapter,
+        fail_audit: bool,
+    }
+
+    impl FailingAuditMemoryAdapter {
+        fn fail_audit_appends(&mut self) {
+            self.fail_audit = true;
+        }
+
+        fn allow_audit_appends(&mut self) {
+            self.fail_audit = false;
+        }
+    }
+
+    impl StorageAdapter for FailingAuditMemoryAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.inner.get(collection, id)
+        }
+
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.inner.put(entity)
+        }
+
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.inner.delete(collection, id)
+        }
+
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.inner.count(collection)
+        }
+
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.inner.range_scan(collection, start, end, limit)
+        }
+
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
+
+        fn begin_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.begin_tx()
+        }
+
+        fn commit_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.commit_tx()
+        }
+
+        fn abort_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.abort_tx()
+        }
+
+        fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+            if self.fail_audit {
+                return Err(AxonError::Storage("injected audit append failure".into()));
+            }
+            self.inner.append_audit_entry(entry)
+        }
+
+        fn owns_audit_log(&self) -> bool {
+            true
+        }
+
+        fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+            self.inner.query_audit_paginated(query)
+        }
+
+        fn get_schema(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionSchema>, AxonError> {
+            self.inner.get_schema(collection)
+        }
+
+        fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+            self.inner.put_schema(schema)
+        }
+
+        fn collection_registered_in_namespace(
+            &self,
+            collection: &CollectionId,
+            namespace: &Namespace,
+        ) -> Result<bool, AxonError> {
+            self.inner
+                .collection_registered_in_namespace(collection, namespace)
+        }
+
+        fn register_collection_in_namespace(
+            &mut self,
+            collection: &CollectionId,
+            namespace: &Namespace,
+        ) -> Result<(), AxonError> {
+            self.inner
+                .register_collection_in_namespace(collection, namespace)
+        }
+    }
+
     fn register_prod_billing_and_engineering_collection(
         h: &mut AxonHandler<MemoryStorageAdapter>,
         collection: &str,
@@ -12038,11 +12287,10 @@ mod tests {
         assert_eq!(neighbors.total_count, 0);
         assert!(neighbors.groups.is_empty());
 
-        let typed_checkpoint_query = h
+        let typed_bead_query = h
             .query_entities_in_system_collection(
                 BEAD_SYSTEM_CAPABILITY,
-                QueryEntitiesRequest {
-                    collection: checkpoint.clone(),
+                QueryGovernedSystemEntitiesRequest {
                     filter: Some(FilterNode::Field(FieldFilter {
                         field: "sink".into(),
                         op: FilterOp::Eq,
@@ -12051,19 +12299,16 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .expect_err("bead capability must not query checkpoint rows");
-        assert!(typed_checkpoint_query
-            .to_string()
-            .contains("__axon_beads__"));
-        assert!(typed_checkpoint_query
-            .to_string()
-            .contains(checkpoint.as_str()));
+            .expect("bead capability query is bound to the bead collection");
+        assert!(
+            typed_bead_query.entities.is_empty(),
+            "bead capability query must not expose checkpoint rows"
+        );
 
         let typed_system_traversal = h
             .traverse_system_collection(
                 BEAD_SYSTEM_CAPABILITY,
-                TraverseRequest {
-                    collection: checkpoint.clone(),
+                TraverseGovernedSystemRequest {
                     id: checkpoint_id,
                     link_type: Some(link_type.into()),
                     max_depth: Some(1),
@@ -12071,13 +12316,622 @@ mod tests {
                     hop_filter: None,
                 },
             )
-            .expect_err("bead capability must not traverse checkpoint rows");
-        assert!(typed_system_traversal
-            .to_string()
-            .contains("__axon_beads__"));
-        assert!(typed_system_traversal
-            .to_string()
-            .contains(checkpoint.as_str()));
+            .expect("bead capability traversal is bound to the bead collection");
+        assert!(
+            typed_system_traversal.entities.is_empty(),
+            "bead capability traversal must not expose checkpoint rows"
+        );
+    }
+
+    fn governed_system_collection_id() -> CollectionId {
+        SystemCollection::beads().collection_id()
+    }
+
+    fn governed_system_schema(version: u32, include_summary: bool) -> CollectionSchema {
+        let mut entity_schema = json!({
+            "type": "object",
+            "required": ["owner_id", "title"],
+            "properties": {
+                "owner_id": {"type": "string"},
+                "title": {"type": "string"},
+                "status": {"type": "string"},
+                "secret": {"type": "string"}
+            }
+        });
+        if include_summary {
+            entity_schema["properties"]["summary"] = json!({"type": "string"});
+        }
+
+        let mut schema = CollectionSchema {
+            collection: CollectionId::new("caller_supplied_collection_is_ignored"),
+            description: Some("governed system handler test schema".into()),
+            version,
+            entity_schema: Some(entity_schema),
+            link_types: Default::default(),
+            access_control: None,
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            queries: Default::default(),
+            lifecycles: Default::default(),
+        };
+        schema.link_types.insert(
+            "related".into(),
+            LinkTypeDef {
+                target_collection: SystemCollection::beads().name().into(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string"}
+                    }
+                })),
+            },
+        );
+        schema
+    }
+
+    fn ensure_governed_system_for_test<S: StorageAdapter>(h: &mut AxonHandler<S>) -> CollectionId {
+        h.ensure_governed_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            EnsureGovernedSystemCollectionRequest {
+                schema: governed_system_schema(1, false),
+                actor: Some("system-test".into()),
+            },
+        )
+        .expect("governed system collection should be ensured");
+        governed_system_collection_id()
+    }
+
+    fn governed_system_policy_schema() -> CollectionSchema {
+        let mut access_control = AccessControlPolicy {
+            create: Some(allow_all_policy()),
+            fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+            ..Default::default()
+        };
+        access_control.identity = Some(AccessControlIdentity {
+            subject: HashMap::from([("user_id".into(), "subject.user_id".into())]),
+            attributes: HashMap::new(),
+            aliases: HashMap::new(),
+        });
+
+        let mut schema = governed_system_schema(1, false);
+        schema.access_control = Some(access_control);
+        schema
+    }
+
+    #[test]
+    fn governed_system_handler_idempotent_collection_bootstrap() {
+        let mut h = handler();
+        let collection = governed_system_collection_id();
+        let supplied = CollectionId::new("caller_supplied_collection_is_ignored");
+
+        let first = h
+            .ensure_governed_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                EnsureGovernedSystemCollectionRequest {
+                    schema: governed_system_schema(1, false),
+                    actor: Some("system-test".into()),
+                },
+            )
+            .expect("first bootstrap should create collection");
+        let second = h
+            .ensure_governed_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                EnsureGovernedSystemCollectionRequest {
+                    schema: governed_system_schema(1, false),
+                    actor: Some("system-test".into()),
+                },
+            )
+            .expect("second bootstrap should be idempotent");
+
+        assert_eq!(first.name, collection.as_str());
+        assert_eq!(second.name, collection.as_str());
+        assert!(h
+            .storage_ref()
+            .collection_registered_in_namespace(&collection, &Namespace::default_ns())
+            .expect("collection registration lookup"));
+        assert!(!h
+            .storage_ref()
+            .collection_registered_in_namespace(&supplied, &Namespace::default_ns())
+            .expect("supplied collection registration lookup"));
+        let stored = h
+            .storage_ref()
+            .get_schema(&collection)
+            .expect("schema lookup")
+            .expect("schema should be stored");
+        assert_eq!(stored.collection, collection);
+        assert_eq!(
+            h.audit_log()
+                .query_by_operation(&MutationType::CollectionCreate)
+                .expect("collection create audit query")
+                .len(),
+            1,
+            "idempotent bootstrap must not append a duplicate collection audit"
+        );
+    }
+
+    #[test]
+    fn governed_system_handler_compatible_schema_evolution_activates() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+
+        let response = h
+            .handle_put_schema_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                PutGovernedSystemSchemaRequest {
+                    schema: governed_system_schema(2, true),
+                    actor: Some("system-test".into()),
+                    force: false,
+                    dry_run: false,
+                    explain_inputs: Vec::new(),
+                },
+            )
+            .expect("compatible governed system schema should activate");
+
+        assert_eq!(response.schema.collection, collection);
+        assert_eq!(
+            response.compatibility,
+            Some(axon_schema::Compatibility::Compatible)
+        );
+        let stored = h
+            .storage_ref()
+            .get_schema(&collection)
+            .expect("schema lookup")
+            .expect("schema should exist");
+        assert_eq!(stored.version, 2);
+        assert!(stored
+            .entity_schema
+            .as_ref()
+            .and_then(|schema| schema.pointer("/properties/summary"))
+            .is_some());
+    }
+
+    #[test]
+    fn governed_system_handler_entity_create_update_query() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+
+        let invalid = h
+            .create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new("missing-title"),
+                    data: json!({"owner_id": "alice"}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect_err("standard schema validation must reject invalid system entity");
+        assert!(matches!(invalid, AxonError::SchemaValidation(_)));
+
+        let created = h
+            .create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new("bead-1"),
+                    data: json!({"owner_id": "alice", "title": "First", "status": "open"}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("valid system entity should create");
+        assert_eq!(created.entity.collection, collection);
+        assert_eq!(created.entity.version, 1);
+
+        h.update_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            UpdateGovernedSystemEntityRequest {
+                id: EntityId::new("bead-1"),
+                data: json!({"owner_id": "alice", "title": "Second", "status": "open"}),
+                expected_version: created.entity.version,
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect("system entity update should use normal OCC path");
+
+        let queried = h
+            .query_entities_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                QueryGovernedSystemEntitiesRequest {
+                    filter: Some(FilterNode::Field(FieldFilter {
+                        field: "title".into(),
+                        op: FilterOp::Eq,
+                        value: json!("Second"),
+                    })),
+                    ..Default::default()
+                },
+            )
+            .expect("system entity query should use normal query path");
+        assert_eq!(queried.entities.len(), 1);
+        assert_eq!(queried.entities[0].collection, collection);
+        assert_eq!(queried.entities[0].data["title"], json!("Second"));
+    }
+
+    #[test]
+    fn governed_system_handler_self_targeting_link_create_traverse() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+        for id in ["source", "target"] {
+            h.create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new(id),
+                    data: json!({"owner_id": "alice", "title": id}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("fixture entity should create");
+        }
+
+        let created = h
+            .create_link_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemLinkRequest {
+                    source_id: EntityId::new("source"),
+                    target_id: EntityId::new("target"),
+                    link_type: "related".into(),
+                    metadata: json!({"kind": "fixture"}),
+                    actor: Some("alice".into()),
+                    attribution: None,
+                },
+            )
+            .expect("self-targeting governed system link should create");
+        assert_eq!(created.link.source_collection, collection);
+        assert_eq!(created.link.target_collection, collection);
+
+        let traversed = h
+            .traverse_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                TraverseGovernedSystemRequest {
+                    id: EntityId::new("source"),
+                    link_type: Some("related".into()),
+                    max_depth: Some(1),
+                    direction: TraverseDirection::Forward,
+                    hop_filter: None,
+                },
+            )
+            .expect("system traversal should include system links");
+        assert_eq!(traversed.entities.len(), 1);
+        assert_eq!(traversed.entities[0].id, EntityId::new("target"));
+        assert_eq!(traversed.links.len(), 1);
+        assert_eq!(traversed.links[0].source_collection, collection);
+        assert_eq!(traversed.links[0].target_collection, collection);
+    }
+
+    #[test]
+    fn governed_system_handler_occ_conflict() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+        h.create_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemEntityRequest {
+                id: EntityId::new("bead-1"),
+                data: json!({"owner_id": "alice", "title": "First"}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect("fixture entity should create");
+
+        let err = h
+            .update_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                UpdateGovernedSystemEntityRequest {
+                    id: EntityId::new("bead-1"),
+                    data: json!({"owner_id": "alice", "title": "Stale"}),
+                    expected_version: 0,
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect_err("stale governed system update must conflict");
+        assert!(matches!(
+            err,
+            AxonError::ConflictingVersion {
+                expected: 0,
+                actual: 1,
+                ..
+            }
+        ));
+        let stored = h
+            .storage_ref()
+            .get(&collection, &EntityId::new("bead-1"))
+            .expect("entity lookup")
+            .expect("entity should still exist");
+        assert_eq!(stored.data["title"], json!("First"));
+    }
+
+    #[test]
+    fn governed_system_handler_policy_denial() {
+        let mut h = handler();
+        let collection = governed_system_collection_id();
+        h.ensure_governed_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            EnsureGovernedSystemCollectionRequest {
+                schema: governed_system_policy_schema(),
+                actor: Some("system-test".into()),
+            },
+        )
+        .expect("policy-governed system collection should be ensured");
+        let audit_before = h.audit_log().len();
+
+        let denial = expect_policy_denial(
+            h.create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new("denied"),
+                    data: json!({
+                        "owner_id": "blocked",
+                        "title": "Denied",
+                        "secret": "classified"
+                    }),
+                    actor: Some("blocked".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect_err("field policy must deny governed system create"),
+        );
+        assert_eq!(denial.reason, "field_write_denied");
+        assert_eq!(denial.field_path.as_deref(), Some("secret"));
+        assert!(h
+            .storage_ref()
+            .get(&collection, &EntityId::new("denied"))
+            .expect("entity lookup")
+            .is_none());
+        assert_eq!(
+            h.audit_log().len(),
+            audit_before,
+            "policy denial must not append audit"
+        );
+    }
+
+    #[test]
+    fn governed_system_handler_durable_audit_lineage() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+        let created = h
+            .create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new("bead-1"),
+                    data: json!({"owner_id": "alice", "title": "First"}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("entity create should audit");
+        let updated = h
+            .update_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                UpdateGovernedSystemEntityRequest {
+                    id: EntityId::new("bead-1"),
+                    data: json!({"owner_id": "alice", "title": "Second"}),
+                    expected_version: created.entity.version,
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("entity update should audit");
+        h.create_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemEntityRequest {
+                id: EntityId::new("bead-2"),
+                data: json!({"owner_id": "alice", "title": "Other"}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect("second entity should create");
+        h.create_link_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemLinkRequest {
+                source_id: EntityId::new("bead-1"),
+                target_id: EntityId::new("bead-2"),
+                link_type: "related".into(),
+                metadata: json!({"kind": "lineage"}),
+                actor: Some("alice".into()),
+                attribution: None,
+            },
+        )
+        .expect("link create should audit");
+
+        let create_audit_id = created.audit_id.expect("create returns audit id");
+        let update_audit_id = updated.audit_id.expect("update returns audit id");
+        let history = h
+            .audit_log()
+            .query_by_entity(&collection, &EntityId::new("bead-1"))
+            .expect("entity audit history");
+        assert!(history.iter().any(|entry| {
+            entry.id == create_audit_id
+                && entry.mutation == MutationType::EntityCreate
+                && entry.actor == "alice"
+                && entry.data_before.is_none()
+                && entry.data_after.as_ref().and_then(|data| data.get("title"))
+                    == Some(&json!("First"))
+        }));
+        assert!(history.iter().any(|entry| {
+            entry.id == update_audit_id
+                && entry.mutation == MutationType::EntityUpdate
+                && entry.actor == "alice"
+                && entry
+                    .data_before
+                    .as_ref()
+                    .and_then(|data| data.get("title"))
+                    == Some(&json!("First"))
+                && entry.data_after.as_ref().and_then(|data| data.get("title"))
+                    == Some(&json!("Second"))
+        }));
+
+        let link_audit = h
+            .audit_log()
+            .query_by_operation(&MutationType::LinkCreate)
+            .expect("link audit query");
+        assert_eq!(link_audit.len(), 1);
+        assert_eq!(link_audit[0].collection, Link::links_collection());
+        assert_eq!(
+            link_audit[0]
+                .data_after
+                .as_ref()
+                .and_then(|data| data.get("source_collection")),
+            Some(&json!(collection.as_str()))
+        );
+    }
+
+    #[test]
+    fn governed_system_audit_failure_rolls_back() {
+        let collection = governed_system_collection_id();
+
+        let mut failed_bootstrap = AxonHandler::new(FailingAuditMemoryAdapter::default());
+        failed_bootstrap.storage_mut().fail_audit_appends();
+        failed_bootstrap
+            .ensure_governed_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                EnsureGovernedSystemCollectionRequest {
+                    schema: governed_system_schema(1, false),
+                    actor: Some("system-test".into()),
+                },
+            )
+            .expect_err("collection bootstrap must fail when audit append fails");
+        assert!(!failed_bootstrap
+            .storage_ref()
+            .collection_registered_in_namespace(&collection, &Namespace::default_ns())
+            .expect("registration lookup"));
+        assert!(failed_bootstrap
+            .storage_ref()
+            .get_schema(&collection)
+            .expect("schema lookup")
+            .is_none());
+        assert_eq!(failed_bootstrap.audit_log().len(), 0);
+
+        let mut h = AxonHandler::new(FailingAuditMemoryAdapter::default());
+        h.storage_mut().allow_audit_appends();
+        ensure_governed_system_for_test(&mut h);
+        for id in ["a", "b"] {
+            h.create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new(id),
+                    data: json!({"owner_id": "alice", "title": id}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("fixture entity should create");
+        }
+        h.create_link_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemLinkRequest {
+                source_id: EntityId::new("a"),
+                target_id: EntityId::new("b"),
+                link_type: "related".into(),
+                metadata: json!({"kind": "before"}),
+                actor: Some("alice".into()),
+                attribution: None,
+            },
+        )
+        .expect("fixture link should create");
+
+        let before_schema = h
+            .storage_ref()
+            .get_schema(&collection)
+            .expect("schema lookup")
+            .expect("schema should exist");
+        let before_entities = h
+            .storage_ref()
+            .range_scan(&collection, None, None, None)
+            .expect("entity snapshot");
+        let before_links = h
+            .storage_ref()
+            .range_scan(&Link::links_collection(), None, None, None)
+            .expect("link snapshot");
+        let before_audit_len = h.audit_log().len();
+
+        h.storage_mut().fail_audit_appends();
+
+        h.handle_put_schema_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            PutGovernedSystemSchemaRequest {
+                schema: governed_system_schema(2, true),
+                actor: Some("system-test".into()),
+                force: false,
+                dry_run: false,
+                explain_inputs: Vec::new(),
+            },
+        )
+        .expect_err("schema update must fail when audit append fails");
+        assert_eq!(
+            h.storage_ref()
+                .get_schema(&collection)
+                .expect("schema lookup")
+                .expect("schema should exist"),
+            before_schema
+        );
+
+        h.create_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemEntityRequest {
+                id: EntityId::new("c"),
+                data: json!({"owner_id": "alice", "title": "c"}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect_err("entity create must fail when audit append fails");
+        h.update_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            UpdateGovernedSystemEntityRequest {
+                id: EntityId::new("a"),
+                data: json!({"owner_id": "alice", "title": "changed"}),
+                expected_version: 1,
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect_err("entity update must fail when audit append fails");
+        assert_eq!(
+            h.storage_ref()
+                .range_scan(&collection, None, None, None)
+                .expect("entity snapshot"),
+            before_entities
+        );
+
+        h.create_link_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemLinkRequest {
+                source_id: EntityId::new("b"),
+                target_id: EntityId::new("a"),
+                link_type: "related".into(),
+                metadata: json!({"kind": "after"}),
+                actor: Some("alice".into()),
+                attribution: None,
+            },
+        )
+        .expect_err("link create must fail when audit append fails");
+        assert_eq!(
+            h.storage_ref()
+                .range_scan(&Link::links_collection(), None, None, None)
+                .expect("link snapshot"),
+            before_links
+        );
+        assert_eq!(h.audit_log().len(), before_audit_len);
     }
 
     fn audit_grants(database: &str, ops: Vec<Op>) -> Grants {
