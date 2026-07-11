@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, SystemCollection};
 use axon_schema::{
     AccessControlPolicy, Cardinality, CollectionSchema, CompoundIndexDef, CompoundIndexField,
     IndexDef, IndexType, LifecycleDef, LinkTypeDef,
@@ -13,9 +13,87 @@ use serde_json::{json, Value};
 
 use crate::handler::AxonHandler;
 use crate::request::{CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest};
+use crate::response::{RESERVED_NAMESPACE_CODE, RESERVED_NAMESPACE_REASON};
 
 pub const PROCUREMENT_APPROVAL_THRESHOLD_CENTS: i64 = 1_000_000;
 const FIXTURE_ACTOR: &str = "shared-test-fixture";
+
+pub const RESERVED_NAMESPACE_CLASS_HIDDEN: &str = "hidden";
+pub const RESERVED_NAMESPACE_CLASS_VIRTUAL: &str = "virtual";
+pub const RESERVED_NAMESPACE_CLASS_GOVERNED_SYSTEM: &str = "governed_system";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservedNamespaceSurfaceParityVector {
+    pub code: &'static str,
+    pub reason: &'static str,
+    pub detail_name: &'static str,
+    pub detail_operation: &'static str,
+    pub classification: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservedNamespaceNameVector {
+    pub name: &'static str,
+    pub classification: &'static str,
+}
+
+pub const RESERVED_NAMESPACE_SURFACE_PARITY_NAMES: [ReservedNamespaceNameVector; 6] = [
+    ReservedNamespaceNameVector {
+        name: SystemCollection::links().name(),
+        classification: RESERVED_NAMESPACE_CLASS_HIDDEN,
+    },
+    ReservedNamespaceNameVector {
+        name: SystemCollection::links_rev().name(),
+        classification: RESERVED_NAMESPACE_CLASS_HIDDEN,
+    },
+    ReservedNamespaceNameVector {
+        name: SystemCollection::cdc_cursors().name(),
+        classification: RESERVED_NAMESPACE_CLASS_HIDDEN,
+    },
+    ReservedNamespaceNameVector {
+        name: SystemCollection::mutation_intents().name(),
+        classification: RESERVED_NAMESPACE_CLASS_VIRTUAL,
+    },
+    ReservedNamespaceNameVector {
+        name: SystemCollection::beads().name(),
+        classification: RESERVED_NAMESPACE_CLASS_GOVERNED_SYSTEM,
+    },
+    ReservedNamespaceNameVector {
+        name: SystemCollection::legacy_policies().name(),
+        classification: RESERVED_NAMESPACE_CLASS_VIRTUAL,
+    },
+];
+
+pub const RESERVED_NAMESPACE_SURFACE_PARITY_OPERATIONS: [&str; 11] = [
+    "entity",
+    "schema",
+    "template",
+    "lifecycle",
+    "link",
+    "rollback",
+    "intent",
+    "query",
+    "traverse",
+    "transaction",
+    "audit",
+];
+
+pub fn reserved_namespace_surface_parity_vectors() -> Vec<ReservedNamespaceSurfaceParityVector> {
+    RESERVED_NAMESPACE_SURFACE_PARITY_NAMES
+        .into_iter()
+        .flat_map(|name| {
+            RESERVED_NAMESPACE_SURFACE_PARITY_OPERATIONS
+                .into_iter()
+                .map(move |operation| ReservedNamespaceSurfaceParityVector {
+                    code: RESERVED_NAMESPACE_CODE,
+                    reason: RESERVED_NAMESPACE_REASON,
+                    detail_name: name.name,
+                    detail_operation: operation,
+                    classification: name.classification,
+                })
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FixtureSeedEntity {

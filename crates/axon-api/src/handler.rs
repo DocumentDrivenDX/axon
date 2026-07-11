@@ -10665,6 +10665,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::fmt::Display;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use axon_core::auth::{
         AuthError, CredentialMetadata, GrantedDatabase, Grants, Op, Role, TenantId, TenantRole,
@@ -10685,9 +10686,131 @@ mod tests {
     use serde_json::json;
 
     use crate::test_fixtures::seed_procurement_fixture;
+    use crate::test_fixtures::{
+        reserved_namespace_surface_parity_vectors, ReservedNamespaceSurfaceParityVector,
+        RESERVED_NAMESPACE_CLASS_GOVERNED_SYSTEM, RESERVED_NAMESPACE_CLASS_HIDDEN,
+        RESERVED_NAMESPACE_CLASS_VIRTUAL, RESERVED_NAMESPACE_SURFACE_PARITY_OPERATIONS,
+    };
 
     fn handler() -> AxonHandler<MemoryStorageAdapter> {
         AxonHandler::new(MemoryStorageAdapter::default())
+    }
+
+    #[derive(Default)]
+    struct LookupCountingStorageAdapter {
+        inner: MemoryStorageAdapter,
+        storage_calls: AtomicUsize,
+    }
+
+    impl LookupCountingStorageAdapter {
+        fn storage_calls(&self) -> usize {
+            self.storage_calls.load(Ordering::SeqCst)
+        }
+
+        fn note_storage_call(&self) {
+            self.storage_calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl StorageAdapter for LookupCountingStorageAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.note_storage_call();
+            self.inner.get(collection, id)
+        }
+
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.put(entity)
+        }
+
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.delete(collection, id)
+        }
+
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.note_storage_call();
+            self.inner.count(collection)
+        }
+
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.note_storage_call();
+            self.inner.range_scan(collection, start, end, limit)
+        }
+
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.note_storage_call();
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.note_storage_call();
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
+
+        fn begin_tx(&mut self) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.begin_tx()
+        }
+
+        fn commit_tx(&mut self) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.commit_tx()
+        }
+
+        fn abort_tx(&mut self) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.abort_tx()
+        }
+
+        fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+            self.note_storage_call();
+            self.inner.append_audit_entry(entry)
+        }
+
+        fn owns_audit_log(&self) -> bool {
+            self.note_storage_call();
+            self.inner.owns_audit_log()
+        }
+
+        fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+            self.note_storage_call();
+            self.inner.query_audit_paginated(query)
+        }
+
+        fn get_schema(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionSchema>, AxonError> {
+            self.note_storage_call();
+            self.inner.get_schema(collection)
+        }
+
+        fn get_collection_view(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionView>, AxonError> {
+            self.note_storage_call();
+            self.inner.get_collection_view(collection)
+        }
     }
 
     fn handler_with_markdown_template_cache_capacity(
@@ -11017,6 +11140,208 @@ mod tests {
         assert_eq!(envelope.reason, crate::response::RESERVED_NAMESPACE_REASON);
         assert_eq!(envelope.detail.name, expected_name);
         assert_eq!(envelope.detail.operation, expected_operation);
+    }
+
+    fn assert_reserved_namespace_surface_parity_error(
+        err: AxonError,
+        vector: &ReservedNamespaceSurfaceParityVector,
+    ) {
+        let envelope = ReservedNamespaceError::from_axon_error(&err)
+            .unwrap_or_else(|| panic!("expected reserved namespace error, got: {err}"));
+        assert_eq!(envelope.code, vector.code);
+        assert_eq!(envelope.reason, vector.reason);
+        assert_eq!(envelope.detail.name, vector.detail_name);
+        assert_eq!(envelope.detail.operation, vector.detail_operation);
+    }
+
+    fn reserved_namespace_intent(
+        collection: &CollectionId,
+        id: &EntityId,
+    ) -> crate::MutationIntent {
+        crate::MutationIntent {
+            intent_id: format!("reserved-namespace-parity-{collection}"),
+            scope: crate::MutationIntentScopeBinding {
+                tenant_id: DEFAULT_DATABASE.into(),
+                database_id: DEFAULT_DATABASE.into(),
+            },
+            subject: crate::MutationIntentSubjectBinding::default(),
+            schema_version: 1,
+            policy_version: 1,
+            operation: crate::CanonicalOperationMetadata {
+                operation_kind: crate::MutationOperationKind::UpdateEntity,
+                operation_hash: "sha256:reserved-namespace-parity".into(),
+                canonical_operation: Some(json!({
+                    "collection": collection.as_str(),
+                    "id": id.as_str(),
+                    "data": { "title": "reserved namespace parity" },
+                    "expected_version": 1
+                })),
+            },
+            pre_images: Vec::new(),
+            decision: crate::MutationIntentDecision::NeedsApproval,
+            approval_state: crate::ApprovalState::Pending,
+            approval_route: None,
+            expires_at: 1,
+            review_summary: crate::MutationReviewSummary::default(),
+        }
+    }
+
+    fn reserved_namespace_surface_parity_embedded_error(
+        vector: &ReservedNamespaceSurfaceParityVector,
+    ) -> AxonError {
+        let collection = CollectionId::new(vector.detail_name);
+        let id = EntityId::new("reserved-namespace-parity-id");
+        let mut handler = AxonHandler::new(LookupCountingStorageAdapter::default());
+        let result: Result<(), AxonError> = match vector.detail_operation {
+            OP_ENTITY => handler
+                .get_entity(GetEntityRequest { collection, id })
+                .map(|_| ()),
+            OP_SCHEMA => handler
+                .handle_get_schema(GetSchemaRequest { collection })
+                .map(|_| ()),
+            OP_TEMPLATE => handler
+                .get_collection_template(GetCollectionTemplateRequest { collection })
+                .map(|_| ()),
+            OP_LIFECYCLE => handler
+                .transition_lifecycle(TransitionLifecycleRequest {
+                    collection_id: collection,
+                    entity_id: id,
+                    lifecycle_name: "workflow".into(),
+                    target_state: "done".into(),
+                    expected_version: 1,
+                    actor: Some("reserved-namespace-parity".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .map(|_| ()),
+            OP_LINK => handler
+                .create_link(CreateLinkRequest {
+                    source_collection: collection,
+                    source_id: id,
+                    target_collection: CollectionId::new("public-target"),
+                    target_id: EntityId::new("target"),
+                    link_type: "reserved-namespace-parity".into(),
+                    metadata: json!({}),
+                    actor: Some("reserved-namespace-parity".into()),
+                    attribution: None,
+                })
+                .map(|_| ()),
+            OP_ROLLBACK => handler
+                .rollback_entity(RollbackEntityRequest {
+                    collection,
+                    id,
+                    target: RollbackEntityTarget::Version(1),
+                    expected_version: None,
+                    actor: Some("reserved-namespace-parity".into()),
+                    dry_run: true,
+                })
+                .map(|_| ()),
+            OP_INTENT => {
+                let mut intent = reserved_namespace_intent(&collection, &id);
+                handler.redact_mutation_intent_for_read(
+                    &mut intent,
+                    &CallerIdentity::anonymous(),
+                    None,
+                )
+            }
+            OP_QUERY => handler
+                .query_entities(QueryEntitiesRequest {
+                    collection,
+                    ..QueryEntitiesRequest::default()
+                })
+                .map(|_| ()),
+            OP_TRAVERSE => handler
+                .traverse(TraverseRequest {
+                    collection,
+                    id,
+                    link_type: None,
+                    max_depth: Some(1),
+                    direction: TraverseDirection::Forward,
+                    hop_filter: None,
+                })
+                .map(|_| ()),
+            OP_TRANSACTION => {
+                let mut tx = crate::Transaction::new();
+                tx.create(Entity::new(
+                    collection,
+                    id,
+                    json!({ "title": "reserved namespace parity" }),
+                ))
+                .expect("fixture transaction should stage");
+                handler
+                    .commit_transaction(tx, Some("reserved-namespace-parity".into()), None)
+                    .map(|_| ())
+            }
+            OP_AUDIT => handler
+                .query_audit(QueryAuditRequest {
+                    collection: Some(collection),
+                    limit: Some(1),
+                    ..QueryAuditRequest::default()
+                })
+                .map(|_| ()),
+            other => panic!("unknown reserved namespace parity operation: {other}"),
+        };
+        let err = result.expect_err("embedded reserved namespace vector must be rejected");
+        assert_eq!(
+            handler.storage_ref().storage_calls(),
+            0,
+            "embedded {} vector for {} touched storage before rejection",
+            vector.detail_operation,
+            vector.detail_name
+        );
+        err
+    }
+
+    #[test]
+    fn reserved_namespace_surface_parity() {
+        let vectors = reserved_namespace_surface_parity_vectors();
+        let classifications = vectors
+            .iter()
+            .map(|vector| vector.classification)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            classifications,
+            BTreeSet::from([
+                RESERVED_NAMESPACE_CLASS_HIDDEN,
+                RESERVED_NAMESPACE_CLASS_VIRTUAL,
+                RESERVED_NAMESPACE_CLASS_GOVERNED_SYSTEM,
+            ])
+        );
+
+        let operations = vectors
+            .iter()
+            .map(|vector| vector.detail_operation)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            operations,
+            RESERVED_NAMESPACE_SURFACE_PARITY_OPERATIONS
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
+
+        let names = vectors
+            .iter()
+            .map(|vector| vector.detail_name)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            names,
+            SystemCollection::ALL
+                .into_iter()
+                .map(|collection| collection.name())
+                .collect::<BTreeSet<_>>()
+        );
+
+        for vector in vectors {
+            let guard_err = ensure_generic_collection_access(
+                &CollectionId::new(vector.detail_name),
+                vector.detail_operation,
+            )
+            .expect_err("shared reserved namespace guard must reject the vector");
+            assert_reserved_namespace_surface_parity_error(guard_err, &vector);
+
+            let embedded_err = reserved_namespace_surface_parity_embedded_error(&vector);
+            assert_reserved_namespace_surface_parity_error(embedded_err, &vector);
+        }
     }
 
     #[test]
