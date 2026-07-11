@@ -596,31 +596,40 @@ impl SqliteStorageAdapter {
             .execute(&self.pool),
         )?;
 
-        let select_sql = match (has_database_name, has_schema_name) {
-            (true, true) => {
-                "SELECT name, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default')
-                 FROM collections_legacy"
-            }
-            (true, false) => {
-                "SELECT name, COALESCE(database_name, 'default'), 'default'
-                 FROM collections_legacy"
-            }
-            (false, true) => {
-                "SELECT name, 'default', COALESCE(schema_name, 'default')
-                 FROM collections_legacy"
-            }
-            (false, false) => {
-                "SELECT name, 'default', 'default'
-                 FROM collections_legacy"
-            }
+        match (has_database_name, has_schema_name) {
+            (true, true) => self.block_on(
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
+                     SELECT name, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default')
+                     FROM collections_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (true, false) => self.block_on(
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
+                     SELECT name, COALESCE(database_name, 'default'), 'default'
+                     FROM collections_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, true) => self.block_on(
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
+                     SELECT name, 'default', COALESCE(schema_name, 'default')
+                     FROM collections_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, false) => self.block_on(
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
+                     SELECT name, 'default', 'default'
+                     FROM collections_legacy",
+                )
+                .execute(&self.pool),
+            )?,
         };
-
-        self.block_on(
-            sqlx::query(&format!(
-                "INSERT OR IGNORE INTO collections (name, database_name, schema_name) {select_sql}"
-            ))
-            .execute(&self.pool),
-        )?;
         self.block_on(sqlx::query("DROP TABLE collections_legacy").execute(&self.pool))?;
         Ok(())
     }
@@ -648,31 +657,44 @@ impl SqliteStorageAdapter {
             .execute(&self.pool),
         )?;
 
-        let select_sql = match (has_database_name, has_schema_name) {
-            (true, true) => {
-                "SELECT collection, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default'), id, version, data
-                 FROM entities_legacy"
-            }
-            (true, false) => {
-                "SELECT collection, COALESCE(database_name, 'default'), 'default', id, version, data
-                 FROM entities_legacy"
-            }
-            (false, true) => {
-                "SELECT collection, 'default', COALESCE(schema_name, 'default'), id, version, data
-                 FROM entities_legacy"
-            }
-            (false, false) => {
-                "SELECT collection, 'default', 'default', id, version, data
-                 FROM entities_legacy"
-            }
+        match (has_database_name, has_schema_name) {
+            (true, true) => self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities
+                        (collection, database_name, schema_name, id, version, data)
+                     SELECT collection, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default'), id, version, data
+                     FROM entities_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (true, false) => self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities
+                        (collection, database_name, schema_name, id, version, data)
+                     SELECT collection, COALESCE(database_name, 'default'), 'default', id, version, data
+                     FROM entities_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, true) => self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities
+                        (collection, database_name, schema_name, id, version, data)
+                     SELECT collection, 'default', COALESCE(schema_name, 'default'), id, version, data
+                     FROM entities_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, false) => self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities
+                        (collection, database_name, schema_name, id, version, data)
+                     SELECT collection, 'default', 'default', id, version, data
+                     FROM entities_legacy",
+                )
+                .execute(&self.pool),
+            )?,
         };
-
-        self.block_on(
-            sqlx::query(&format!(
-                "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data) {select_sql}"
-            ))
-            .execute(&self.pool),
-        )?;
         self.block_on(sqlx::query("DROP TABLE entities_legacy").execute(&self.pool))?;
         Ok(())
     }
@@ -701,48 +723,59 @@ impl SqliteStorageAdapter {
             .execute(&self.pool),
         )?;
 
-        let select_sql = match (has_database_name, has_schema_name) {
-            (true, true) => {
-                "SELECT collection,
-                        COALESCE(database_name, 'default'),
-                        COALESCE(schema_name, 'default'),
-                        version,
-                        schema_json,
-                        created_at
-                 FROM schema_versions_legacy"
-            }
-            (true, false) => {
-                "SELECT collection,
-                        COALESCE(database_name, 'default'),
-                        'default',
-                        version,
-                        schema_json,
-                        created_at
-                 FROM schema_versions_legacy"
-            }
-            (false, true) => {
-                "SELECT collection,
-                        'default',
-                        COALESCE(schema_name, 'default'),
-                        version,
-                        schema_json,
-                        created_at
-                 FROM schema_versions_legacy"
-            }
-            (false, false) => {
-                "SELECT collection, 'default', 'default', version, schema_json, created_at
-                 FROM schema_versions_legacy"
-            }
+        match (has_database_name, has_schema_name) {
+            (true, true) => self.block_on(
+                sqlx::query(
+                    "INSERT INTO schema_versions
+                        (collection, database_name, schema_name, version, schema_json, created_at)
+                     SELECT collection,
+                            COALESCE(database_name, 'default'),
+                            COALESCE(schema_name, 'default'),
+                            version,
+                            schema_json,
+                            created_at
+                     FROM schema_versions_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (true, false) => self.block_on(
+                sqlx::query(
+                    "INSERT INTO schema_versions
+                        (collection, database_name, schema_name, version, schema_json, created_at)
+                     SELECT collection,
+                            COALESCE(database_name, 'default'),
+                            'default',
+                            version,
+                            schema_json,
+                            created_at
+                     FROM schema_versions_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, true) => self.block_on(
+                sqlx::query(
+                    "INSERT INTO schema_versions
+                        (collection, database_name, schema_name, version, schema_json, created_at)
+                     SELECT collection,
+                            'default',
+                            COALESCE(schema_name, 'default'),
+                            version,
+                            schema_json,
+                            created_at
+                     FROM schema_versions_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, false) => self.block_on(
+                sqlx::query(
+                    "INSERT INTO schema_versions
+                        (collection, database_name, schema_name, version, schema_json, created_at)
+                     SELECT collection, 'default', 'default', version, schema_json, created_at
+                     FROM schema_versions_legacy",
+                )
+                .execute(&self.pool),
+            )?,
         };
-
-        self.block_on(
-            sqlx::query(&format!(
-                "INSERT INTO schema_versions
-                    (collection, database_name, schema_name, version, schema_json, created_at)
-                 {select_sql}"
-            ))
-            .execute(&self.pool),
-        )?;
         self.block_on(sqlx::query("DROP TABLE schema_versions_legacy").execute(&self.pool))?;
         Ok(())
     }
@@ -775,38 +808,40 @@ impl SqliteStorageAdapter {
             .execute(&self.pool),
         )?;
 
-        let select_sql = match (has_database_name, has_schema_name) {
-            (true, true) => {
-                "SELECT collection,
-                        COALESCE(database_name, 'default'),
-                        COALESCE(schema_name, 'default'),
-                        version,
-                        view_json,
-                        updated_at_ns,
-                        updated_by
-                 FROM collection_views_legacy"
-            }
-            _ => {
-                "SELECT v.collection,
-                        COALESCE(c.database_name, 'default'),
-                        COALESCE(c.schema_name, 'default'),
-                        v.version,
-                        v.view_json,
-                        v.updated_at_ns,
-                        v.updated_by
-                 FROM collection_views_legacy v
-                 LEFT JOIN collections c ON c.name = v.collection"
-            }
-        };
-
-        self.block_on(
-            sqlx::query(&format!(
-                "INSERT OR REPLACE INTO collection_views
-                    (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
-                 {select_sql}"
-            ))
-            .execute(&self.pool),
-        )?;
+        if has_database_name && has_schema_name {
+            self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO collection_views
+                        (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
+                     SELECT collection,
+                            COALESCE(database_name, 'default'),
+                            COALESCE(schema_name, 'default'),
+                            version,
+                            view_json,
+                            updated_at_ns,
+                            updated_by
+                     FROM collection_views_legacy",
+                )
+                .execute(&self.pool),
+            )?;
+        } else {
+            self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO collection_views
+                        (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
+                     SELECT v.collection,
+                            COALESCE(c.database_name, 'default'),
+                            COALESCE(c.schema_name, 'default'),
+                            v.version,
+                            v.view_json,
+                            v.updated_at_ns,
+                            v.updated_by
+                     FROM collection_views_legacy v
+                     LEFT JOIN collections c ON c.name = v.collection",
+                )
+                .execute(&self.pool),
+            )?;
+        }
         self.block_on(sqlx::query("DROP TABLE collection_views_legacy").execute(&self.pool))?;
         Ok(())
     }

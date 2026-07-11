@@ -74,7 +74,9 @@
     {
       "id": "core-intent-tests",
       "path": "crates/axon-core/src/intent.rs",
-      "not_contains": ["__axon_links__"],
+      "not_contains": [
+        "__axon_links__"
+      ],
       "class": "collection_id.test_fixture"
     },
     {
@@ -335,5 +337,1904 @@
       "name": "schema_versions_legacy",
       "class": "migration_exception.sqlite_namespace_upgrade_temp_table"
     }
-  ]
+  ],
+  "dml_boundary": {
+    "root": "../..",
+    "rust_sources": [
+      "crates/axon-storage/src/postgres.rs",
+      "crates/axon-storage/src/sqlite.rs",
+      "crates/axon-storage/src/auth_schema.rs"
+    ],
+    "sql_sources": [],
+    "governed_tables": [
+      "audit_log",
+      "collections",
+      "collection_views",
+      "credential_issuances",
+      "credential_revocations",
+      "databases",
+      "entities",
+      "entity_compound_index",
+      "entity_index",
+      "mutation_intents",
+      "namespaces",
+      "schemas",
+      "schema_versions",
+      "tenant_databases",
+      "tenant_retention_policies",
+      "tenant_users",
+      "tenants",
+      "user_identities",
+      "users"
+    ],
+    "governed_routines": [],
+    "records": [
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_sqlite",
+        "touched_tables": [
+          "tenants"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenants:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_sqlite",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_sqlite",
+        "touched_tables": [
+          "user_identities"
+        ],
+        "touched_routines": [],
+        "capability": "table:user_identities:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_sqlite",
+        "touched_tables": [
+          "tenant_users"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_users:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_sqlite",
+        "touched_tables": [
+          "tenant_databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_databases:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_sqlite",
+        "touched_tables": [
+          "credential_revocations"
+        ],
+        "touched_routines": [],
+        "capability": "table:credential_revocations:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_sqlite",
+        "touched_tables": [
+          "tenant_retention_policies"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_retention_policies:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_sqlite",
+        "touched_tables": [
+          "credential_issuances"
+        ],
+        "touched_routines": [],
+        "capability": "table:credential_issuances:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_postgres",
+        "touched_tables": [
+          "tenants"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenants:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_postgres",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_postgres",
+        "touched_tables": [
+          "user_identities"
+        ],
+        "touched_routines": [],
+        "capability": "table:user_identities:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_postgres",
+        "touched_tables": [
+          "tenant_users"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_users:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_postgres",
+        "touched_tables": [
+          "tenant_databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_databases:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_postgres",
+        "touched_tables": [
+          "credential_revocations"
+        ],
+        "touched_routines": [],
+        "capability": "table:credential_revocations:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_postgres",
+        "touched_tables": [
+          "tenant_retention_policies"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_retention_policies:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/auth_schema.rs",
+        "enclosing_function": "apply_auth_migrations_postgres",
+        "touched_tables": [
+          "credential_issuances"
+        ],
+        "touched_routines": [],
+        "capability": "table:credential_issuances:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "test_insert_tenant_and_user",
+        "touched_tables": [
+          "tenants"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenants:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "test_insert_tenant_and_user",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "audit_log"
+        ],
+        "touched_routines": [],
+        "capability": "table:audit_log:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:databases:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "mutation_intents"
+        ],
+        "touched_routines": [],
+        "capability": "table:mutation_intents:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "schemas"
+        ],
+        "touched_routines": [],
+        "capability": "table:schemas:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "ensure_namespace_catalog_tables",
+        "touched_tables": [
+          "schemas"
+        ],
+        "touched_routines": [],
+        "capability": "table:schemas:update",
+        "mutation_class": "update",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "ensure_namespace_catalog_tables",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:update",
+        "mutation_class": "update",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "ensure_default_namespace",
+        "touched_tables": [
+          "databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:databases:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "ensure_default_namespace",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "delete_index_field_rows",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "insert_index_rows",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "delete_compound_index_rows",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "insert_compound_index_row",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "reindex_collection",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "reindex_compound_collection",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "put",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "delete",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "compare_and_swap",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:update",
+        "mutation_class": "update",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "create_if_absent",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "create_mutation_intent",
+        "touched_tables": [
+          "mutation_intents"
+        ],
+        "touched_routines": [],
+        "capability": "table:mutation_intents:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "update_mutation_intent_state",
+        "touched_tables": [
+          "mutation_intents"
+        ],
+        "touched_routines": [],
+        "capability": "table:mutation_intents:update",
+        "mutation_class": "update",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "create_database",
+        "touched_tables": [
+          "databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:databases:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "create_database",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "schemas"
+        ],
+        "touched_routines": [],
+        "capability": "table:schemas:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:databases:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "create_namespace",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "schemas"
+        ],
+        "touched_routines": [],
+        "capability": "table:schemas:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "append_audit_entry",
+        "touched_tables": [
+          "audit_log"
+        ],
+        "touched_routines": [],
+        "capability": "table:audit_log:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_indexes",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "drop_indexes",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "put_schema",
+        "touched_tables": [
+          "schemas"
+        ],
+        "touched_routines": [],
+        "capability": "table:schemas:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "delete_schema",
+        "touched_tables": [
+          "schemas"
+        ],
+        "touched_routines": [],
+        "capability": "table:schemas:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "put_collection_view",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "delete_collection_view",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "register_collection_in_namespace",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "unregister_collection",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "unregister_collection",
+        "touched_tables": [
+          "schemas"
+        ],
+        "touched_routines": [],
+        "capability": "table:schemas:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "unregister_collection",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "upsert_user_identity",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "upsert_user_identity",
+        "touched_tables": [
+          "user_identities"
+        ],
+        "touched_routines": [],
+        "capability": "table:user_identities:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "create_user",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "suspend_user",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:update",
+        "mutation_class": "update",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "upsert_tenant_member",
+        "touched_tables": [
+          "tenant_users"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_users:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "remove_tenant_member",
+        "touched_tables": [
+          "tenant_users"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_users:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "upsert_default_tenant",
+        "touched_tables": [
+          "tenants"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenants:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "set_retention_policy",
+        "touched_tables": [
+          "tenant_retention_policies"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_retention_policies:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "create_tenant_database",
+        "touched_tables": [
+          "tenant_databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_databases:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "delete_tenant_database",
+        "touched_tables": [
+          "tenant_databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_databases:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "track_credential_issuance",
+        "touched_tables": [
+          "credential_issuances"
+        ],
+        "touched_routines": [],
+        "capability": "table:credential_issuances:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "revoke_credential",
+        "touched_tables": [
+          "credential_revocations"
+        ],
+        "touched_routines": [],
+        "capability": "table:credential_revocations:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "test_insert_tenant_and_user",
+        "touched_tables": [
+          "tenants"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenants:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "test_insert_tenant_and_user",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "test_insert_user",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:databases:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "schema_versions"
+        ],
+        "touched_routines": [],
+        "capability": "table:schema_versions:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "audit_log"
+        ],
+        "touched_routines": [],
+        "capability": "table:audit_log:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "init_schema",
+        "touched_tables": [
+          "mutation_intents"
+        ],
+        "touched_routines": [],
+        "capability": "table:mutation_intents:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "rebuild_collections_table",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "rebuild_collections_table",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "rebuild_entities_table",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "rebuild_entities_table",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "rebuild_schema_versions_table",
+        "touched_tables": [
+          "schema_versions"
+        ],
+        "touched_routines": [],
+        "capability": "table:schema_versions:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "rebuild_schema_versions_table",
+        "touched_tables": [
+          "schema_versions"
+        ],
+        "touched_routines": [],
+        "capability": "table:schema_versions:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "rebuild_collection_views_table",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:create_table",
+        "mutation_class": "create_table",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "rebuild_collection_views_table",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "ensure_default_namespace",
+        "touched_tables": [
+          "databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:databases:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "ensure_default_namespace",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "delete_index_field_rows",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "insert_index_rows",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "delete_compound_index_rows",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "insert_compound_index_row",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "reindex_collection",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "reindex_compound_collection",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "put",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "delete",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "compare_and_swap",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:update",
+        "mutation_class": "update",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "create_if_absent",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "create_mutation_intent",
+        "touched_tables": [
+          "mutation_intents"
+        ],
+        "touched_routines": [],
+        "capability": "table:mutation_intents:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "update_mutation_intent_state",
+        "touched_tables": [
+          "mutation_intents"
+        ],
+        "touched_routines": [],
+        "capability": "table:mutation_intents:update",
+        "mutation_class": "update",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "create_database",
+        "touched_tables": [
+          "databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:databases:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "create_database",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "schema_versions"
+        ],
+        "touched_routines": [],
+        "capability": "table:schema_versions:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_database",
+        "touched_tables": [
+          "databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:databases:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "create_namespace",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "entities"
+        ],
+        "touched_routines": [],
+        "capability": "table:entities:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "schema_versions"
+        ],
+        "touched_routines": [],
+        "capability": "table:schema_versions:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_namespace",
+        "touched_tables": [
+          "namespaces"
+        ],
+        "touched_routines": [],
+        "capability": "table:namespaces:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "append_audit_entry",
+        "touched_tables": [
+          "audit_log"
+        ],
+        "touched_routines": [],
+        "capability": "table:audit_log:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "put_schema",
+        "touched_tables": [
+          "schema_versions"
+        ],
+        "touched_routines": [],
+        "capability": "table:schema_versions:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "delete_schema",
+        "touched_tables": [
+          "schema_versions"
+        ],
+        "touched_routines": [],
+        "capability": "table:schema_versions:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "put_collection_view",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "delete_collection_view",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "register_collection_in_namespace",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "unregister_collection",
+        "touched_tables": [
+          "collection_views"
+        ],
+        "touched_routines": [],
+        "capability": "table:collection_views:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "unregister_collection",
+        "touched_tables": [
+          "schema_versions"
+        ],
+        "touched_routines": [],
+        "capability": "table:schema_versions:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "unregister_collection",
+        "touched_tables": [
+          "collections"
+        ],
+        "touched_routines": [],
+        "capability": "table:collections:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_indexes",
+        "touched_tables": [
+          "entity_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "drop_indexes",
+        "touched_tables": [
+          "entity_compound_index"
+        ],
+        "touched_routines": [],
+        "capability": "table:entity_compound_index:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "upsert_user_identity",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "upsert_user_identity",
+        "touched_tables": [
+          "user_identities"
+        ],
+        "touched_routines": [],
+        "capability": "table:user_identities:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "create_user",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "suspend_user",
+        "touched_tables": [
+          "users"
+        ],
+        "touched_routines": [],
+        "capability": "table:users:update",
+        "mutation_class": "update",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "upsert_tenant_member",
+        "touched_tables": [
+          "tenant_users"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_users:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "remove_tenant_member",
+        "touched_tables": [
+          "tenant_users"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_users:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "upsert_default_tenant",
+        "touched_tables": [
+          "tenants"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenants:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "set_retention_policy",
+        "touched_tables": [
+          "tenant_retention_policies"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_retention_policies:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "create_tenant_database",
+        "touched_tables": [
+          "tenant_databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_databases:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "delete_tenant_database",
+        "touched_tables": [
+          "tenant_databases"
+        ],
+        "touched_routines": [],
+        "capability": "table:tenant_databases:delete",
+        "mutation_class": "delete",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "track_credential_issuance",
+        "touched_tables": [
+          "credential_issuances"
+        ],
+        "touched_routines": [],
+        "capability": "table:credential_issuances:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "revoke_credential",
+        "touched_tables": [
+          "credential_revocations"
+        ],
+        "touched_routines": [],
+        "capability": "table:credential_revocations:insert",
+        "mutation_class": "insert",
+        "co_commit": "axon-gap-closure-58e6e371",
+        "fault_test": "cargo test -p xtask audit_dml_boundary_repository_negative_fixture"
+      }
+    ],
+    "dynamic_sql_allowances": [
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "index_range",
+        "entrypoint": "sqlx::query",
+        "allowance_class": "non_write_dynamic_predicate",
+        "reason": "SELECT over entity_index has optional bound predicates assembled from fixed fragments; no dynamic identifier is introduced"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "compound_index_prefix",
+        "entrypoint": "sqlx::query",
+        "allowance_class": "non_write_dynamic_predicate",
+        "reason": "SELECT over entity_compound_index has an optional upper-bound predicate assembled from a fixed fragment; no dynamic identifier is introduced"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "table_info",
+        "entrypoint": "sqlx::query",
+        "allowance_class": "non_governed_metadata_read",
+        "reason": "PRAGMA table_info reads SQLite table metadata for migration decisions; callers pass fixed internal table names"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "index_range",
+        "entrypoint": "sqlx::query",
+        "allowance_class": "non_write_dynamic_predicate",
+        "reason": "SELECT over entity_index has optional bound predicates assembled from fixed fragments; no dynamic identifier is introduced"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "compound_index_prefix",
+        "entrypoint": "sqlx::query",
+        "allowance_class": "non_write_dynamic_predicate",
+        "reason": "SELECT over entity_compound_index has an optional upper-bound predicate assembled from a fixed fragment; no dynamic identifier is introduced"
+      }
+    ],
+    "excluded_functions": [
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "provision_postgres_database",
+        "reason": "physical PostgreSQL database administration is outside the governed table/routine DML boundary"
+      },
+      {
+        "source_file": "crates/axon-storage/src/postgres.rs",
+        "enclosing_function": "deprovision_postgres_database",
+        "reason": "physical PostgreSQL database administration is outside the governed table/routine DML boundary"
+      },
+      {
+        "source_file": "crates/axon-storage/src/sqlite.rs",
+        "enclosing_function": "query_scalar_i64",
+        "reason": "test assertion helper accepts caller-provided read SQL and is not a repository write entrypoint"
+      }
+    ]
+  }
 }

@@ -19,100 +19,119 @@ pub fn apply_auth_migrations_sqlite(
     pool: &sqlx::SqlitePool,
     owned_rt: Option<&tokio::runtime::Runtime>,
 ) -> Result<(), String> {
-    let run = |sql: &str, label: &str| -> Result<(), String> {
-        let fut = sqlx::query(sql).execute(pool);
-        let result = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
-            Err(_) => owned_rt.expect("no tokio runtime available").block_on(fut),
-        };
-        result.map_err(|e| format!("{label}: {e}"))?;
-        Ok(())
-    };
-
     // Create tenants table.
-    run(
-        "CREATE TABLE IF NOT EXISTS tenants (
+    run_sqlite_migration(
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tenants (
             id                 TEXT PRIMARY KEY,
             name               TEXT NOT NULL UNIQUE,
             display_name       TEXT NOT NULL,
             created_at_ms      INTEGER NOT NULL,
             updated_at_ms      INTEGER NOT NULL
         )",
+        )
+        .execute(pool),
+        owned_rt,
         "tenants table",
     )?;
 
     // Create users table.
-    run(
-        "CREATE TABLE IF NOT EXISTS users (
+    run_sqlite_migration(
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS users (
             id                 TEXT PRIMARY KEY,
             display_name       TEXT NOT NULL,
             email              TEXT,
             created_at_ms      INTEGER NOT NULL,
             suspended_at_ms    INTEGER
         )",
+        )
+        .execute(pool),
+        owned_rt,
         "users table",
     )?;
 
     // Create user_identities table.
-    run(
-        "CREATE TABLE IF NOT EXISTS user_identities (
+    run_sqlite_migration(
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS user_identities (
             provider       TEXT NOT NULL,
             external_id    TEXT NOT NULL,
             user_id        TEXT NOT NULL REFERENCES users(id),
             created_at_ms  INTEGER NOT NULL,
             PRIMARY KEY (provider, external_id)
         )",
+        )
+        .execute(pool),
+        owned_rt,
         "user_identities table",
     )?;
 
     // Create tenant_users table.
-    run(
-        "CREATE TABLE IF NOT EXISTS tenant_users (
+    run_sqlite_migration(
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tenant_users (
             tenant_id    TEXT NOT NULL REFERENCES tenants(id),
             user_id      TEXT NOT NULL REFERENCES users(id),
             role         TEXT NOT NULL,
             added_at_ms  INTEGER NOT NULL,
             PRIMARY KEY (tenant_id, user_id)
         )",
+        )
+        .execute(pool),
+        owned_rt,
         "tenant_users table",
     )?;
 
     // Create tenant_databases table.
-    run(
-        "CREATE TABLE IF NOT EXISTS tenant_databases (
+    run_sqlite_migration(
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tenant_databases (
             tenant_id      TEXT NOT NULL REFERENCES tenants(id),
             database_name  TEXT NOT NULL,
             created_at_ms  INTEGER NOT NULL,
             PRIMARY KEY (tenant_id, database_name)
         )",
+        )
+        .execute(pool),
+        owned_rt,
         "tenant_databases table",
     )?;
 
     // Create credential_revocations table.
-    run(
-        "CREATE TABLE IF NOT EXISTS credential_revocations (
+    run_sqlite_migration(
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS credential_revocations (
             jti            TEXT PRIMARY KEY,
             revoked_at_ms  INTEGER NOT NULL,
             revoked_by     TEXT
         )",
+        )
+        .execute(pool),
+        owned_rt,
         "credential_revocations table",
     )?;
 
     // Create tenant_retention_policies table (axon-c6908e78).
-    run(
-        "CREATE TABLE IF NOT EXISTS tenant_retention_policies (
+    run_sqlite_migration(
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tenant_retention_policies (
             tenant_id                TEXT NOT NULL,
             archive_after_seconds    INTEGER NOT NULL,
             purge_after_seconds      INTEGER,
             updated_at_ms            INTEGER NOT NULL,
             PRIMARY KEY (tenant_id)
         )",
+        )
+        .execute(pool),
+        owned_rt,
         "tenant_retention_policies table",
     )?;
 
     // Create credential_issuances table (axon-906b527a).
-    run(
-        "CREATE TABLE IF NOT EXISTS credential_issuances (
+    run_sqlite_migration(
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS credential_issuances (
             jti            TEXT PRIMARY KEY,
             user_id        TEXT NOT NULL,
             tenant_id      TEXT NOT NULL,
@@ -120,9 +139,25 @@ pub fn apply_auth_migrations_sqlite(
             expires_at_ms  INTEGER NOT NULL,
             grants_json    TEXT NOT NULL
         )",
+        )
+        .execute(pool),
+        owned_rt,
         "credential_issuances table",
     )?;
 
+    Ok(())
+}
+
+fn run_sqlite_migration<T>(
+    fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
+    owned_rt: Option<&tokio::runtime::Runtime>,
+    label: &str,
+) -> Result<(), String> {
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => owned_rt.expect("no tokio runtime available").block_on(fut),
+    };
+    result.map_err(|e| format!("{label}: {e}"))?;
     Ok(())
 }
 

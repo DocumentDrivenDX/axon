@@ -17,8 +17,8 @@ use sqlparser::{
 use syn::{
     spanned::Spanned,
     visit::{self, Visit},
-    Expr, ExprCall, ExprMacro, ExprMethodCall, ExprPath, ImplItemFn, ItemFn, Lit, LitStr, Macro,
-    Path as SynPath,
+    Attribute, Expr, ExprCall, ExprMacro, ExprMethodCall, ExprPath, ImplItemFn, ItemFn, ItemMod,
+    Lit, LitStr, Local, Macro, Pat, Path as SynPath,
 };
 use thiserror::Error;
 
@@ -27,7 +27,7 @@ pub struct AuditArgs {
     #[arg(
         long,
         value_name = "PATH",
-        default_value = "xtask/tests/fixtures/audit_dml_boundary/valid/manifest.json",
+        default_value = "crates/axon-storage/internal-manifest.json",
         help = "Audit manifest listing fixture roots, governed identifiers, and required records"
     )]
     pub manifest: PathBuf,
@@ -43,6 +43,18 @@ pub fn run_manifest(manifest_path: &Path) -> Result<AuditReport, AuditError> {
     let governed = GovernedSet::from_manifest(&manifest);
     let mut observations = Vec::new();
     let mut findings = Vec::new();
+    findings.extend(
+        manifest
+            .dynamic_sql_allowances
+            .iter()
+            .filter_map(DynamicSqlAllowance::validate),
+    );
+    findings.extend(
+        manifest
+            .excluded_functions
+            .iter()
+            .filter_map(ExcludedFunction::validate),
+    );
 
     for source in &manifest.rust_sources {
         let path = root.join(source);
@@ -51,7 +63,13 @@ pub fn run_manifest(manifest_path: &Path) -> Result<AuditReport, AuditError> {
             path: path.clone(),
             source,
         })?;
-        let mut visitor = RustSqlVisitor::new(source.clone(), path, &governed);
+        let mut visitor = RustSqlVisitor::new(
+            source.clone(),
+            path,
+            &governed,
+            &manifest.dynamic_sql_allowances,
+            &manifest.excluded_functions,
+        );
         visitor.visit_file(&parsed);
         observations.extend(visitor.observations);
         findings.extend(visitor.findings);
@@ -72,6 +90,7 @@ pub fn run_manifest(manifest_path: &Path) -> Result<AuditReport, AuditError> {
             &SqlText::Static(sql),
             source_kind,
             &governed,
+            &manifest.dynamic_sql_allowances,
             &mut observations,
             &mut findings,
         );
@@ -175,7 +194,7 @@ pub struct SourceSite {
     pub entrypoint: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct AuditManifest {
     #[serde(default)]
     root: Option<String>,
@@ -189,15 +208,21 @@ struct AuditManifest {
     governed_routines: Vec<String>,
     #[serde(default)]
     records: Vec<CheckedRecord>,
+    #[serde(default)]
+    dynamic_sql_allowances: Vec<DynamicSqlAllowance>,
+    #[serde(default)]
+    excluded_functions: Vec<ExcludedFunction>,
 }
 
 impl AuditManifest {
     fn read(path: &Path) -> Result<Self, AuditError> {
         let raw = read_to_string(path)?;
-        serde_json::from_str(&raw).map_err(|source| AuditError::Manifest {
-            path: path.to_path_buf(),
-            source,
-        })
+        let file: AuditManifestFile =
+            serde_json::from_str(&raw).map_err(|source| AuditError::Manifest {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        Ok(file.dml_boundary.unwrap_or(file.manifest))
     }
 
     fn fixture_root(&self, manifest_path: &Path) -> PathBuf {
@@ -206,6 +231,75 @@ impl AuditManifest {
             Some(root) => manifest_dir.join(root),
             None => manifest_dir.to_path_buf(),
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditManifestFile {
+    #[serde(default)]
+    dml_boundary: Option<AuditManifest>,
+    #[serde(flatten)]
+    manifest: AuditManifest,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DynamicSqlAllowance {
+    source_file: String,
+    enclosing_function: String,
+    entrypoint: String,
+    allowance_class: String,
+    reason: String,
+}
+
+impl DynamicSqlAllowance {
+    fn matches(&self, site: &SourceSite) -> bool {
+        normalize_path(&self.source_file) == normalize_path(&site.file)
+            && self.enclosing_function == site.enclosing_function
+            && self.entrypoint == site.entrypoint
+    }
+
+    fn validate(&self) -> Option<AuditFinding> {
+        if self.allowance_class.trim().is_empty() || self.reason.trim().is_empty() {
+            return Some(AuditFinding {
+                site: SourceSite {
+                    file: self.source_file.clone(),
+                    line: 0,
+                    enclosing_function: self.enclosing_function.clone(),
+                    entrypoint: self.entrypoint.clone(),
+                },
+                message: "dynamic SQL allowance is missing class or reason".to_owned(),
+            });
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExcludedFunction {
+    source_file: String,
+    enclosing_function: String,
+    reason: String,
+}
+
+impl ExcludedFunction {
+    fn matches(&self, source_file: &str, enclosing_function: &str) -> bool {
+        normalize_path(&self.source_file) == normalize_path(source_file)
+            && self.enclosing_function == enclosing_function
+    }
+
+    fn validate(&self) -> Option<AuditFinding> {
+        if self.reason.trim().is_empty() {
+            return Some(AuditFinding {
+                site: SourceSite {
+                    file: self.source_file.clone(),
+                    line: 0,
+                    enclosing_function: self.enclosing_function.clone(),
+                    entrypoint: "manifest".to_owned(),
+                },
+                message: "excluded function is missing reason".to_owned(),
+            });
+        }
+        None
     }
 }
 
@@ -289,6 +383,16 @@ impl RecordKey {
             mutation_class: record.mutation_class.clone(),
         }
     }
+
+    fn summary(&self) -> String {
+        format!(
+            "tables=[{}] routines=[{}] capability={} mutation_class={}",
+            self.touched_tables.join(","),
+            self.touched_routines.join(","),
+            self.capability,
+            self.mutation_class
+        )
+    }
 }
 
 fn check_manifest(
@@ -328,13 +432,21 @@ fn check_manifest(
     }
 
     let mut checked = Vec::new();
+    let mut seen_observations = HashSet::new();
     for observation in observations {
+        if !seen_observations.insert(observation.key.clone()) {
+            continue;
+        }
         if let Some(record) = expected.remove(&observation.key) {
             checked.push(record);
         } else {
             findings.push(AuditFinding {
                 site: observation.site,
-                message: unmanifested_message(observation.source_kind),
+                message: format!(
+                    "{}: {}",
+                    unmanifested_message(observation.source_kind),
+                    observation.key.summary()
+                ),
             });
         }
     }
@@ -399,18 +511,30 @@ struct RustSqlVisitor<'a> {
     source_file: String,
     file_path: PathBuf,
     function_stack: Vec<String>,
+    local_sql_stack: Vec<HashMap<String, SqlText>>,
     governed: &'a GovernedSet,
+    dynamic_sql_allowances: &'a [DynamicSqlAllowance],
+    excluded_functions: &'a [ExcludedFunction],
     observations: Vec<ObservedRecord>,
     findings: Vec<AuditFinding>,
 }
 
 impl<'a> RustSqlVisitor<'a> {
-    fn new(source_file: String, file_path: PathBuf, governed: &'a GovernedSet) -> Self {
+    fn new(
+        source_file: String,
+        file_path: PathBuf,
+        governed: &'a GovernedSet,
+        dynamic_sql_allowances: &'a [DynamicSqlAllowance],
+        excluded_functions: &'a [ExcludedFunction],
+    ) -> Self {
         Self {
             source_file,
             file_path,
             function_stack: Vec::new(),
+            local_sql_stack: Vec::new(),
             governed,
+            dynamic_sql_allowances,
+            excluded_functions,
             observations: Vec::new(),
             findings: Vec::new(),
         }
@@ -433,12 +557,13 @@ impl<'a> RustSqlVisitor<'a> {
     }
 
     fn inventory_expr(&mut self, site: SourceSite, expr: &Expr) {
-        let sql = extract_sql_expr(expr, &self.file_path);
+        let sql = extract_sql_expr(expr, &self.file_path, self.current_local_sql());
         inventory_sql(
             &site,
             &sql,
             SourceKind::Rust,
             self.governed,
+            self.dynamic_sql_allowances,
             &mut self.observations,
             &mut self.findings,
         );
@@ -460,23 +585,77 @@ impl<'a> RustSqlVisitor<'a> {
             &sql,
             SourceKind::Rust,
             self.governed,
+            self.dynamic_sql_allowances,
             &mut self.observations,
             &mut self.findings,
         );
     }
+
+    fn current_local_sql(&self) -> Option<&HashMap<String, SqlText>> {
+        self.local_sql_stack.last()
+    }
+
+    fn current_local_sql_mut(&mut self) -> Option<&mut HashMap<String, SqlText>> {
+        self.local_sql_stack.last_mut()
+    }
+
+    fn function_excluded(&self, function: &str) -> bool {
+        self.excluded_functions
+            .iter()
+            .any(|excluded| excluded.matches(&self.source_file, function))
+    }
 }
 
 impl<'ast> Visit<'ast> for RustSqlVisitor<'_> {
+    fn visit_item_mod(&mut self, item: &'ast ItemMod) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        visit::visit_item_mod(self, item);
+    }
+
     fn visit_item_fn(&mut self, item: &'ast ItemFn) {
-        self.function_stack.push(item.sig.ident.to_string());
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let function = item.sig.ident.to_string();
+        if self.function_excluded(&function) {
+            return;
+        }
+        self.function_stack.push(function);
+        self.local_sql_stack.push(HashMap::new());
         visit::visit_item_fn(self, item);
+        self.local_sql_stack.pop();
         self.function_stack.pop();
     }
 
     fn visit_impl_item_fn(&mut self, item: &'ast ImplItemFn) {
-        self.function_stack.push(item.sig.ident.to_string());
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let function = item.sig.ident.to_string();
+        if self.function_excluded(&function) {
+            return;
+        }
+        self.function_stack.push(function);
+        self.local_sql_stack.push(HashMap::new());
         visit::visit_impl_item_fn(self, item);
+        self.local_sql_stack.pop();
         self.function_stack.pop();
+    }
+
+    fn visit_local(&mut self, node: &'ast Local) {
+        if let Pat::Ident(ident) = &node.pat {
+            if let Some(init) = &node.init {
+                let sql = extract_sql_initializer(&init.expr, &self.file_path);
+                if let Some(sql) = sql {
+                    if let Some(locals) = self.current_local_sql_mut() {
+                        locals.insert(ident.ident.to_string(), sql);
+                    }
+                }
+            }
+        }
+        visit::visit_local(self, node);
     }
 
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
@@ -510,21 +689,30 @@ impl<'ast> Visit<'ast> for RustSqlVisitor<'_> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum SqlText {
     Static(String),
     Dynamic(String),
 }
 
-fn extract_sql_expr(expr: &Expr, source_path: &Path) -> SqlText {
+fn extract_sql_expr(
+    expr: &Expr,
+    source_path: &Path,
+    local_sql: Option<&HashMap<String, SqlText>>,
+) -> SqlText {
     match expr {
         Expr::Lit(expr_lit) => match &expr_lit.lit {
             Lit::Str(value) => SqlText::Static(value.value()),
             _ => SqlText::Dynamic("SQL argument is not a string literal".to_owned()),
         },
-        Expr::Reference(reference) => extract_sql_expr(&reference.expr, source_path),
-        Expr::Paren(paren) => extract_sql_expr(&paren.expr, source_path),
-        Expr::Group(group) => extract_sql_expr(&group.expr, source_path),
+        Expr::Reference(reference) => extract_sql_expr(&reference.expr, source_path, local_sql),
+        Expr::Paren(paren) => extract_sql_expr(&paren.expr, source_path, local_sql),
+        Expr::Group(group) => extract_sql_expr(&group.expr, source_path, local_sql),
+        Expr::Path(path) => local_sql
+            .and_then(|locals| single_ident(path).and_then(|ident| locals.get(&ident).cloned()))
+            .unwrap_or_else(|| {
+                SqlText::Dynamic("SQL argument is not statically auditable".to_owned())
+            }),
         Expr::Macro(expr_macro) if path_ends_with(&expr_macro.mac.path, &["include_str"]) => {
             extract_include_str(&expr_macro.mac, source_path)
         }
@@ -536,6 +724,44 @@ fn extract_sql_expr(expr: &Expr, source_path: &Path) -> SqlText {
             )
         }
         _ => SqlText::Dynamic("SQL argument is not statically auditable".to_owned()),
+    }
+}
+
+fn extract_sql_initializer(expr: &Expr, source_path: &Path) -> Option<SqlText> {
+    match expr {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            Lit::Str(value) => Some(SqlText::Static(value.value())),
+            _ => None,
+        },
+        Expr::Call(call) => {
+            if let Expr::Path(path) = call.func.as_ref() {
+                if path_ends_with(&path.path, &["String", "from"]) {
+                    return call
+                        .args
+                        .first()
+                        .map(|arg| extract_sql_expr(arg, source_path, None));
+                }
+            }
+            None
+        }
+        Expr::Macro(expr_macro)
+            if path_ends_with(&expr_macro.mac.path, &["format"])
+                || path_ends_with(&expr_macro.mac.path, &["include_str"]) =>
+        {
+            Some(extract_sql_expr(expr, source_path, None))
+        }
+        _ => None,
+    }
+}
+
+fn single_ident(path: &ExprPath) -> Option<String> {
+    if path.qself.is_none() && path.path.segments.len() == 1 {
+        path.path
+            .segments
+            .first()
+            .map(|segment| segment.ident.to_string())
+    } else {
+        None
     }
 }
 
@@ -608,6 +834,16 @@ fn is_sql_literal_like(expr: &Expr) -> bool {
     }
 }
 
+fn has_cfg_test(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .meta
+                .require_list()
+                .is_ok_and(|list| list.tokens.to_string().contains("test"))
+    })
+}
+
 fn is_sqlx_macro(path: &SynPath) -> bool {
     path_ends_with(path, &["sqlx", "query"])
         || path_ends_with(path, &["sqlx", "query_scalar"])
@@ -650,15 +886,23 @@ fn inventory_sql(
     sql: &SqlText,
     source_kind: SourceKind,
     governed: &GovernedSet,
+    dynamic_sql_allowances: &[DynamicSqlAllowance],
     observations: &mut Vec<ObservedRecord>,
     findings: &mut Vec<AuditFinding>,
 ) {
     let sql = match sql {
         SqlText::Static(sql) => sql,
         SqlText::Dynamic(reason) => {
+            if !looks_like_mutation(reason)
+                && dynamic_sql_allowances
+                    .iter()
+                    .any(|allowance| allowance.matches(site))
+            {
+                return;
+            }
             findings.push(AuditFinding {
                 site: site.clone(),
-                message: format!("dynamic governed DML identifier is not auditable: {reason}"),
+                message: dynamic_sql_message(reason, governed),
             });
             return;
         }
@@ -689,6 +933,14 @@ fn inventory_sql(
                 source_kind,
             });
         }
+    }
+}
+
+fn dynamic_sql_message(reason: &str, governed: &GovernedSet) -> String {
+    if looks_like_mutation(reason) || governed.mentioned_in(reason) {
+        format!("dynamic governed DML identifier is not auditable: {reason}")
+    } else {
+        format!("dynamic SQL requires manifest allowance: {reason}")
     }
 }
 
@@ -744,11 +996,11 @@ fn classify_create(
         "TABLE" => table_record(
             site,
             "create_table",
-            object_after_index(tokens, keyword_index + 1)?,
+            create_object_after_subject(tokens, keyword_index)?,
             governed,
         ),
         "TRIGGER" => {
-            let routine = object_after_index(tokens, keyword_index + 1)?;
+            let routine = create_object_after_subject(tokens, keyword_index)?;
             let table = table_after(tokens, "ON")?;
             if !governed.governs_routine(&routine) && !governed.governs_table(&table) {
                 return None;
@@ -765,17 +1017,31 @@ fn classify_create(
         "FUNCTION" => routine_record(
             site,
             "create_function",
-            object_after_index(tokens, keyword_index + 1)?,
+            create_object_after_subject(tokens, keyword_index)?,
             governed,
         ),
         "PROCEDURE" | "PROC" => routine_record(
             site,
             "create_procedure",
-            object_after_index(tokens, keyword_index + 1)?,
+            create_object_after_subject(tokens, keyword_index)?,
             governed,
         ),
         _ => None,
     }
+}
+
+fn create_object_after_subject(tokens: &[String], subject_index: usize) -> Option<String> {
+    let mut object_index = subject_index + 1;
+    if token_matches(tokens.get(object_index)?, "IF") {
+        object_index += 1;
+        if token_matches(tokens.get(object_index)?, "NOT") {
+            object_index += 1;
+        }
+        if token_matches(tokens.get(object_index)?, "EXISTS") {
+            object_index += 1;
+        }
+    }
+    object_after_index(tokens, object_index)
 }
 
 fn table_record(
@@ -1007,6 +1273,13 @@ mod tests {
             .join("manifest.json")
     }
 
+    fn repository_manifest() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask should live under repository root")
+            .join("crates/axon-storage/internal-manifest.json")
+    }
+
     #[test]
     fn audit_dml_boundary_fixtures() {
         let report = run_manifest(&fixture_manifest("valid")).expect("valid fixtures audit");
@@ -1090,6 +1363,60 @@ mod tests {
                 && rendered.contains("<data-only>")
                 && rendered.contains("unmanifested data-only DML"),
             "missing unmanifested data-only DML finding:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn audit_dml_boundary_repository_inventory() {
+        let report = run_manifest(&repository_manifest()).expect("repository audit");
+        assert!(
+            report.is_success(),
+            "expected repository DML boundary manifest to pass:\n{report}"
+        );
+        assert!(
+            report.records.len() >= 100,
+            "repository audit should cover live storage SQL, got {} records",
+            report.records.len()
+        );
+        assert_record(
+            &report.records,
+            "crates/axon-storage/src/auth_schema.rs",
+            "apply_auth_migrations_sqlite",
+            "create_table",
+            "table:tenants:create_table",
+        );
+        assert_record(
+            &report.records,
+            "crates/axon-storage/src/postgres.rs",
+            "put",
+            "insert",
+            "table:entities:insert",
+        );
+        assert_record(
+            &report.records,
+            "crates/axon-storage/src/sqlite.rs",
+            "drop_namespace",
+            "delete",
+            "table:namespaces:delete",
+        );
+    }
+
+    #[test]
+    fn audit_dml_boundary_repository_negative_fixture() {
+        let report = run_manifest(&fixture_manifest("repository_negative"))
+            .expect("negative repository fixture");
+        assert!(
+            !report.is_success(),
+            "expected repository negative fixture to fail"
+        );
+
+        let rendered = report.to_string();
+        assert!(
+            rendered.contains("data/direct_entity_write.sql:1")
+                && rendered.contains("<data-only>")
+                && rendered.contains("unmanifested data-only DML")
+                && rendered.contains("table:entities:insert"),
+            "negative fixture should name the direct governed data-only write site:\n{rendered}"
         );
     }
 

@@ -12,6 +12,7 @@ struct Manifest {
     physical_objects: Vec<PhysicalObject>,
     raw_mutation_targets: Vec<NameClass>,
     migration_exceptions: Vec<NameClass>,
+    dml_boundary: DmlBoundaryManifest,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +37,52 @@ struct CollectionIdRule {
     #[serde(default)]
     not_contains: Vec<String>,
     class: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DmlBoundaryManifest {
+    rust_sources: Vec<String>,
+    sql_sources: Vec<DmlSqlSource>,
+    governed_tables: Vec<String>,
+    governed_routines: Vec<String>,
+    records: Vec<DmlRecord>,
+    dynamic_sql_allowances: Vec<DmlDynamicSqlAllowance>,
+    excluded_functions: Vec<DmlExcludedFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DmlSqlSource {
+    path: String,
+    enclosing_function: String,
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DmlRecord {
+    source_file: String,
+    enclosing_function: String,
+    touched_tables: Vec<String>,
+    touched_routines: Vec<String>,
+    capability: String,
+    mutation_class: String,
+    co_commit: String,
+    fault_test: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DmlDynamicSqlAllowance {
+    source_file: String,
+    enclosing_function: String,
+    entrypoint: String,
+    allowance_class: String,
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DmlExcludedFunction {
+    source_file: String,
+    enclosing_function: String,
+    reason: String,
 }
 
 #[derive(Debug)]
@@ -154,6 +201,9 @@ fn internal_manifest_repository_inventory() {
     migration_classes.extend(exceptions);
     validate_object_uses("migration object", &migration_uses, &migration_classes)
         .expect("all migration/derived exceptions must be classified");
+
+    validate_dml_boundary_manifest(&manifest, &repo)
+        .expect("DML boundary records must stay consistent with internal manifest inventory");
 }
 
 fn load_manifest() -> Manifest {
@@ -286,6 +336,164 @@ fn validate_object_uses(
             ));
         }
     }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
+}
+
+fn validate_dml_boundary_manifest(manifest: &Manifest, repo: &Path) -> Result<(), String> {
+    let dml = &manifest.dml_boundary;
+    let mut failures = Vec::new();
+    let mut source_files: BTreeSet<String> = dml.rust_sources.iter().cloned().collect();
+    for source in &dml.sql_sources {
+        assert!(
+            !source.enclosing_function.trim().is_empty(),
+            "{} DML sql source must name an enclosing function",
+            source.path
+        );
+        assert!(
+            !source.kind.trim().is_empty(),
+            "{} DML sql source must name a kind",
+            source.path
+        );
+        source_files.insert(source.path.clone());
+    }
+
+    for source in &dml.rust_sources {
+        if !repo.join(source).exists() {
+            failures.push(format!("DML source file does not exist: {source}"));
+        }
+    }
+    for source in &dml.sql_sources {
+        if !repo.join(&source.path).exists() {
+            failures.push(format!(
+                "DML SQL source file does not exist: {}",
+                source.path
+            ));
+        }
+    }
+
+    let physical = physical_class_map(manifest);
+    let raw_targets = class_map(&manifest.raw_mutation_targets);
+    let exceptions = class_map(&manifest.migration_exceptions);
+    let mut allowed_tables: BTreeSet<String> = physical.keys().cloned().collect();
+    allowed_tables.extend(raw_targets.keys().cloned());
+    allowed_tables.extend(exceptions.keys().cloned());
+
+    let governed_tables: BTreeSet<String> = dml.governed_tables.iter().cloned().collect();
+    let governed_routines: BTreeSet<String> = dml.governed_routines.iter().cloned().collect();
+    for table in &governed_tables {
+        if !allowed_tables.contains(table) {
+            failures.push(format!(
+                "DML governed table {table} is not a physical object, raw target, or migration exception"
+            ));
+        }
+    }
+
+    let mut record_keys = BTreeSet::new();
+    let mut record_sources = BTreeSet::new();
+    for record in &dml.records {
+        if !source_files.contains(&record.source_file) {
+            failures.push(format!(
+                "DML record for {} in {} references undeclared source",
+                record.capability, record.source_file
+            ));
+        }
+        if record.enclosing_function.trim().is_empty()
+            || record.mutation_class.trim().is_empty()
+            || record.co_commit.trim().is_empty()
+            || record.fault_test.trim().is_empty()
+        {
+            failures.push(format!(
+                "DML record {} in {} is missing function, mutation class, co-commit, or fault-test",
+                record.capability, record.source_file
+            ));
+        }
+        for table in &record.touched_tables {
+            if !governed_tables.contains(table) {
+                failures.push(format!(
+                    "DML record {} touches undeclared governed table {table}",
+                    record.capability
+                ));
+            }
+        }
+        for routine in &record.touched_routines {
+            if !governed_routines.contains(routine) {
+                failures.push(format!(
+                    "DML record {} touches undeclared governed routine {routine}",
+                    record.capability
+                ));
+            }
+        }
+        if record.touched_tables.len() == 1 && record.touched_routines.is_empty() {
+            let expected = format!(
+                "table:{}:{}",
+                record.touched_tables[0], record.mutation_class
+            );
+            if record.capability != expected {
+                failures.push(format!(
+                    "DML record capability {} should be {expected}",
+                    record.capability
+                ));
+            }
+        }
+        let key = (
+            &record.source_file,
+            &record.enclosing_function,
+            &record.capability,
+            &record.mutation_class,
+        );
+        if !record_keys.insert(key) {
+            failures.push(format!(
+                "duplicate DML record {} in {}::{}",
+                record.capability, record.source_file, record.enclosing_function
+            ));
+        }
+        record_sources.insert(record.source_file.clone());
+    }
+
+    for source in &dml.rust_sources {
+        if !record_sources.contains(source) {
+            failures.push(format!("DML source {source} has no checked records"));
+        }
+    }
+
+    for allowance in &dml.dynamic_sql_allowances {
+        if !source_files.contains(&allowance.source_file) {
+            failures.push(format!(
+                "dynamic SQL allowance references undeclared source {}",
+                allowance.source_file
+            ));
+        }
+        if allowance.enclosing_function.trim().is_empty()
+            || allowance.entrypoint.trim().is_empty()
+            || allowance.allowance_class.trim().is_empty()
+            || allowance.reason.trim().is_empty()
+        {
+            failures.push(format!(
+                "dynamic SQL allowance in {} is missing function, entrypoint, class, or reason",
+                allowance.source_file
+            ));
+        }
+    }
+
+    for excluded in &dml.excluded_functions {
+        if !source_files.contains(&excluded.source_file) {
+            failures.push(format!(
+                "excluded DML function references undeclared source {}",
+                excluded.source_file
+            ));
+        }
+        if excluded.enclosing_function.trim().is_empty() || excluded.reason.trim().is_empty() {
+            failures.push(format!(
+                "excluded DML function in {} is missing function or reason",
+                excluded.source_file
+            ));
+        }
+    }
+
     if failures.is_empty() {
         Ok(())
     } else {
