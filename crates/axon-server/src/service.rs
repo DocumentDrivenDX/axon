@@ -8,9 +8,10 @@ use axon_api::request::{
     CreateNamespaceRequest, DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest,
     DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, GetEntityRequest,
     GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListNamespaceCollectionsRequest, ListNamespacesRequest, PutSchemaRequest, QueryEntitiesRequest,
-    TransitionLifecycleRequest, TraverseRequest, UpdateEntityRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, PutSchemaRequest, QueryAuditRequest,
+    QueryEntitiesRequest, TransitionLifecycleRequest, TraverseRequest, UpdateEntityRequest,
 };
+use axon_api::response::ReservedNamespaceError;
 use axon_api::transaction::Transaction;
 use axon_core::auth::{CallerIdentity as CoreCallerIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
@@ -136,7 +137,15 @@ fn axon_to_status(err: AxonError) -> Status {
             "{{\"code\":\"schema_validation\",\"detail\":{detail:?}}}"
         )),
         AxonError::AlreadyExists(msg) => Status::already_exists(msg),
-        AxonError::InvalidArgument(msg) => Status::invalid_argument(msg),
+        AxonError::InvalidArgument(msg) => {
+            let err = AxonError::InvalidArgument(msg.clone());
+            if let Some(reserved) = ReservedNamespaceError::from_axon_error(&err) {
+                let payload = serde_json::to_string(&reserved).unwrap_or_else(|_| msg.clone());
+                Status::invalid_argument(payload)
+            } else {
+                Status::invalid_argument(msg)
+            }
+        }
         AxonError::InvalidOperation(msg) => Status::invalid_argument(msg),
         AxonError::Storage(msg) => {
             Status::internal(format!("{{\"code\":\"storage_error\",\"detail\":{msg:?}}}"))
@@ -576,14 +585,19 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         let requested_database = grpc_requested_database(&request).map(str::to_string);
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
-        let handler = self.handler.lock().await;
-        let entries = handler
-            .audit_log()
-            .query_by_entity(
-                &qualify_collection_name(&req.collection, &current_database),
-                &EntityId::new(&req.entity_id),
-            )
+        let entries = self
+            .handler
+            .lock()
+            .await
+            .query_audit(QueryAuditRequest {
+                database: requested_database.clone(),
+                collection: Some(qualify_collection_name(&req.collection, &current_database)),
+                entity_id: Some(EntityId::new(&req.entity_id)),
+                limit: Some(usize::MAX),
+                ..QueryAuditRequest::default()
+            })
             .map_err(axon_to_status)?;
+        let entries = entries.entries;
         let entries = filter_audit_entries_to_database(entries, requested_database.as_deref());
 
         let proto_entries = entries
@@ -687,8 +701,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
 
         let tx_id = tx.id.clone();
         let mut h = self.handler.lock().await;
-        let written = tx
-            .commit(h.storage_mut(), Some(caller.actor.clone()), None)
+        let written = h
+            .commit_transaction_with_caller(tx, &caller, None)
             .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoCommitTxResp {

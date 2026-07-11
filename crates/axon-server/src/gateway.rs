@@ -47,7 +47,7 @@ use axon_api::request::{
     RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest, TransitionLifecycleRequest,
     TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
-use axon_api::response::GetEntityMarkdownResponse;
+use axon_api::response::{GetEntityMarkdownResponse, ReservedNamespaceError};
 use axon_audit::entry::{AuditAttribution, AuditEntry, MutationType};
 use axon_core::auth::{CallerIdentity as CoreCallerIdentity, ResolvedIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
@@ -231,11 +231,29 @@ fn axon_error_response(err: AxonError) -> Response {
             Json(ApiError::new("already_exists", msg)),
         )
             .into_response(),
-        AxonError::InvalidArgument(msg) => (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError::new("invalid_argument", msg)),
-        )
-            .into_response(),
+        AxonError::InvalidArgument(msg) => {
+            let err = AxonError::InvalidArgument(msg.clone());
+            if let Some(reserved) = ReservedNamespaceError::from_axon_error(&err) {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError::new(
+                        &reserved.code,
+                        json!({
+                            "reason": reserved.reason,
+                            "name": reserved.detail.name,
+                            "operation": reserved.detail.operation,
+                        }),
+                    )),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError::new("invalid_argument", msg)),
+                )
+                    .into_response()
+            }
+        }
         AxonError::InvalidOperation(msg) => (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new("invalid_operation", msg)),

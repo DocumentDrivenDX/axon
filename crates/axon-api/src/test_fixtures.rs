@@ -32,6 +32,24 @@ pub struct ReservedNamespaceSurfaceParityVector {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReservedNamespaceSurfaceExposure {
+    Exposed,
+    NotExposed { reason: &'static str },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservedNamespaceSurfaceOperationDisposition {
+    pub operation: &'static str,
+    pub exposure: ReservedNamespaceSurfaceExposure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservedNamespaceSurfaceParityCase {
+    pub vector: ReservedNamespaceSurfaceParityVector,
+    pub exposure: ReservedNamespaceSurfaceExposure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReservedNamespaceNameVector {
     pub name: &'static str,
     pub classification: &'static str,
@@ -78,6 +96,110 @@ pub const RESERVED_NAMESPACE_SURFACE_PARITY_OPERATIONS: [&str; 11] = [
     "audit",
 ];
 
+pub const RESERVED_NAMESPACE_HTTP_SURFACE_PARITY_DISPOSITIONS:
+    [ReservedNamespaceSurfaceOperationDisposition; 11] = [
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "entity",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "schema",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "template",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "lifecycle",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "link",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "rollback",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "intent",
+        exposure: ReservedNamespaceSurfaceExposure::NotExposed {
+            reason: "mutation intent review is exposed through GraphQL and MCP, not generic REST",
+        },
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "query",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "traverse",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "transaction",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "audit",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+];
+
+pub const RESERVED_NAMESPACE_GRPC_SURFACE_PARITY_DISPOSITIONS:
+    [ReservedNamespaceSurfaceOperationDisposition; 11] = [
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "entity",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "schema",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "template",
+        exposure: ReservedNamespaceSurfaceExposure::NotExposed {
+            reason: "collection template APIs are not exposed in the gRPC proto",
+        },
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "lifecycle",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "link",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "rollback",
+        exposure: ReservedNamespaceSurfaceExposure::NotExposed {
+            reason: "entity, collection, and transaction rollback APIs are not exposed in the gRPC proto",
+        },
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "intent",
+        exposure: ReservedNamespaceSurfaceExposure::NotExposed {
+            reason: "mutation intent review is exposed through GraphQL and MCP, not gRPC",
+        },
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "query",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "traverse",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "transaction",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+    ReservedNamespaceSurfaceOperationDisposition {
+        operation: "audit",
+        exposure: ReservedNamespaceSurfaceExposure::Exposed,
+    },
+];
+
 pub fn reserved_namespace_surface_parity_vectors() -> Vec<ReservedNamespaceSurfaceParityVector> {
     RESERVED_NAMESPACE_SURFACE_PARITY_NAMES
         .into_iter()
@@ -91,6 +213,34 @@ pub fn reserved_namespace_surface_parity_vectors() -> Vec<ReservedNamespaceSurfa
                     detail_operation: operation,
                     classification: name.classification,
                 })
+        })
+        .collect()
+}
+
+pub fn reserved_namespace_http_surface_parity_cases() -> Vec<ReservedNamespaceSurfaceParityCase> {
+    reserved_namespace_transport_surface_parity_cases(
+        &RESERVED_NAMESPACE_HTTP_SURFACE_PARITY_DISPOSITIONS,
+    )
+}
+
+pub fn reserved_namespace_grpc_surface_parity_cases() -> Vec<ReservedNamespaceSurfaceParityCase> {
+    reserved_namespace_transport_surface_parity_cases(
+        &RESERVED_NAMESPACE_GRPC_SURFACE_PARITY_DISPOSITIONS,
+    )
+}
+
+fn reserved_namespace_transport_surface_parity_cases(
+    dispositions: &[ReservedNamespaceSurfaceOperationDisposition],
+) -> Vec<ReservedNamespaceSurfaceParityCase> {
+    reserved_namespace_surface_parity_vectors()
+        .into_iter()
+        .map(|vector| {
+            let exposure = dispositions
+                .iter()
+                .find(|disposition| disposition.operation == vector.detail_operation)
+                .map(|disposition| disposition.exposure)
+                .expect("reserved namespace operation must have an explicit transport disposition");
+            ReservedNamespaceSurfaceParityCase { vector, exposure }
         })
         .collect()
 }
