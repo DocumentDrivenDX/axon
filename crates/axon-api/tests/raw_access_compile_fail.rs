@@ -111,6 +111,24 @@ fn main() {
             "cannot construct `GovernedWriteTx` with struct literal syntax due to private fields",
         ],
     },
+    CompileFailCase {
+        name: "test_fixtures_no_unchecked_helpers",
+        code: r#"
+use axon_api::test_fixtures;
+use axon_storage::MemoryStorageAdapter;
+
+fn main() {
+    let _put = test_fixtures::put_collection_view_unchecked_fixture::<MemoryStorageAdapter>;
+    let _drop = test_fixtures::drop_database_unchecked_fixture::<MemoryStorageAdapter>;
+    let _intent = test_fixtures::create_mutation_intent_unchecked_fixture::<MemoryStorageAdapter>;
+}
+"#,
+        expected: &[
+            "cannot find value `put_collection_view_unchecked_fixture` in module `test_fixtures`",
+            "cannot find value `drop_database_unchecked_fixture` in module `test_fixtures`",
+            "cannot find value `create_mutation_intent_unchecked_fixture` in module `test_fixtures`",
+        ],
+    },
 ];
 
 #[test]
@@ -197,7 +215,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-axon-api = {{ path = "{}", default-features = false }}
+axon-api = {{ path = "{}", default-features = false, features = ["test-fixtures"] }}
 axon-core = {{ path = "{}" }}
 axon-storage = {{ path = "{}" }}
 "#,

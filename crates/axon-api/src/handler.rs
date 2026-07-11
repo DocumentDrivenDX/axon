@@ -3986,14 +3986,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .map(Into::into)
     }
 
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub(crate) fn create_mutation_intent_unchecked_for_fixture(
-        &mut self,
-        intent: &MutationIntent,
-    ) -> Result<(), AxonError> {
-        self.storage.create_mutation_intent(intent)
-    }
-
     /// Read a mutation intent through this handler's governed namespace and
     /// lifecycle boundary, first materializing due expiry audit records.
     pub fn get_mutation_intent(
@@ -7918,16 +7910,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
         })
     }
 
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub(crate) fn put_collection_view_unchecked_for_fixture(
-        &mut self,
-        view: CollectionView,
-    ) -> Result<(), AxonError> {
-        let collection = view.collection.clone();
-        self.storage.put_collection_view(&view)?;
-        self.invalidate_markdown_template(&collection)
-    }
-
     /// Retrieve the current markdown template for a collection.
     pub fn get_collection_template(
         &self,
@@ -8480,14 +8462,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
             name: req.name,
             collections_removed: total_collections,
         })
-    }
-
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub(crate) fn drop_database_unchecked_for_fixture(
-        &mut self,
-        name: &str,
-    ) -> Result<(), AxonError> {
-        self.storage.drop_database(name)
     }
 
     /// List all databases.

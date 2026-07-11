@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, SystemCollection};
-use axon_schema::schema::CollectionView;
 use axon_schema::{
     AccessControlPolicy, Cardinality, CollectionSchema, CompoundIndexDef, CompoundIndexField,
     IndexDef, IndexType, LifecycleDef, LinkTypeDef,
@@ -13,7 +12,6 @@ use axon_storage::StorageAdapter;
 use serde_json::{json, Value};
 
 use crate::handler::AxonHandler;
-use crate::intent::MutationIntent;
 use crate::request::{CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest};
 use crate::response::{RESERVED_NAMESPACE_CODE, RESERVED_NAMESPACE_REASON};
 
@@ -23,27 +21,6 @@ const FIXTURE_ACTOR: &str = "shared-test-fixture";
 pub const RESERVED_NAMESPACE_CLASS_HIDDEN: &str = "hidden";
 pub const RESERVED_NAMESPACE_CLASS_VIRTUAL: &str = "virtual";
 pub const RESERVED_NAMESPACE_CLASS_GOVERNED_SYSTEM: &str = "governed_system";
-
-pub fn put_collection_view_unchecked_fixture<S: StorageAdapter>(
-    handler: &mut AxonHandler<S>,
-    view: CollectionView,
-) -> Result<(), AxonError> {
-    handler.put_collection_view_unchecked_for_fixture(view)
-}
-
-pub fn drop_database_unchecked_fixture<S: StorageAdapter>(
-    handler: &mut AxonHandler<S>,
-    name: &str,
-) -> Result<(), AxonError> {
-    handler.drop_database_unchecked_for_fixture(name)
-}
-
-pub fn create_mutation_intent_unchecked_fixture<S: StorageAdapter>(
-    handler: &mut AxonHandler<S>,
-    intent: &MutationIntent,
-) -> Result<(), AxonError> {
-    handler.create_mutation_intent_unchecked_for_fixture(intent)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReservedNamespaceSurfaceParityVector {

@@ -4042,10 +4042,8 @@ mod tests {
         AuthContext, AuthError, AuthMode, Role, TailscaleWhoisProvider, TailscaleWhoisResponse,
     };
     use crate::tenant_router::TenantRouter;
-    use axon_api::test_fixtures::{
-        drop_database_unchecked_fixture, put_collection_view_unchecked_fixture,
-    };
-    use axon_core::id::{CollectionId, Namespace};
+    use axon_core::id::{CollectionId, EntityId, Namespace};
+    use axon_core::types::Entity;
     use axon_schema::schema::{CollectionSchema, CollectionView, IndexDef, IndexType};
     use axon_storage::adapter::StorageAdapter;
     use axon_storage::SqliteStorageAdapter;
@@ -4094,13 +4092,21 @@ mod tests {
         }
     }
 
-    fn test_server_with_handler() -> (TestServer, TenantHandler) {
-        let storage: Box<dyn StorageAdapter + Send + Sync> =
-            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
+    fn test_server_with_storage_setup(
+        setup: impl FnOnce(&mut SqliteStorageAdapter),
+    ) -> (TestServer, TenantHandler) {
+        let mut sqlite =
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        setup(&mut sqlite);
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(sqlite);
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler.clone()));
         let app = build_router(tenant_router, "memory", None);
         (TestServer::new(app), handler)
+    }
+
+    fn test_server_with_handler() -> (TestServer, TenantHandler) {
+        test_server_with_storage_setup(|_| {})
     }
 
     fn test_server() -> TestServer {
@@ -4272,29 +4278,22 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_entity_get_markdown_render_failure_returns_entity_payload() {
-        let (server, handler) = test_server_with_handler();
-
-        server
-            .post("/tenants/default/databases/default/collections/tasks")
-            .json(&json!({"schema": {}}))
-            .await
-            .assert_status(StatusCode::CREATED);
-        server
-            .post("/tenants/default/databases/default/entities/tasks/t-001")
-            .json(&json!({"data": {"title": "hello", "status": "open"}}))
-            .await
-            .assert_status(StatusCode::CREATED);
-
-        {
-            let mut guard = handler.lock().await;
-            ok_or_panic(
-                put_collection_view_unchecked_fixture(
-                    &mut *guard,
-                    CollectionView::new(CollectionId::new("tasks"), "{{#title}"),
-                ),
-                "storing invalid collection view for markdown HTTP test",
-            );
-        }
+        let (server, _) = test_server_with_storage_setup(|storage| {
+            let collection = CollectionId::new("tasks");
+            storage
+                .register_collection(&collection)
+                .expect("test storage should register tasks collection");
+            storage
+                .put(Entity::new(
+                    collection.clone(),
+                    EntityId::new("t-001"),
+                    json!({"title": "hello", "status": "open"}),
+                ))
+                .expect("test storage should seed task entity");
+            storage
+                .put_collection_view(&CollectionView::new(collection, "{{#title}"))
+                .expect("test storage should seed invalid collection view");
+        });
 
         let resp = server
             .get("/tenants/default/databases/default/collections/tasks/entities/t-001?format=markdown")
@@ -6331,14 +6330,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_health_reports_default_namespace_from_storage_state() {
-        let (server, handler) = test_server_with_handler();
-
-        {
-            let mut guard = handler.lock().await;
-            drop_database_unchecked_fixture(&mut *guard, DEFAULT_DATABASE).expect(
-                "direct storage drop of default database should succeed for health regression",
-            );
-        }
+        let (server, _) = test_server_with_storage_setup(|storage| {
+            storage
+                .drop_database(DEFAULT_DATABASE)
+                .expect("test storage should drop default database");
+        });
 
         let resp = server.get("/health").await;
         resp.assert_status_ok();
