@@ -1328,7 +1328,7 @@ fn run_collection(
                     schema: collection_schema,
                     actor,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             let result = serde_json::json!({ "collection": name, "status": "created" });
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
@@ -1340,7 +1340,7 @@ fn run_collection(
         CollectionCmd::List => {
             let resp = handler
                 .list_collections(ListCollectionsRequest {})
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
                     let json: Vec<Value> = resp
@@ -1385,7 +1385,7 @@ fn run_collection(
                     actor,
                     confirm,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             let result = serde_json::json!({
                 "collection": resp.name,
                 "entities_removed": resp.entities_removed,
@@ -1406,7 +1406,7 @@ fn run_collection(
                 .describe_collection(DescribeCollectionRequest {
                     name: CollectionId::new(&name),
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
                     let result = serde_json::json!({
@@ -1453,7 +1453,7 @@ fn run_collection_template(
                     template,
                     actor,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
                     print_serialized(
@@ -1479,7 +1479,7 @@ fn run_collection_template(
                 .get_collection_template(GetCollectionTemplateRequest {
                     collection: CollectionId::new(&collection),
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
                     print_serialized(&collection_template_to_json(&resp.view, &[]), format);
@@ -1497,7 +1497,7 @@ fn run_collection_template(
                     collection: CollectionId::new(&collection),
                     actor,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => print_serialized(
                     &serde_json::json!({
@@ -1536,7 +1536,7 @@ fn run_entity(
                     audit_metadata: None,
                     attribution: None,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             print_entity(entity_to_json(&resp.entity), format);
         }
         EntityCmd::Get {
@@ -1553,13 +1553,13 @@ fn run_entity(
                             collection: collection_id,
                             id: entity_id,
                         })
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        .map_err(anyhow::Error::new)?;
                     print_entity(entity_to_json(&resp.entity), format);
                 }
                 EntityRenderFormat::Markdown => {
                     let response = handler
                         .get_entity_markdown(&collection_id, &entity_id)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        .map_err(anyhow::Error::new)?;
                     match &response {
                         axon_api::response::GetEntityMarkdownResponse::Rendered {
                             rendered_markdown,
@@ -1591,7 +1591,7 @@ fn run_entity(
                     limit,
                     ..Default::default()
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             let entities: Vec<Value> = resp.entities.iter().map(entity_to_json).collect();
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
@@ -1621,7 +1621,7 @@ fn run_entity(
                             collection: CollectionId::new(&collection),
                             id: EntityId::new(&id),
                         })
-                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                        .map_err(anyhow::Error::new)?
                         .entity
                         .version
                 }
@@ -1636,7 +1636,7 @@ fn run_entity(
                     audit_metadata: None,
                     attribution: None,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             print_entity(entity_to_json(&resp.entity), format);
         }
         EntityCmd::Delete {
@@ -1653,7 +1653,7 @@ fn run_entity(
                     force: false,
                     attribution: None,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => println!(
                     "{}",
@@ -1706,7 +1706,7 @@ fn run_entity(
                     count_only,
                     ..Default::default()
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
 
             if count_only {
                 match format {
@@ -1794,7 +1794,7 @@ fn create_link_and_print(
             actor,
             attribution: None,
         })
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(anyhow::Error::new)?;
     let link = &resp.link;
     match format {
         OutputFormat::Json | OutputFormat::Yaml => {
@@ -1857,7 +1857,7 @@ fn run_link(
                     direction: Default::default(),
                     hop_filter: None,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             print_links(&resp.links, format);
         }
         LinkCmd::Traverse {
@@ -1875,7 +1875,7 @@ fn run_link(
                     direction: Default::default(),
                     hop_filter: None,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             let entities: Vec<Value> = resp.entities.iter().map(entity_to_json).collect();
             print_entities(&entities, format);
         }
@@ -1894,7 +1894,7 @@ fn run_schema(
         SchemaCmd::Show { collection } => {
             let resp = handler
                 .get_schema(&CollectionId::new(&collection))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             match resp {
                 Some(schema) => {
                     let json = serde_json::to_value(&schema)?;
@@ -1910,7 +1910,7 @@ fn run_schema(
         SchemaCmd::Validate { collection, file } => {
             let schema = handler
                 .get_schema(&CollectionId::new(&collection))
-                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .map_err(anyhow::Error::new)?
                 .ok_or_else(|| {
                     anyhow::anyhow!("no schema registered for collection '{collection}'")
                 })?;
@@ -1954,7 +1954,7 @@ fn run_schema(
             let col_id = CollectionId::new(&collection);
             let resp = handler
                 .revalidate(RevalidateRequest { collection: col_id })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
 
             match format {
                 OutputFormat::Table => {
@@ -2023,7 +2023,7 @@ fn run_schema(
             // Fetch current schema to preserve version and non-entity_schema fields.
             let existing = handler
                 .get_schema(&CollectionId::new(&collection))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             let base_version = existing.as_ref().map(|s| s.version).unwrap_or(0);
             let new_schema = axon_schema::schema::CollectionSchema {
                 collection: CollectionId::new(&collection),
@@ -2066,7 +2066,7 @@ fn run_schema(
                     dry_run,
                     explain_inputs: Vec::new(),
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
 
             if dry_run {
                 let compat_str = resp.compatibility.as_ref().map(|c| format!("{c:?}"));
@@ -2136,14 +2136,14 @@ fn run_audit(
                     limit,
                     ..Default::default()
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             print_audit_entries(&resp.entries, format);
         }
         AuditCmd::Show { id } => {
             let entry = handler
                 .audit_log()
                 .find_by_id(id)
-                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .map_err(anyhow::Error::new)?
                 .ok_or_else(|| anyhow::anyhow!("audit entry {} not found", id))?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
@@ -2181,7 +2181,7 @@ fn run_audit(
                     force,
                     attribution: None,
                 })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
                     let result = serde_json::json!({
@@ -2209,7 +2209,7 @@ fn run_audit(
             let entries = handler
                 .audit_log()
                 .query_by_entity(&CollectionId::new(&collection), &EntityId::new(&entity_id))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
 
             let to_show: Vec<&axon_audit::AuditEntry> = if let Some(entry_id) = entry {
                 entries.iter().filter(|e| e.id == entry_id).collect()
@@ -2261,7 +2261,7 @@ fn run_audit(
             let mut entries = handler
                 .audit_log()
                 .query_by_entity(&CollectionId::new(&collection), &EntityId::new(&entity_id))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(anyhow::Error::new)?;
 
             if let Some(n) = limit {
                 entries.truncate(n);
@@ -2414,7 +2414,7 @@ fn run_policy(
 
     let resp = handler
         .explain_policy_with_caller(req, &caller, None)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(anyhow::Error::new)?;
 
     match &cmd {
         PolicyCmd::Explain { .. } => match format {
@@ -2538,7 +2538,7 @@ fn run_rollback(
                         actor,
                         dry_run: true,
                     })
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .map_err(anyhow::Error::new)?;
                 match format {
                     OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
                     OutputFormat::Table => {
@@ -2573,7 +2573,7 @@ fn run_rollback(
                         actor,
                         dry_run: true,
                     })
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .map_err(anyhow::Error::new)?;
                 use axon_api::response::RollbackEntityResponse;
                 match format {
                     OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
@@ -2621,7 +2621,7 @@ fn run_rollback(
                         actor,
                         dry_run: false,
                     })
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .map_err(anyhow::Error::new)?;
                 match format {
                     OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
                     OutputFormat::Table => {
@@ -2644,7 +2644,7 @@ fn run_rollback(
                         actor,
                         dry_run: false,
                     })
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .map_err(anyhow::Error::new)?;
                 use axon_api::response::RollbackEntityResponse;
                 match format {
                     OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
@@ -2727,7 +2727,7 @@ fn run_bead(
 
     match cmd {
         BeadCmd::Init => {
-            bead::init_beads(handler).map_err(|e| anyhow::anyhow!("{e}"))?;
+            bead::init_beads(handler).map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
                     println!(r#"{{"status":"initialized"}}"#);
@@ -2761,20 +2761,19 @@ fn run_bead(
                     acceptance: acceptance.as_deref(),
                 },
             )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .map_err(anyhow::Error::new)?;
             print_bead(&b, format);
         }
         BeadCmd::List { status } => {
-            let beads =
-                bead::list_beads(handler, status.as_deref()).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let beads = bead::list_beads(handler, status.as_deref()).map_err(anyhow::Error::new)?;
             print_beads(&beads, format);
         }
         BeadCmd::Ready => {
-            let beads = bead::ready_queue(handler).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let beads = bead::ready_queue(handler).map_err(anyhow::Error::new)?;
             print_beads(&beads, format);
         }
         BeadCmd::Transition { id, status } => {
-            bead::transition_bead(handler, &id, &status).map_err(|e| anyhow::anyhow!("{e}"))?;
+            bead::transition_bead(handler, &id, &status).map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
                     println!(
@@ -2788,7 +2787,7 @@ fn run_bead(
             }
         }
         BeadCmd::Dep { id, dep_id } => {
-            bead::add_dependency(handler, &id, &dep_id).map_err(|e| anyhow::anyhow!("{e}"))?;
+            bead::add_dependency(handler, &id, &dep_id).map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
                     println!(
@@ -2802,11 +2801,11 @@ fn run_bead(
             }
         }
         BeadCmd::Deps { id } => {
-            let deps = bead::dependency_tree(handler, &id).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let deps = bead::dependency_tree(handler, &id).map_err(anyhow::Error::new)?;
             print_beads(&deps, format);
         }
         BeadCmd::Export { file } => {
-            let exported = bead::export_beads(handler).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let exported = bead::export_beads(handler).map_err(anyhow::Error::new)?;
             let json = serde_json::to_string_pretty(&exported)?;
             match file {
                 Some(path) => std::fs::write(&path, &json)
@@ -2819,7 +2818,7 @@ fn run_bead(
                 std::fs::read_to_string(&file).with_context(|| format!("failed to read {file}"))?;
             let data: Value =
                 serde_json::from_str(&content).with_context(|| "file must contain valid JSON")?;
-            let count = bead::import_beads(handler, &data).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let count = bead::import_beads(handler, &data).map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
                     println!(
@@ -3200,6 +3199,11 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use axon_api::response::ReservedNamespaceError;
+    use axon_api::test_fixtures::{
+        reserved_namespace_surface_parity_vectors, ReservedNamespaceSurfaceParityVector,
+    };
+    use axon_core::error::AxonError;
     use tempfile::NamedTempFile;
 
     fn tmp_db() -> (NamedTempFile, String) {
@@ -3212,6 +3216,106 @@ mod tests {
         let mut full = vec!["axon", "--db", db];
         full.extend_from_slice(args);
         Cli::parse_from(full)
+    }
+
+    fn cli_reserved_namespace_args(
+        vector: &ReservedNamespaceSurfaceParityVector,
+    ) -> Result<Vec<&'static str>, &'static str> {
+        let name = vector.detail_name;
+        match vector.detail_operation {
+            "entity" => Ok(vec!["entities", "get", name, "reserved-id"]),
+            "schema" => Ok(vec!["schema", "show", name]),
+            "template" => Ok(vec!["collections", "template", "get", name]),
+            "link" => Ok(vec![
+                "links",
+                "create",
+                "--source-collection",
+                name,
+                "--source-id",
+                "reserved-id",
+                "--target-collection",
+                "public-target",
+                "--target-id",
+                "target-id",
+                "--link-type",
+                "reserved-namespace-parity",
+            ]),
+            "rollback" => Ok(vec![
+                "rollback",
+                "dry-run",
+                "--entity",
+                "reserved-id",
+                "--entity-collection",
+                name,
+                "--to-version",
+                "1",
+            ]),
+            "query" => Ok(vec!["entities", "query", name]),
+            "traverse" => Ok(vec!["links", "traverse", name, "reserved-id", "--max-depth", "1"]),
+            "audit" => Ok(vec!["audit", "list", "--collection", name, "--limit", "1"]),
+            "lifecycle" => Err(
+                "CLI does not expose a generic lifecycle transition command; policy explanation is not the lifecycle mutation surface",
+            ),
+            "intent" => Err(
+                "CLI mutation intent commands are server-workflow placeholders and do not expose generic intent read/redaction operations",
+            ),
+            "transaction" => Err(
+                "CLI exposes transaction rollback by id but not generic transaction commit operations",
+            ),
+            other => panic!("unknown reserved namespace parity operation: {other}"),
+        }
+    }
+
+    fn assert_cli_reserved_namespace_error(
+        err: anyhow::Error,
+        vector: &ReservedNamespaceSurfaceParityVector,
+    ) {
+        let axon_error = err
+            .downcast_ref::<AxonError>()
+            .unwrap_or_else(|| panic!("CLI converted structured error to message only: {err:?}"));
+        let envelope = ReservedNamespaceError::from_axon_error(axon_error)
+            .unwrap_or_else(|| panic!("expected reserved namespace envelope, got: {axon_error}"));
+        assert_eq!(envelope.code, vector.code, "{vector:?}");
+        assert_eq!(envelope.reason, vector.reason, "{vector:?}");
+        assert_eq!(envelope.detail.name, vector.detail_name, "{vector:?}");
+        assert_eq!(
+            envelope.detail.operation, vector.detail_operation,
+            "{vector:?}"
+        );
+    }
+
+    #[test]
+    fn reserved_namespace_surface_parity() {
+        let mut exposed = 0;
+        let mut not_exposed = 0;
+
+        for vector in reserved_namespace_surface_parity_vectors() {
+            match cli_reserved_namespace_args(&vector) {
+                Ok(args) => {
+                    exposed += 1;
+                    let (_f, db) = tmp_db();
+                    let err = run(make_cli(&db, &args))
+                        .expect_err("CLI reserved namespace vector must be rejected");
+                    assert_cli_reserved_namespace_error(err, &vector);
+                }
+                Err(reason) => {
+                    not_exposed += 1;
+                    assert!(
+                        !reason.is_empty(),
+                        "not-exposed reserved namespace vector must record a reason"
+                    );
+                }
+            }
+        }
+
+        assert!(
+            exposed > 0,
+            "CLI must cover exposed reserved namespace vectors"
+        );
+        assert!(
+            not_exposed > 0,
+            "CLI must record explicit not-exposed reserved namespace vectors"
+        );
     }
 
     #[test]
