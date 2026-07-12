@@ -5954,6 +5954,76 @@ mod tests {
     }
 
     #[test]
+    fn legacy_link_key_migration_ignores_obsolete_typed_reverse_collisions_sqlite() {
+        let mut storage = store();
+        let first = Link {
+            source_collection: CollectionId::new("source"),
+            source_id: EntityId::new("entity"),
+            target_collection: CollectionId::new("target/segment"),
+            target_id: EntityId::new("id"),
+            link_type: "owns".into(),
+            metadata: json!({"typed": 1}),
+        };
+        let second = Link {
+            source_collection: CollectionId::new("source"),
+            source_id: EntityId::new("entity"),
+            target_collection: CollectionId::new("target"),
+            target_id: EntityId::new("segment/id"),
+            link_type: "owns".into(),
+            metadata: json!({"typed": 2}),
+        };
+        assert_ne!(LinkKey::forward(&first), LinkKey::forward(&second));
+        assert_eq!(
+            [
+                first.target_collection.as_str(),
+                first.target_id.as_str(),
+                first.source_collection.as_str(),
+                first.source_id.as_str(),
+                first.link_type.as_str(),
+            ]
+            .join("/"),
+            [
+                second.target_collection.as_str(),
+                second.target_id.as_str(),
+                second.source_collection.as_str(),
+                second.source_id.as_str(),
+                second.link_type.as_str(),
+            ]
+            .join("/"),
+            "fixture must collide only under the retired reverse encoding"
+        );
+        storage.put_link(&first).expect("first typed link seeds");
+        storage.put_link(&second).expect("second typed link seeds");
+
+        crate::adapter::migrate_legacy_link_keys(&mut storage)
+            .expect("healthy typed rows ignore obsolete legacy collisions");
+        assert_eq!(
+            storage
+                .get_link(
+                    &first.source_collection,
+                    &first.source_id,
+                    &first.link_type,
+                    &first.target_collection,
+                    &first.target_id,
+                )
+                .expect("first typed lookup"),
+            Some(first)
+        );
+        assert_eq!(
+            storage
+                .get_link(
+                    &second.source_collection,
+                    &second.source_id,
+                    &second.link_type,
+                    &second.target_collection,
+                    &second.target_id,
+                )
+                .expect("second typed lookup"),
+            Some(second)
+        );
+    }
+
+    #[test]
     fn legacy_link_key_crash_resume_sqlite() {
         let mut storage = store();
         let (forward, reverse, link) = legacy_link_rows();

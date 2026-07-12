@@ -528,7 +528,7 @@ fn migrate_legacy_link_keys_inner<S: StorageAdapter + ?Sized>(
 
         let mut expected_typed_reverse = BTreeMap::<EntityId, EntityId>::new();
         let mut expected_legacy_reverse = BTreeMap::<EntityId, EntityId>::new();
-        for (forward_id, (_, link, _)) in &forwards {
+        for (forward_id, (_, link, is_legacy)) in &forwards {
             let typed_reverse_id = LinkKey::reverse(link).entity_id();
             if expected_typed_reverse
                 .insert(typed_reverse_id, forward_id.clone())
@@ -538,14 +538,16 @@ fn migrate_legacy_link_keys_inner<S: StorageAdapter + ?Sized>(
                     "legacy LinkKey migration: colliding typed reverse identities".into(),
                 ));
             }
-            let legacy_reverse_id = legacy_reverse_id(link);
-            if expected_legacy_reverse
-                .insert(legacy_reverse_id, forward_id.clone())
-                .is_some()
-            {
-                return Err(AxonError::Storage(
-                    "legacy LinkKey migration: colliding legacy reverse identities".into(),
-                ));
+            if *is_legacy {
+                let legacy_reverse_id = legacy_reverse_id(link);
+                if expected_legacy_reverse
+                    .insert(legacy_reverse_id, forward_id.clone())
+                    .is_some()
+                {
+                    return Err(AxonError::Storage(
+                        "legacy LinkKey migration: colliding legacy reverse identities".into(),
+                    ));
+                }
             }
         }
 
