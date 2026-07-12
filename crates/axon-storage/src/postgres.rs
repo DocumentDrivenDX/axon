@@ -1600,6 +1600,18 @@ impl StorageAdapter for PostgresStorageAdapter {
         Ok(())
     }
 
+    fn lock_link_key_migration(&mut self) -> Result<(), AxonError> {
+        if !self.in_tx {
+            return Err(AxonError::Storage(
+                "LinkKey migration lock requires an active transaction".into(),
+            ));
+        }
+        self.block_on(
+            sqlx::raw_sql("LOCK TABLE entities IN SHARE ROW EXCLUSIVE MODE").execute(&self.pool),
+        )?;
+        Ok(())
+    }
+
     fn commit_tx(&mut self) -> Result<(), AxonError> {
         if !self.in_tx {
             return Err(AxonError::Storage("no active transaction".into()));
@@ -5907,6 +5919,52 @@ mod tests {
                 .expect("reverse rebuilt"),
             vec![link]
         );
+    }
+
+    #[test]
+    fn legacy_link_key_migration_lock_blocks_concurrent_postgresql_16() {
+        let _guard = postgres_test_guard();
+        let Some(mut migration) =
+            store_or_skip("legacy_link_key_migration_lock_blocks_concurrent_postgresql_16")
+        else {
+            return;
+        };
+        let database_url = migration._database.url().to_string();
+        let mut writer =
+            PostgresStorageAdapter::connect(&database_url).expect("second adapter connects");
+        writer
+            .block_on(sqlx::raw_sql("SET lock_timeout = '250ms'").execute(&writer.pool))
+            .expect("writer lock timeout configures");
+
+        migration.begin_tx().expect("migration transaction begins");
+        migration
+            .lock_link_key_migration()
+            .expect("migration lock acquired");
+        let link = Link {
+            source_collection: CollectionId::new("source"),
+            source_id: EntityId::new("one"),
+            target_collection: CollectionId::new("target"),
+            target_id: EntityId::new("two"),
+            link_type: "owns".into(),
+            metadata: serde_json::Value::Null,
+        };
+        let blocked = writer
+            .put_link(&link)
+            .expect_err("concurrent link insert must not pass migration preflight");
+        assert!(
+            blocked.to_string().contains("lock timeout"),
+            "unexpected blocked-writer error: {blocked}"
+        );
+
+        migration
+            .abort_tx()
+            .expect("migration transaction releases lock");
+        writer
+            .block_on(sqlx::raw_sql("SET lock_timeout = '0'").execute(&writer.pool))
+            .expect("writer lock timeout resets");
+        writer
+            .put_link(&link)
+            .expect("writer succeeds after migration lock releases");
     }
 
     #[test]

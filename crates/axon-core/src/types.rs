@@ -144,12 +144,6 @@ impl LinkKey {
     pub fn entity_id(&self) -> EntityId {
         EntityId::new(self.0.clone())
     }
-
-    /// Whether an ID is in the LinkKey namespace. Exact tuple validation is
-    /// performed by recomputing the expected key from the row payload.
-    pub fn is_encoded_id(id: &EntityId) -> bool {
-        id.as_str().starts_with("lk1f|") || id.as_str().starts_with("lk1r|")
-    }
 }
 
 /// A typed directional edge between two entities.

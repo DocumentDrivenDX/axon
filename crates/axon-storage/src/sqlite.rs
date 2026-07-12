@@ -5891,6 +5891,69 @@ mod tests {
     }
 
     #[test]
+    fn legacy_link_key_prefix_like_components_migrate_sqlite() {
+        let mut storage = store();
+        let link = Link {
+            source_collection: CollectionId::new("lk1f|legacy-source"),
+            source_id: EntityId::new("source-id"),
+            target_collection: CollectionId::new("lk1r|legacy-target"),
+            target_id: EntityId::new("target-id"),
+            link_type: "typed".into(),
+            metadata: json!({"regression": "prefix discriminator"}),
+        };
+        let legacy_forward_id = EntityId::new(
+            [
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+            ]
+            .join("/"),
+        );
+        let legacy_reverse_id = EntityId::new(
+            [
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+            ]
+            .join("/"),
+        );
+        assert!(legacy_forward_id.as_str().starts_with("lk1f|"));
+        assert!(legacy_reverse_id.as_str().starts_with("lk1r|"));
+        storage
+            .put(Entity::new(
+                Link::links_collection(),
+                legacy_forward_id,
+                serde_json::to_value(&link).expect("link serializes"),
+            ))
+            .expect("prefix-like legacy forward seeds");
+        storage
+            .put(Entity::new(
+                Link::links_rev_collection(),
+                legacy_reverse_id,
+                Value::Null,
+            ))
+            .expect("prefix-like legacy reverse seeds");
+
+        crate::adapter::migrate_legacy_link_keys(&mut storage).expect("migration succeeds");
+        assert_eq!(
+            storage
+                .get_link(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                )
+                .expect("typed lookup succeeds"),
+            Some(link)
+        );
+    }
+
+    #[test]
     fn legacy_link_key_crash_resume_sqlite() {
         let mut storage = store();
         let (forward, reverse, link) = legacy_link_rows();
