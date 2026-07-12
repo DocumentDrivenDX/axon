@@ -62,6 +62,7 @@ COPY crates/axon-server/build.rs crates/axon-server/build.rs
 COPY crates/axon-server/proto/axon.proto crates/axon-server/proto/axon.proto
 COPY crates/axon-sim/Cargo.toml crates/axon-sim/Cargo.toml
 COPY crates/axon-storage/Cargo.toml crates/axon-storage/Cargo.toml
+COPY xtask/Cargo.toml xtask/Cargo.toml
 
 RUN mkdir -p crates/axon-cli/src \
     && printf '%s\n' 'fn main() {}' > crates/axon-cli/src/main.rs \
@@ -69,6 +70,9 @@ RUN mkdir -p crates/axon-cli/src \
     && printf '%s\n' 'fn main() {}' > crates/axon-api/benches/benchmarks.rs \
     && mkdir -p crates/axon-cypher/benches \
     && printf '%s\n' 'fn main() {}' > crates/axon-cypher/benches/ddx_benchmark.rs \
+    && mkdir -p xtask/src \
+    && printf '%s\n' 'pub fn cargo_chef_placeholder() {}' > xtask/src/lib.rs \
+    && printf '%s\n' 'fn main() {}' > xtask/src/main.rs \
     && for crate in \
         axon-api \
         axon-audit \
