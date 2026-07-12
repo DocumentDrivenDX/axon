@@ -717,6 +717,35 @@ pub fn export_beads<S: StorageAdapter>(
     Ok(Value::Array(values))
 }
 
+/// Parse bead import input from either a JSON array or newline-delimited JSON.
+pub fn parse_bead_import_data(input: &str) -> Result<Value, AxonError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(Value::Array(Vec::new()));
+    }
+
+    if trimmed.starts_with('[') {
+        return serde_json::from_str(trimmed)
+            .map_err(|error| AxonError::InvalidArgument(format!("invalid bead JSON: {error}")));
+    }
+
+    let mut records = Vec::new();
+    for (line_index, line) in trimmed.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let record = serde_json::from_str(line).map_err(|error| {
+            AxonError::InvalidArgument(format!(
+                "invalid bead JSONL line {}: {error}",
+                line_index + 1
+            ))
+        })?;
+        records.push(record);
+    }
+    Ok(Value::Array(records))
+}
+
 /// Import beads from a JSON array.
 ///
 /// Entity fields are preserved exactly except for `id`, which is stored as the
@@ -1415,6 +1444,36 @@ mod tests {
         assert_eq!(import_beads(&mut h, &fixture).unwrap(), 1);
         let exported = export_beads(&h).unwrap();
         assert_eq!(exported, fixture);
+    }
+
+    #[test]
+    fn bead_import_parser_accepts_json_array_and_jsonl() {
+        let array = r#"[{"id":"array-1","status":"open","title":"Array"}]"#;
+        let jsonl = r#"
+{"id":"jsonl-1","status":"open","title":"First","claimed-at":"2026-07-11T18:00:00Z"}
+{"id":"jsonl-2","status":"closed","title":"Second","owner":"erik"}
+        "#;
+
+        assert_eq!(
+            parse_bead_import_data(array).unwrap(),
+            serde_json::from_str::<Value>(array).unwrap()
+        );
+
+        let parsed = parse_bead_import_data(jsonl).unwrap();
+        let records = parsed.as_array().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["claimed-at"], "2026-07-11T18:00:00Z");
+        assert_eq!(records[1]["owner"], "erik");
+    }
+
+    #[test]
+    fn bead_import_parser_reports_jsonl_line_number() {
+        let error = parse_bead_import_data(
+            "{\"id\":\"valid\",\"status\":\"open\",\"title\":\"Valid\"}\nnot-json",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("JSONL line 2"));
     }
 
     #[test]

@@ -2818,8 +2818,7 @@ fn run_bead(
         BeadCmd::Import { file } => {
             let content =
                 std::fs::read_to_string(&file).with_context(|| format!("failed to read {file}"))?;
-            let data: Value =
-                serde_json::from_str(&content).with_context(|| "file must contain valid JSON")?;
+            let data = bead::parse_bead_import_data(&content).map_err(anyhow::Error::new)?;
             let count = bead::import_beads(handler, &data).map_err(anyhow::Error::new)?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
@@ -2836,17 +2835,21 @@ fn run_bead(
 }
 
 fn bead_to_json(b: &axon_api::bead::Bead) -> Value {
-    serde_json::json!({
-        "id": b.id,
-        "type": b.bead_type,
-        "status": b.status,
-        "title": b.title,
-        "priority": b.priority,
-        "assignee": b.assignee,
-        "tags": b.tags,
-        "description": b.description,
-        "acceptance": b.acceptance,
-    })
+    match serde_json::to_value(b) {
+        Ok(Value::Object(mut object)) => {
+            if let Some(bead_type) = object.remove("bead_type") {
+                object.insert("type".into(), bead_type);
+            }
+            Value::Object(object)
+        }
+        Ok(value) => value,
+        Err(_) => serde_json::json!({
+            "id": b.id,
+            "type": b.bead_type,
+            "status": b.status,
+            "title": b.title,
+        }),
+    }
 }
 
 fn print_bead(b: &axon_api::bead::Bead, format: &OutputFormat) {
