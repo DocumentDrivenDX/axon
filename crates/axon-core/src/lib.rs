@@ -37,4 +37,4 @@ pub use intent::{
     MutationIntentSubjectBinding, MutationIntentToken, MutationIntentTokenLookupError,
     MutationIntentTokenSigner, MutationOperationKind, MutationReviewSummary, PreImageBinding,
 };
-pub use types::{Entity, GateResult, Link, RuleViolation, LINKS_COLLECTION};
+pub use types::{Entity, GateResult, Link, LinkKey, RuleViolation, LINKS_COLLECTION};

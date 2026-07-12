@@ -5408,15 +5408,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // Referential integrity: reject delete when inbound links exist
         // (unless `force` is set).
         if !req.force {
-            let links_rev_col = Link::links_rev_collection();
-            let rev_prefix = format!("{}/{}/", req.collection, req.id);
-            let rev_start = EntityId::new(&rev_prefix);
-            let rev_candidates =
-                self.storage
-                    .range_scan(&links_rev_col, Some(&rev_start), None, Some(1))?;
-            let has_inbound = rev_candidates
-                .iter()
-                .any(|e| e.id.as_str().starts_with(&rev_prefix));
+            let has_inbound = !self
+                .storage
+                .list_inbound_links(&req.collection, &req.id, None)?
+                .is_empty();
             if has_inbound {
                 return Err(AxonError::InvalidOperation(format!(
                     "entity {}/{} has inbound link(s); delete or re-target those links first, or use force=true",
@@ -8714,19 +8709,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 match link_def.cardinality {
                     Cardinality::OneToOne | Cardinality::ManyToOne => {
                         // Source can have at most one outgoing link of this type.
-                        let prefix = format!(
-                            "{}/{}/{}/",
-                            req.source_collection, req.source_id, req.link_type
-                        );
-                        let start = EntityId::new(&prefix);
-                        let existing = self.storage.range_scan(
-                            &Link::links_collection(),
-                            Some(&start),
-                            None,
-                            Some(1),
-                        )?;
-                        let has_outgoing =
-                            existing.iter().any(|e| e.id.as_str().starts_with(&prefix));
+                        let has_outgoing = !self
+                            .storage
+                            .list_outbound_links(
+                                &req.source_collection,
+                                &req.source_id,
+                                Some(&req.link_type),
+                            )?
+                            .is_empty();
                         if has_outgoing {
                             return Err(AxonError::SchemaValidation(format!(
                                 "cardinality violation: source {}/{} already has a '{}' link \
@@ -8743,17 +8733,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 match link_def.cardinality {
                     Cardinality::OneToOne | Cardinality::OneToMany => {
                         // Target can have at most one inbound link of this type.
-                        // Scan the reverse-index: {target_col}/{target_id}/.../{link_type}
-                        let rev_col = Link::links_rev_collection();
-                        let prefix = format!("{}/{}/", req.target_collection, req.target_id);
-                        let start = EntityId::new(&prefix);
-                        let candidates =
-                            self.storage
-                                .range_scan(&rev_col, Some(&start), None, None)?;
-                        let has_inbound = candidates.iter().any(|e| {
-                            let id = e.id.as_str();
-                            id.starts_with(&prefix) && id.ends_with(&format!("/{}", req.link_type))
-                        });
+                        let has_inbound = !self
+                            .storage
+                            .list_inbound_links(
+                                &req.target_collection,
+                                &req.target_id,
+                                Some(&req.link_type),
+                            )?
+                            .is_empty();
                         if has_inbound {
                             return Err(AxonError::SchemaValidation(format!(
                                 "cardinality violation: target {}/{} already has an inbound '{}' link \

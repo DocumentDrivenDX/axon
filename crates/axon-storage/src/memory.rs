@@ -63,7 +63,7 @@ impl NumericIdCache {
 }
 
 /// Key for the dedicated link store: (source_col, source_id, link_type, target_col, target_id).
-type LinkKey = (CollectionId, EntityId, String, CollectionId, EntityId);
+type MemoryLinkKey = (CollectionId, EntityId, String, CollectionId, EntityId);
 type IntentKey = (String, String, String);
 
 /// Combined snapshot of mutable state captured at transaction start.
@@ -82,7 +82,7 @@ struct TxSnapshot {
     /// Numeric ID cache snapshot for rollback.
     numeric_ids: NumericIdCache,
     /// Dedicated link store snapshot.
-    links: BTreeMap<LinkKey, Link>,
+    links: BTreeMap<MemoryLinkKey, Link>,
     /// Mutation intent records snapshot.
     mutation_intents: BTreeMap<IntentKey, MutationIntent>,
     /// Storage-owned audit log snapshot.
@@ -130,7 +130,7 @@ pub struct MemoryStorageAdapter {
     numeric_ids: NumericIdCache,
     /// Dedicated link store (ADR-010): replaces __axon_links__ pseudo-collection
     /// for new code paths. Keyed by (source_col, source_id, link_type, target_col, target_id).
-    links: BTreeMap<LinkKey, Link>,
+    links: BTreeMap<MemoryLinkKey, Link>,
     /// Server-side mutation intents keyed by (tenant_id, database_id, intent_id).
     mutation_intents: BTreeMap<IntentKey, MutationIntent>,
     /// Storage-owned audit log. It is in-memory, but participates in

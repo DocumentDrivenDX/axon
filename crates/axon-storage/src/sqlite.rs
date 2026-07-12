@@ -105,6 +105,7 @@ impl SqliteStorageAdapter {
             in_tx: false,
         };
         adapter.init_schema()?;
+        crate::adapter::migrate_legacy_link_keys(&mut adapter)?;
         adapter.backfill_indexes_on_open()?;
         Ok(adapter)
     }
@@ -191,6 +192,7 @@ impl SqliteStorageAdapter {
             in_tx: false,
         };
         adapter.init_schema()?;
+        crate::adapter::migrate_legacy_link_keys(&mut adapter)?;
         adapter.backfill_indexes_on_open()?;
         Ok(adapter)
     }
@@ -3716,8 +3718,8 @@ mod tests {
         CanonicalOperationMetadata, MutationIntentDecision, MutationIntentScopeBinding,
         MutationIntentSubjectBinding, MutationOperationKind, MutationReviewSummary,
     };
-    use axon_core::types::Link;
-    use serde_json::json;
+    use axon_core::types::{Link, LinkKey};
+    use serde_json::{json, Value};
     use tempfile::NamedTempFile;
 
     fn tasks() -> CollectionId {
@@ -5815,6 +5817,168 @@ mod tests {
             store.commit_tx().expect("commit_tx");
             assert_eq!(lookup_status(&store, "active"), vec![EntityId::new("p-1")]);
         }
+    }
+
+    fn legacy_link_rows() -> (Entity, Entity, Link) {
+        let link = Link {
+            source_collection: CollectionId::new("src/集合"),
+            source_id: EntityId::new("source/one"),
+            target_collection: CollectionId::new("dst/集合"),
+            target_id: EntityId::new("target/two"),
+            link_type: "owns/typed".into(),
+            metadata: json!({"legacy": true}),
+        };
+        let forward_id = EntityId::new(
+            [
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+            ]
+            .join("/"),
+        );
+        let reverse_id = EntityId::new(
+            [
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+            ]
+            .join("/"),
+        );
+        let mut forward = Entity::new(
+            Link::links_collection(),
+            forward_id,
+            serde_json::to_value(&link).expect("link serializes"),
+        );
+        forward.version = 7;
+        forward.created_at_ns = Some(11);
+        forward.updated_at_ns = Some(22);
+        let reverse = Entity::new(Link::links_rev_collection(), reverse_id, Value::Null);
+        (forward, reverse, link)
+    }
+
+    #[test]
+    fn legacy_link_key_migration_sqlite() {
+        let mut storage = store();
+        let (forward, reverse, link) = legacy_link_rows();
+        storage.put(forward).expect("legacy forward seeds");
+        storage.put(reverse).expect("legacy reverse seeds");
+
+        crate::adapter::migrate_legacy_link_keys(&mut storage).expect("migration succeeds");
+        let migrated = storage
+            .get(
+                &Link::links_collection(),
+                &Link::storage_id(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                ),
+            )
+            .expect("typed lookup succeeds")
+            .expect("typed forward exists");
+        assert_eq!(migrated.version, 7);
+        assert_eq!(
+            storage
+                .list_inbound_links(&link.target_collection, &link.target_id, None)
+                .expect("reverse rebuilt"),
+            vec![link]
+        );
+    }
+
+    #[test]
+    fn legacy_link_key_crash_resume_sqlite() {
+        let mut storage = store();
+        let (forward, reverse, link) = legacy_link_rows();
+        let legacy_forward_id = forward.id.clone();
+        storage.put(forward).expect("legacy forward seeds");
+        storage.put(reverse).expect("legacy reverse seeds");
+
+        assert!(crate::adapter::migrate_legacy_link_keys_with_crash(&mut storage).is_err());
+        assert!(storage
+            .get(&Link::links_collection(), &legacy_forward_id)
+            .expect("legacy lookup succeeds")
+            .is_some());
+        assert!(storage
+            .get(
+                &Link::links_collection(),
+                &LinkKey::forward(&link).entity_id()
+            )
+            .expect("typed lookup succeeds")
+            .is_none());
+
+        crate::adapter::migrate_legacy_link_keys(&mut storage).expect("retry succeeds");
+        crate::adapter::migrate_legacy_link_keys(&mut storage).expect("retry is idempotent");
+        assert_eq!(
+            storage
+                .get_link(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                )
+                .expect("typed link lookup"),
+            Some(link)
+        );
+    }
+
+    #[test]
+    fn legacy_link_key_migration_fails_closed_sqlite() {
+        let mut malformed = store();
+        let malformed_id = EntityId::new("not/a/valid/link");
+        malformed
+            .put(Entity::new(
+                Link::links_collection(),
+                malformed_id.clone(),
+                json!({"not": "a link"}),
+            ))
+            .expect("malformed row seeds");
+        assert!(crate::adapter::migrate_legacy_link_keys(&mut malformed).is_err());
+        assert!(malformed
+            .get(&Link::links_collection(), &malformed_id)
+            .expect("malformed row lookup")
+            .is_some());
+
+        let mut duplicate = store();
+        let (legacy_forward, legacy_reverse, link) = legacy_link_rows();
+        let legacy_id = legacy_forward.id.clone();
+        duplicate.put(legacy_forward).expect("legacy forward seeds");
+        duplicate.put(legacy_reverse).expect("legacy reverse seeds");
+        duplicate
+            .put(link.to_entity())
+            .expect("typed duplicate seeds");
+        assert!(crate::adapter::migrate_legacy_link_keys(&mut duplicate).is_err());
+        assert!(duplicate
+            .get(&Link::links_collection(), &legacy_id)
+            .expect("legacy duplicate lookup")
+            .is_some());
+        assert!(duplicate
+            .get(
+                &Link::links_collection(),
+                &LinkKey::forward(&link).entity_id()
+            )
+            .expect("typed duplicate lookup")
+            .is_some());
+
+        let mut orphan = store();
+        let orphan_id = EntityId::new("orphan/reverse/identity");
+        orphan
+            .put(Entity::new(
+                Link::links_rev_collection(),
+                orphan_id.clone(),
+                Value::Null,
+            ))
+            .expect("orphan reverse seeds");
+        assert!(crate::adapter::migrate_legacy_link_keys(&mut orphan).is_err());
+        assert!(orphan
+            .get(&Link::links_rev_collection(), &orphan_id)
+            .expect("orphan lookup")
+            .is_some());
     }
 }
 

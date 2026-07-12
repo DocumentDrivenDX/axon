@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,10 +11,146 @@ pub const LINKS_COLLECTION: &str = "__axon_links__";
 
 /// The name of the reverse-index collection for efficient inbound-link queries.
 ///
-/// Entries use IDs formatted as `{target_col}/{target_id}/{source_col}/{source_id}/{link_type}`,
-/// enabling a targeted prefix scan to find all links pointing at a given entity
-/// without a full table scan of the main links collection.
+/// Entries use typed [`LinkKey`] IDs whose target components form an injective
+/// scan prefix, enabling inbound lookup without scanning the forward store.
 pub const LINKS_REV_COLLECTION: &str = "__axon_links_rev__";
+
+const LINK_KEY_VERSION: &str = "lk1";
+const LINK_KEY_FORWARD: char = 'f';
+const LINK_KEY_REVERSE: char = 'r';
+
+/// Injective, versioned identity for a persisted link row.
+///
+/// Each UTF-8 component is represented by its byte length followed by its
+/// hexadecimal bytes. The representation is ASCII-only, so it is safe in the
+/// text primary keys used by every durable adapter, and component prefixes are
+/// also byte prefixes suitable for bounded range scans.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinkKey(String);
+
+impl LinkKey {
+    fn start(direction: char) -> String {
+        format!("{LINK_KEY_VERSION}{direction}|")
+    }
+
+    fn push_component(encoded: &mut String, value: &str) {
+        let bytes = value.as_bytes();
+        write!(encoded, "{:016x}:", bytes.len()).expect("writing to String cannot fail");
+        for byte in bytes {
+            write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        encoded.push('|');
+    }
+
+    fn from_components(direction: char, components: &[&str]) -> Self {
+        let mut encoded = Self::start(direction);
+        for component in components {
+            Self::push_component(&mut encoded, component);
+        }
+        Self(encoded)
+    }
+
+    /// Canonical key for the forward link record.
+    pub fn forward(link: &Link) -> Self {
+        Self::forward_parts(
+            &link.source_collection,
+            &link.source_id,
+            &link.link_type,
+            &link.target_collection,
+            &link.target_id,
+        )
+    }
+
+    /// Canonical key for a forward link identity tuple.
+    pub fn forward_parts(
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: &str,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+    ) -> Self {
+        Self::from_components(
+            LINK_KEY_FORWARD,
+            &[
+                source_collection.as_str(),
+                source_id.as_str(),
+                link_type,
+                target_collection.as_str(),
+                target_id.as_str(),
+            ],
+        )
+    }
+
+    /// Canonical key for the reverse-index record of a link.
+    pub fn reverse(link: &Link) -> Self {
+        Self::reverse_parts(
+            &link.target_collection,
+            &link.target_id,
+            &link.source_collection,
+            &link.source_id,
+            &link.link_type,
+        )
+    }
+
+    /// Canonical key for a reverse link identity tuple.
+    pub fn reverse_parts(
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: &str,
+    ) -> Self {
+        Self::from_components(
+            LINK_KEY_REVERSE,
+            &[
+                target_collection.as_str(),
+                target_id.as_str(),
+                source_collection.as_str(),
+                source_id.as_str(),
+                link_type,
+            ],
+        )
+    }
+
+    /// Prefix selecting all forward links from an entity, optionally by type.
+    pub fn forward_prefix(
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: Option<&str>,
+    ) -> String {
+        let mut encoded = Self::start(LINK_KEY_FORWARD);
+        Self::push_component(&mut encoded, source_collection.as_str());
+        Self::push_component(&mut encoded, source_id.as_str());
+        if let Some(link_type) = link_type {
+            Self::push_component(&mut encoded, link_type);
+        }
+        encoded
+    }
+
+    /// Prefix selecting all reverse rows for a target entity.
+    pub fn reverse_prefix(target_collection: &CollectionId, target_id: &EntityId) -> String {
+        let mut encoded = Self::start(LINK_KEY_REVERSE);
+        Self::push_component(&mut encoded, target_collection.as_str());
+        Self::push_component(&mut encoded, target_id.as_str());
+        encoded
+    }
+
+    /// Return the encoded key.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Convert this key to the storage adapter's entity-ID type.
+    pub fn entity_id(&self) -> EntityId {
+        EntityId::new(self.0.clone())
+    }
+
+    /// Whether an ID is in the LinkKey namespace. Exact tuple validation is
+    /// performed by recomputing the expected key from the row payload.
+    pub fn is_encoded_id(id: &EntityId) -> bool {
+        id.as_str().starts_with("lk1f|") || id.as_str().starts_with("lk1r|")
+    }
+}
 
 /// A typed directional edge between two entities.
 ///
@@ -40,7 +177,7 @@ pub struct Link {
 impl Link {
     /// Computes the canonical storage ID for a link entity.
     ///
-    /// Format: `<source_col>/<source_id>/<link_type>/<target_col>/<target_id>`
+    /// Uses the injective, versioned [`LinkKey`] representation.
     pub fn storage_id(
         source_col: &CollectionId,
         source_id: &EntityId,
@@ -48,10 +185,7 @@ impl Link {
         target_col: &CollectionId,
         target_id: &EntityId,
     ) -> EntityId {
-        EntityId::new(format!(
-            "{}/{}/{}/{}/{}",
-            source_col, source_id, link_type, target_col, target_id,
-        ))
+        LinkKey::forward_parts(source_col, source_id, link_type, target_col, target_id).entity_id()
     }
 
     /// Returns the internal collection that holds all links.
@@ -66,9 +200,7 @@ impl Link {
 
     /// Computes the reverse-index storage ID for an inbound-link entry.
     ///
-    /// Format: `<target_col>/<target_id>/<source_col>/<source_id>/<link_type>`
-    ///
-    /// IDs with the same `target_col/target_id/` prefix can be found with a
+    /// IDs with the same typed target prefix can be found with a
     /// bounded `range_scan`, avoiding a full table scan.
     pub fn rev_storage_id(
         target_col: &CollectionId,
@@ -77,15 +209,13 @@ impl Link {
         source_id: &EntityId,
         link_type: &str,
     ) -> EntityId {
-        EntityId::new(format!(
-            "{}/{}/{}/{}/{}",
-            target_col, target_id, source_col, source_id, link_type,
-        ))
+        LinkKey::reverse_parts(target_col, target_id, source_col, source_id, link_type).entity_id()
     }
 
     /// Serializes this link into a reverse-index [`Entity`].
     ///
-    /// The entity carries no data payload; only its ID is meaningful.
+    /// The payload mirrors the forward row so readers and migrations never
+    /// need to recover typed components by parsing an identity string.
     pub fn to_rev_entity(&self) -> Entity {
         let rev_id = Self::rev_storage_id(
             &self.target_collection,
@@ -97,7 +227,7 @@ impl Link {
         Entity::new(
             Self::links_rev_collection(),
             rev_id,
-            serde_json::Value::Null,
+            serde_json::to_value(self).expect("Link is always serializable"),
         )
     }
 
@@ -216,6 +346,55 @@ impl Entity {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::BTreeSet;
+
+    fn test_link(parts: [&str; 5]) -> Link {
+        Link {
+            source_collection: CollectionId::new(parts[0]),
+            source_id: EntityId::new(parts[1]),
+            link_type: parts[2].to_string(),
+            target_collection: CollectionId::new(parts[3]),
+            target_id: EntityId::new(parts[4]),
+            metadata: Value::Null,
+        }
+    }
+
+    #[test]
+    fn link_key_is_injective_for_delimiters_unicode_and_empty_boundaries() {
+        let vectors = [
+            ["a/b", "c", "d", "e", "f"],
+            ["a", "b/c", "d", "e", "f"],
+            ["a", "b", "c/d", "e", "f"],
+            ["", "/", "", "雪/❄", ""],
+            ["é", "e\u{301}", "🔗", "集合", "目标"],
+        ];
+        let keys: BTreeSet<_> = vectors
+            .iter()
+            .map(|parts| LinkKey::forward(&test_link(*parts)))
+            .collect();
+        assert_eq!(keys.len(), vectors.len());
+    }
+
+    #[test]
+    fn link_key_forward_reverse_and_prefix_round_trip() {
+        let link = test_link(["src/集合", "", "kind/🔗", "dst", "id/尾"]);
+        let forward = LinkKey::forward(&link);
+        let reverse = LinkKey::reverse(&link);
+        assert_ne!(forward.as_str(), reverse.as_str());
+        assert!(forward.as_str().starts_with(&LinkKey::forward_prefix(
+            &link.source_collection,
+            &link.source_id,
+            Some(&link.link_type),
+        )));
+        assert!(reverse.as_str().starts_with(&LinkKey::reverse_prefix(
+            &link.target_collection,
+            &link.target_id,
+        )));
+        assert_eq!(link.to_entity().id, forward.entity_id());
+        let reverse_entity = link.to_rev_entity();
+        assert_eq!(reverse_entity.id, reverse.entity_id());
+        assert_eq!(Link::from_entity(&reverse_entity), Some(link));
+    }
 
     #[test]
     fn entity_new_starts_at_version_one() {
