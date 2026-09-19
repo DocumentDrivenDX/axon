@@ -105,6 +105,7 @@ impl SqliteStorageAdapter {
             in_tx: false,
         };
         adapter.init_schema()?;
+        crate::adapter::migrate_legacy_link_keys(&mut adapter)?;
         adapter.backfill_indexes_on_open()?;
         Ok(adapter)
     }
@@ -191,6 +192,7 @@ impl SqliteStorageAdapter {
             in_tx: false,
         };
         adapter.init_schema()?;
+        crate::adapter::migrate_legacy_link_keys(&mut adapter)?;
         adapter.backfill_indexes_on_open()?;
         Ok(adapter)
     }
@@ -596,31 +598,40 @@ impl SqliteStorageAdapter {
             .execute(&self.pool),
         )?;
 
-        let select_sql = match (has_database_name, has_schema_name) {
-            (true, true) => {
-                "SELECT name, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default')
-                 FROM collections_legacy"
-            }
-            (true, false) => {
-                "SELECT name, COALESCE(database_name, 'default'), 'default'
-                 FROM collections_legacy"
-            }
-            (false, true) => {
-                "SELECT name, 'default', COALESCE(schema_name, 'default')
-                 FROM collections_legacy"
-            }
-            (false, false) => {
-                "SELECT name, 'default', 'default'
-                 FROM collections_legacy"
-            }
+        match (has_database_name, has_schema_name) {
+            (true, true) => self.block_on(
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
+                     SELECT name, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default')
+                     FROM collections_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (true, false) => self.block_on(
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
+                     SELECT name, COALESCE(database_name, 'default'), 'default'
+                     FROM collections_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, true) => self.block_on(
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
+                     SELECT name, 'default', COALESCE(schema_name, 'default')
+                     FROM collections_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, false) => self.block_on(
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
+                     SELECT name, 'default', 'default'
+                     FROM collections_legacy",
+                )
+                .execute(&self.pool),
+            )?,
         };
-
-        self.block_on(
-            sqlx::query(&format!(
-                "INSERT OR IGNORE INTO collections (name, database_name, schema_name) {select_sql}"
-            ))
-            .execute(&self.pool),
-        )?;
         self.block_on(sqlx::query("DROP TABLE collections_legacy").execute(&self.pool))?;
         Ok(())
     }
@@ -648,31 +659,44 @@ impl SqliteStorageAdapter {
             .execute(&self.pool),
         )?;
 
-        let select_sql = match (has_database_name, has_schema_name) {
-            (true, true) => {
-                "SELECT collection, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default'), id, version, data
-                 FROM entities_legacy"
-            }
-            (true, false) => {
-                "SELECT collection, COALESCE(database_name, 'default'), 'default', id, version, data
-                 FROM entities_legacy"
-            }
-            (false, true) => {
-                "SELECT collection, 'default', COALESCE(schema_name, 'default'), id, version, data
-                 FROM entities_legacy"
-            }
-            (false, false) => {
-                "SELECT collection, 'default', 'default', id, version, data
-                 FROM entities_legacy"
-            }
+        match (has_database_name, has_schema_name) {
+            (true, true) => self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities
+                        (collection, database_name, schema_name, id, version, data)
+                     SELECT collection, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default'), id, version, data
+                     FROM entities_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (true, false) => self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities
+                        (collection, database_name, schema_name, id, version, data)
+                     SELECT collection, COALESCE(database_name, 'default'), 'default', id, version, data
+                     FROM entities_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, true) => self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities
+                        (collection, database_name, schema_name, id, version, data)
+                     SELECT collection, 'default', COALESCE(schema_name, 'default'), id, version, data
+                     FROM entities_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, false) => self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO entities
+                        (collection, database_name, schema_name, id, version, data)
+                     SELECT collection, 'default', 'default', id, version, data
+                     FROM entities_legacy",
+                )
+                .execute(&self.pool),
+            )?,
         };
-
-        self.block_on(
-            sqlx::query(&format!(
-                "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data) {select_sql}"
-            ))
-            .execute(&self.pool),
-        )?;
         self.block_on(sqlx::query("DROP TABLE entities_legacy").execute(&self.pool))?;
         Ok(())
     }
@@ -701,48 +725,59 @@ impl SqliteStorageAdapter {
             .execute(&self.pool),
         )?;
 
-        let select_sql = match (has_database_name, has_schema_name) {
-            (true, true) => {
-                "SELECT collection,
-                        COALESCE(database_name, 'default'),
-                        COALESCE(schema_name, 'default'),
-                        version,
-                        schema_json,
-                        created_at
-                 FROM schema_versions_legacy"
-            }
-            (true, false) => {
-                "SELECT collection,
-                        COALESCE(database_name, 'default'),
-                        'default',
-                        version,
-                        schema_json,
-                        created_at
-                 FROM schema_versions_legacy"
-            }
-            (false, true) => {
-                "SELECT collection,
-                        'default',
-                        COALESCE(schema_name, 'default'),
-                        version,
-                        schema_json,
-                        created_at
-                 FROM schema_versions_legacy"
-            }
-            (false, false) => {
-                "SELECT collection, 'default', 'default', version, schema_json, created_at
-                 FROM schema_versions_legacy"
-            }
+        match (has_database_name, has_schema_name) {
+            (true, true) => self.block_on(
+                sqlx::query(
+                    "INSERT INTO schema_versions
+                        (collection, database_name, schema_name, version, schema_json, created_at)
+                     SELECT collection,
+                            COALESCE(database_name, 'default'),
+                            COALESCE(schema_name, 'default'),
+                            version,
+                            schema_json,
+                            created_at
+                     FROM schema_versions_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (true, false) => self.block_on(
+                sqlx::query(
+                    "INSERT INTO schema_versions
+                        (collection, database_name, schema_name, version, schema_json, created_at)
+                     SELECT collection,
+                            COALESCE(database_name, 'default'),
+                            'default',
+                            version,
+                            schema_json,
+                            created_at
+                     FROM schema_versions_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, true) => self.block_on(
+                sqlx::query(
+                    "INSERT INTO schema_versions
+                        (collection, database_name, schema_name, version, schema_json, created_at)
+                     SELECT collection,
+                            'default',
+                            COALESCE(schema_name, 'default'),
+                            version,
+                            schema_json,
+                            created_at
+                     FROM schema_versions_legacy",
+                )
+                .execute(&self.pool),
+            )?,
+            (false, false) => self.block_on(
+                sqlx::query(
+                    "INSERT INTO schema_versions
+                        (collection, database_name, schema_name, version, schema_json, created_at)
+                     SELECT collection, 'default', 'default', version, schema_json, created_at
+                     FROM schema_versions_legacy",
+                )
+                .execute(&self.pool),
+            )?,
         };
-
-        self.block_on(
-            sqlx::query(&format!(
-                "INSERT INTO schema_versions
-                    (collection, database_name, schema_name, version, schema_json, created_at)
-                 {select_sql}"
-            ))
-            .execute(&self.pool),
-        )?;
         self.block_on(sqlx::query("DROP TABLE schema_versions_legacy").execute(&self.pool))?;
         Ok(())
     }
@@ -775,38 +810,40 @@ impl SqliteStorageAdapter {
             .execute(&self.pool),
         )?;
 
-        let select_sql = match (has_database_name, has_schema_name) {
-            (true, true) => {
-                "SELECT collection,
-                        COALESCE(database_name, 'default'),
-                        COALESCE(schema_name, 'default'),
-                        version,
-                        view_json,
-                        updated_at_ns,
-                        updated_by
-                 FROM collection_views_legacy"
-            }
-            _ => {
-                "SELECT v.collection,
-                        COALESCE(c.database_name, 'default'),
-                        COALESCE(c.schema_name, 'default'),
-                        v.version,
-                        v.view_json,
-                        v.updated_at_ns,
-                        v.updated_by
-                 FROM collection_views_legacy v
-                 LEFT JOIN collections c ON c.name = v.collection"
-            }
-        };
-
-        self.block_on(
-            sqlx::query(&format!(
-                "INSERT OR REPLACE INTO collection_views
-                    (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
-                 {select_sql}"
-            ))
-            .execute(&self.pool),
-        )?;
+        if has_database_name && has_schema_name {
+            self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO collection_views
+                        (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
+                     SELECT collection,
+                            COALESCE(database_name, 'default'),
+                            COALESCE(schema_name, 'default'),
+                            version,
+                            view_json,
+                            updated_at_ns,
+                            updated_by
+                     FROM collection_views_legacy",
+                )
+                .execute(&self.pool),
+            )?;
+        } else {
+            self.block_on(
+                sqlx::query(
+                    "INSERT OR REPLACE INTO collection_views
+                        (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
+                     SELECT v.collection,
+                            COALESCE(c.database_name, 'default'),
+                            COALESCE(c.schema_name, 'default'),
+                            v.version,
+                            v.view_json,
+                            v.updated_at_ns,
+                            v.updated_by
+                     FROM collection_views_legacy v
+                     LEFT JOIN collections c ON c.name = v.collection",
+                )
+                .execute(&self.pool),
+            )?;
+        }
         self.block_on(sqlx::query("DROP TABLE collection_views_legacy").execute(&self.pool))?;
         Ok(())
     }
@@ -3681,8 +3718,8 @@ mod tests {
         CanonicalOperationMetadata, MutationIntentDecision, MutationIntentScopeBinding,
         MutationIntentSubjectBinding, MutationOperationKind, MutationReviewSummary,
     };
-    use axon_core::types::Link;
-    use serde_json::json;
+    use axon_core::types::{Link, LinkKey};
+    use serde_json::{json, Value};
     use tempfile::NamedTempFile;
 
     fn tasks() -> CollectionId {
@@ -5780,6 +5817,301 @@ mod tests {
             store.commit_tx().expect("commit_tx");
             assert_eq!(lookup_status(&store, "active"), vec![EntityId::new("p-1")]);
         }
+    }
+
+    fn legacy_link_rows() -> (Entity, Entity, Link) {
+        let link = Link {
+            source_collection: CollectionId::new("src/集合"),
+            source_id: EntityId::new("source/one"),
+            target_collection: CollectionId::new("dst/集合"),
+            target_id: EntityId::new("target/two"),
+            link_type: "owns/typed".into(),
+            metadata: json!({"legacy": true}),
+        };
+        let forward_id = EntityId::new(
+            [
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+            ]
+            .join("/"),
+        );
+        let reverse_id = EntityId::new(
+            [
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+            ]
+            .join("/"),
+        );
+        let mut forward = Entity::new(
+            Link::links_collection(),
+            forward_id,
+            serde_json::to_value(&link).expect("link serializes"),
+        );
+        forward.version = 7;
+        forward.created_at_ns = Some(11);
+        forward.updated_at_ns = Some(22);
+        let reverse = Entity::new(Link::links_rev_collection(), reverse_id, Value::Null);
+        (forward, reverse, link)
+    }
+
+    #[test]
+    fn legacy_link_key_migration_sqlite() {
+        let mut storage = store();
+        let (forward, reverse, link) = legacy_link_rows();
+        storage.put(forward).expect("legacy forward seeds");
+        storage.put(reverse).expect("legacy reverse seeds");
+
+        crate::adapter::migrate_legacy_link_keys(&mut storage).expect("migration succeeds");
+        let migrated = storage
+            .get(
+                &Link::links_collection(),
+                &Link::storage_id(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                ),
+            )
+            .expect("typed lookup succeeds")
+            .expect("typed forward exists");
+        assert_eq!(migrated.version, 7);
+        assert_eq!(
+            storage
+                .list_inbound_links(&link.target_collection, &link.target_id, None)
+                .expect("reverse rebuilt"),
+            vec![link]
+        );
+    }
+
+    #[test]
+    fn legacy_link_key_prefix_like_components_migrate_sqlite() {
+        let mut storage = store();
+        let link = Link {
+            source_collection: CollectionId::new("lk1f|legacy-source"),
+            source_id: EntityId::new("source-id"),
+            target_collection: CollectionId::new("lk1r|legacy-target"),
+            target_id: EntityId::new("target-id"),
+            link_type: "typed".into(),
+            metadata: json!({"regression": "prefix discriminator"}),
+        };
+        let legacy_forward_id = EntityId::new(
+            [
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+            ]
+            .join("/"),
+        );
+        let legacy_reverse_id = EntityId::new(
+            [
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+            ]
+            .join("/"),
+        );
+        assert!(legacy_forward_id.as_str().starts_with("lk1f|"));
+        assert!(legacy_reverse_id.as_str().starts_with("lk1r|"));
+        storage
+            .put(Entity::new(
+                Link::links_collection(),
+                legacy_forward_id,
+                serde_json::to_value(&link).expect("link serializes"),
+            ))
+            .expect("prefix-like legacy forward seeds");
+        storage
+            .put(Entity::new(
+                Link::links_rev_collection(),
+                legacy_reverse_id,
+                Value::Null,
+            ))
+            .expect("prefix-like legacy reverse seeds");
+
+        crate::adapter::migrate_legacy_link_keys(&mut storage).expect("migration succeeds");
+        assert_eq!(
+            storage
+                .get_link(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                )
+                .expect("typed lookup succeeds"),
+            Some(link)
+        );
+    }
+
+    #[test]
+    fn legacy_link_key_migration_ignores_obsolete_typed_reverse_collisions_sqlite() {
+        let mut storage = store();
+        let first = Link {
+            source_collection: CollectionId::new("source"),
+            source_id: EntityId::new("entity"),
+            target_collection: CollectionId::new("target/segment"),
+            target_id: EntityId::new("id"),
+            link_type: "owns".into(),
+            metadata: json!({"typed": 1}),
+        };
+        let second = Link {
+            source_collection: CollectionId::new("source"),
+            source_id: EntityId::new("entity"),
+            target_collection: CollectionId::new("target"),
+            target_id: EntityId::new("segment/id"),
+            link_type: "owns".into(),
+            metadata: json!({"typed": 2}),
+        };
+        assert_ne!(LinkKey::forward(&first), LinkKey::forward(&second));
+        assert_eq!(
+            [
+                first.target_collection.as_str(),
+                first.target_id.as_str(),
+                first.source_collection.as_str(),
+                first.source_id.as_str(),
+                first.link_type.as_str(),
+            ]
+            .join("/"),
+            [
+                second.target_collection.as_str(),
+                second.target_id.as_str(),
+                second.source_collection.as_str(),
+                second.source_id.as_str(),
+                second.link_type.as_str(),
+            ]
+            .join("/"),
+            "fixture must collide only under the retired reverse encoding"
+        );
+        storage.put_link(&first).expect("first typed link seeds");
+        storage.put_link(&second).expect("second typed link seeds");
+
+        crate::adapter::migrate_legacy_link_keys(&mut storage)
+            .expect("healthy typed rows ignore obsolete legacy collisions");
+        assert_eq!(
+            storage
+                .get_link(
+                    &first.source_collection,
+                    &first.source_id,
+                    &first.link_type,
+                    &first.target_collection,
+                    &first.target_id,
+                )
+                .expect("first typed lookup"),
+            Some(first)
+        );
+        assert_eq!(
+            storage
+                .get_link(
+                    &second.source_collection,
+                    &second.source_id,
+                    &second.link_type,
+                    &second.target_collection,
+                    &second.target_id,
+                )
+                .expect("second typed lookup"),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn legacy_link_key_crash_resume_sqlite() {
+        let mut storage = store();
+        let (forward, reverse, link) = legacy_link_rows();
+        let legacy_forward_id = forward.id.clone();
+        storage.put(forward).expect("legacy forward seeds");
+        storage.put(reverse).expect("legacy reverse seeds");
+
+        assert!(crate::adapter::migrate_legacy_link_keys_with_crash(&mut storage).is_err());
+        assert!(storage
+            .get(&Link::links_collection(), &legacy_forward_id)
+            .expect("legacy lookup succeeds")
+            .is_some());
+        assert!(storage
+            .get(
+                &Link::links_collection(),
+                &LinkKey::forward(&link).entity_id()
+            )
+            .expect("typed lookup succeeds")
+            .is_none());
+
+        crate::adapter::migrate_legacy_link_keys(&mut storage).expect("retry succeeds");
+        crate::adapter::migrate_legacy_link_keys(&mut storage).expect("retry is idempotent");
+        assert_eq!(
+            storage
+                .get_link(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                )
+                .expect("typed link lookup"),
+            Some(link)
+        );
+    }
+
+    #[test]
+    fn legacy_link_key_migration_fails_closed_sqlite() {
+        let mut malformed = store();
+        let malformed_id = EntityId::new("not/a/valid/link");
+        malformed
+            .put(Entity::new(
+                Link::links_collection(),
+                malformed_id.clone(),
+                json!({"not": "a link"}),
+            ))
+            .expect("malformed row seeds");
+        assert!(crate::adapter::migrate_legacy_link_keys(&mut malformed).is_err());
+        assert!(malformed
+            .get(&Link::links_collection(), &malformed_id)
+            .expect("malformed row lookup")
+            .is_some());
+
+        let mut duplicate = store();
+        let (legacy_forward, legacy_reverse, link) = legacy_link_rows();
+        let legacy_id = legacy_forward.id.clone();
+        duplicate.put(legacy_forward).expect("legacy forward seeds");
+        duplicate.put(legacy_reverse).expect("legacy reverse seeds");
+        duplicate
+            .put(link.to_entity())
+            .expect("typed duplicate seeds");
+        assert!(crate::adapter::migrate_legacy_link_keys(&mut duplicate).is_err());
+        assert!(duplicate
+            .get(&Link::links_collection(), &legacy_id)
+            .expect("legacy duplicate lookup")
+            .is_some());
+        assert!(duplicate
+            .get(
+                &Link::links_collection(),
+                &LinkKey::forward(&link).entity_id()
+            )
+            .expect("typed duplicate lookup")
+            .is_some());
+
+        let mut orphan = store();
+        let orphan_id = EntityId::new("orphan/reverse/identity");
+        orphan
+            .put(Entity::new(
+                Link::links_rev_collection(),
+                orphan_id.clone(),
+                Value::Null,
+            ))
+            .expect("orphan reverse seeds");
+        assert!(crate::adapter::migrate_legacy_link_keys(&mut orphan).is_err());
+        assert!(orphan
+            .get(&Link::links_rev_collection(), &orphan_id)
+            .expect("orphan lookup")
+            .is_some());
     }
 }
 

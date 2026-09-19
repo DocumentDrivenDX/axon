@@ -9,9 +9,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use axon_api::AxonBuilder;
 use axon_core::auth::TenantId;
 use axon_core::error::AxonError;
-use axon_storage::{MemoryStorageAdapter, StorageAdapter};
+use axon_storage::StorageAdapter;
 
 /// Trait that produces a fresh storage adapter for a given (tenant, database) pair.
 ///
@@ -74,6 +75,6 @@ impl DatabaseAdapterFactory for MemoryAdapterFactory {
         _tenant_id: TenantId,
         _database_name: &str,
     ) -> Result<Arc<dyn StorageAdapter + Send + Sync>, AxonError> {
-        Ok(Arc::new(MemoryStorageAdapter::default()))
+        AxonBuilder::new().memory().build_shared_storage()
     }
 }

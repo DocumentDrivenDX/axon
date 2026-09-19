@@ -4,7 +4,10 @@ ddx:
   depends_on:
     - helix.prd
   review:
-    reviewed_at: "2026-07-06T00:00:00Z"
+    reviewed_at: "2026-07-11T04:59:35Z"
+    self_hash: e758f2f571fdd32ab1936872bf8415044d2502aee3f8f314a7da2c5cd31e7aa7
+    deps:
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
 ---
 
 # Decision Record: Release Target and Readiness Dispositions (2026-07-06)
@@ -27,7 +30,7 @@ record is the source of truth it aligns to.
 ## 1. Release target disposition
 
 **Disposition: REVOKE the 0.7.1 documentation-only target. CONFIRM 0.4.x as
-the current, evidence-backed pilot release target.**
+the current, evidence-backed pilot-ready release target.**
 
 - **Prior state**: `docs/helix/01-frame/prd.md` and
   `docs/helix/01-frame/feature-registry.md` recorded an operator-requested
@@ -37,10 +40,11 @@ the current, evidence-backed pilot release target.**
   authority only: local and `origin` Git tags ended at `v0.2.8` and
   `Cargo.toml` still declared workspace version `0.2.8` at the time, so no
   `v0.7.1` release, tag, or package had actually shipped.
-- **Current evidence (2026-07-06)**: `Cargo.toml` declares workspace version
-  `0.4.0`; `git tag --sort=-v:refname` and `git ls-remote --tags origin` both
-  show the newest published tag as `v0.4.0`. No `v0.7.1` tag, release, or
-  package exists locally or on `origin` at decision time.
+- **Current evidence (refreshed 2026-07-11)**: `Cargo.toml` declares workspace
+  version `0.4.0`; `git tag --sort=-v:refname` and `git ls-remote --tags
+  origin` both show the newest published tag as `v0.4.0`; GitHub release
+  `v0.4.0` is published (2026-06-30). No `v0.7.1` tag, release, or package
+  exists locally or on `origin` at refresh time.
 - **Reasoning**: the repository's real, shippable release train advanced past
   the recorded evidence baseline (`v0.2.8`) to `v0.4.0` without ever reaching
   `0.7.1`. Continuing to plan against `0.7.1` keeps the PRD, feature registry,
@@ -50,11 +54,15 @@ the current, evidence-backed pilot release target.**
   the operator's pilot-readiness target: Axon's V1 readiness verdict
   (`axon-5744d96b`) is evaluated against a `0.4.x` pilot release, not a
   `0.7.1` release.
-- **What this does not decide**: whether or when to cut an actual `v0.4.x`
-  GitHub release/tag/package artifact remains release-workflow work outside
-  this decision (tracked by the deployment/readiness beads under
-  `axon-01b14163`). This disposition only fixes the *target version line*
-  that HELIX docs align to.
+  This pilot line is qualified on PostgreSQL 16 only; GA criteria are not
+  adopted here, and no broader PostgreSQL-major promise is made in this
+  disposition.
+- **What this does not decide**: whether or when to cut any later `0.4.x`
+  artifact beyond the published `v0.4.0` GitHub release/tag remains
+  release-workflow work outside this decision (tracked by the
+  deployment/readiness beads under `axon-01b14163`). This disposition fixes the
+  *target version line* that HELIX docs align to and treats `v0.4.0` as the
+  verified published release floor for the current refresh.
 - **Follow-up**: `axon-72b6f0b4` sweeps `docs/helix/01-frame/prd.md`,
   `feature-registry.md`, `docs/helix/04-build/implementation-plan.md`,
   `docs/helix/05-deploy/*`, ADRs, contracts, and alignment reviews so every
@@ -149,7 +157,7 @@ workload until the DDx-side wire contract lands.
 
 | Disposition | Evidence |
 |---|---|
-| Release target: 0.4.x confirmed, 0.7.1 revoked | `Cargo.toml:22` (`version = "0.4.0"`); `git tag --sort=-v:refname` (newest `v0.4.0`); `git ls-remote --tags origin` (newest `v0.4.0`); prior target record `docs/helix/06-iterate/alignment-reviews/AR-2026-06-14-release-0.7.1-website.md` |
+| Release target: 0.4.x confirmed, 0.7.1 revoked | `Cargo.toml:22` (`version = "0.4.0"`); `git tag --sort=-v:refname` (newest `v0.4.0`); `git ls-remote --tags origin` (newest `v0.4.0`); `gh release view v0.4.0` (published 2026-06-30); prior target record `docs/helix/06-iterate/alignment-reviews/AR-2026-06-14-release-0.7.1-website.md` |
 | Audit retention/erasure: deferred | `docs/helix/01-frame/prd.md` Open Questions; `docs/helix/01-frame/security-requirements.md` SR-13, B-9 |
 | Tamper-evident audit chain: out of scope | `docs/helix/01-frame/security-requirements.md` SR-16, B-1; `docs/helix/01-frame/features/FEAT-003` Out of Scope |
 | Whole-consumer workloads: DDx Phase-0 deferred | `docs/helix/03-test/consumer-workload-gate.md`; `target/consumer-workloads/consumer-workloads-20260707T155913Z-2710277/summary.json` (`consumer_sha` `235fbe60f1d56d3e90878d4b0a1546da46017dc2`, `consumer_dirty` `false`, `status` `blocked`, `classification` `contract_gap`); `.ddx/executions/20260707T155208-9abed957/ddx-phase0-deferral.md` |

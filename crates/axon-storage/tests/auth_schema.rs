@@ -14,7 +14,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
-use axon_storage::{apply_auth_migrations_postgres, provision_postgres_database, tenant_dsn};
+use axon_storage::{
+    apply_auth_migrations_postgres, deprovision_postgres_database, provision_postgres_database,
+    tenant_dsn,
+};
 use sqlx::Row;
 use testcontainers_modules::{postgres, testcontainers::runners::SyncRunner};
 
@@ -22,6 +25,15 @@ use testcontainers_modules::{postgres, testcontainers::runners::SyncRunner};
 
 struct TestPg {
     pub dsn: String,
+    cleanup: Option<(String, String)>,
+}
+
+impl Drop for TestPg {
+    fn drop(&mut self) {
+        if let Some((superadmin_dsn, database_name)) = self.cleanup.take() {
+            let _ = deprovision_postgres_database(&superadmin_dsn, &database_name);
+        }
+    }
 }
 
 /// Resolve the shared, process-wide superadmin DSN, starting a single
@@ -86,6 +98,7 @@ fn cluster_or_skip(test_name: &str) -> Option<TestPg> {
 
     Some(TestPg {
         dsn: tenant_dsn(&dsn, &db_name),
+        cleanup: Some((dsn, db_name)),
     })
 }
 

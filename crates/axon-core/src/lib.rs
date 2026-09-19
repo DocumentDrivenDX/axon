@@ -25,8 +25,11 @@ pub use guardrails::{
     GuardrailsConfig, GuardrailsLayer, RateLimitConfig, RejectionReason, TokenBucket,
 };
 pub use id::{
-    CollectionId, EntityId, LinkId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE,
-    DEFAULT_SCHEMA,
+    AuditSubject, AuditSubjectClass, BeadSystemCapability, BeadSystemCollection,
+    CheckpointCapability, CollectionId, EntityId, GovernedSystemCapability,
+    GovernedSystemCollection, GovernedWriteTx, LinkId, MigrationCapability, Namespace,
+    QualifiedCollectionId, SystemCollection, SystemCollectionClass, BEAD_SYSTEM_CAPABILITY,
+    DEFAULT_DATABASE, DEFAULT_SCHEMA,
 };
 pub use intent::{
     ApprovalState, CanonicalOperationMetadata, ExecutableMutationIntent, MutationApprovalRoute,
@@ -34,4 +37,4 @@ pub use intent::{
     MutationIntentSubjectBinding, MutationIntentToken, MutationIntentTokenLookupError,
     MutationIntentTokenSigner, MutationOperationKind, MutationReviewSummary, PreImageBinding,
 };
-pub use types::{Entity, GateResult, Link, RuleViolation, LINKS_COLLECTION};
+pub use types::{Entity, GateResult, Link, LinkKey, RuleViolation, LINKS_COLLECTION};

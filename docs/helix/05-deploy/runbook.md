@@ -6,6 +6,14 @@ ddx:
     - FEAT-028
     - CONTRACT-008
     - DEPLOY-CHECKLIST-001
+  review:
+    self_hash: 856560d6b5fd374dab0ff62d98704560d193d9a0f00dfd84788565343684d512
+    deps:
+      CONTRACT-008: 9dbb01dffcecc2282b2dc8e819f7e182e1204ba6a8d40c0d0b02b6b9c767e613
+      DEPLOY-CHECKLIST-001: e4c04836ff2c8045398310ce0636e3043545f1f9f5baea1a1626211453d9ed17
+      FEAT-025: 5ff1ca8b03318957e25d5a3752ebf8999a45378a7b83aa6c2978739263ac3603
+      FEAT-028: eaf50210678ba364441138764677456c6bf02edcc09282dfaa7d1b312f3fea20
+    reviewed_at: "2026-07-11T05:09:15Z"
 ---
 
 # Runbook - Axon Unified Binary and Control Plane
@@ -185,7 +193,8 @@ ddx:
 - Architecture: `docs/helix/02-design/architecture.md`
 - Control plane feature: `docs/helix/01-frame/features/FEAT-025-control-plane.md`
 - Unified binary feature: `docs/helix/01-frame/features/FEAT-028-unified-binary.md`
-- Release notes: `docs/helix/05-deploy/release-notes-0.7.1.md`
+- Release notes: `docs/helix/05-deploy/release-notes-0.4.x.md`
+- Historical release note: `docs/helix/05-deploy/release-notes-0.7.1.md`
 - Monitoring setup: `docs/helix/05-deploy/monitoring-setup.md` (signal
   inventory, alert thresholds, and release-qualification evidence capture).
 - Security architecture: not yet authored

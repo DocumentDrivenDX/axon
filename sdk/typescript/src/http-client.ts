@@ -216,18 +216,46 @@ async function requestJson<T>(
   });
   if (!res.ok) {
     const errText = await res.text();
-    let errCode = "unknown";
-    try {
-      const parsed = JSON.parse(errText);
-      errCode = parsed.code ?? parsed.error?.code ?? "unknown";
-    } catch (_) {
-      /* ignore */
-    }
-    throw new AxonHttpError(res.status, errCode, errText);
+    const parsed = parseHttpErrorBody(errText);
+    throw new AxonHttpError(
+      res.status,
+      parsed.code,
+      errText,
+      parsed.detail,
+      parsed.reason,
+    );
   }
   const text = await res.text();
   if (!text) return undefined as unknown as T;
   return JSON.parse(text) as T;
+}
+
+function parseHttpErrorBody(body: string): {
+  code: string;
+  detail: Record<string, unknown>;
+  reason?: string;
+} {
+  try {
+    const parsed = asRecord(JSON.parse(body));
+    const source = asRecord(parsed?.error) ?? parsed;
+    const detail = asRecord(source?.detail) ?? {};
+    const code = typeof source?.code === "string" ? source.code : "unknown";
+    const reason =
+      typeof source?.reason === "string"
+        ? source.reason
+        : typeof detail.reason === "string"
+          ? detail.reason
+          : undefined;
+    return { code, detail, reason };
+  } catch {
+    return { code: "unknown", detail: {} };
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 export class AxonHttpError extends Error {
@@ -235,6 +263,8 @@ export class AxonHttpError extends Error {
     public readonly status: number,
     public readonly code: AuthErrorCode | string,
     public readonly body: string,
+    public readonly detail: Record<string, unknown> = {},
+    public readonly reason?: string,
   ) {
     super(`${status} ${code}: ${body}`);
     this.name = "AxonHttpError";

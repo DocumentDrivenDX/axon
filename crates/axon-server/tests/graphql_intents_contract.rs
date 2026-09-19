@@ -406,25 +406,17 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
         ),
     )
     .await;
-    assert_no_errors(&graphql_preview_audit, "GraphQL auditLog preview lookup");
-    let graphql_preview_entry = &graphql_preview_audit["data"]["auditLog"]["edges"][0]["node"];
-    assert_eq!(graphql_preview_audit["data"]["auditLog"]["totalCount"], 1);
     assert_eq!(
-        graphql_preview_entry["operation"],
-        "mutation_intent.preview"
+        graphql_preview_audit["errors"][0]["extensions"]["code"],
+        "INVALID_ARGUMENT"
     );
-    assert_eq!(graphql_preview_entry["actor"], "finance-agent");
-    assert_eq!(graphql_preview_entry["collection"], "__mutation_intents");
-    assert_eq!(graphql_preview_entry["entityId"], intent_id);
-    assert!(graphql_preview_entry["dataBefore"].is_null());
-    assert_eq!(
-        graphql_preview_entry["metadata"]["decision"],
-        "needs_approval"
-    );
-    assert_eq!(
-        graphql_preview_entry["dataAfter"]["diff"]["budget_cents"]["after"],
-        20_000
-    );
+    let message = graphql_preview_audit["errors"][0]["message"]
+        .as_str()
+        .unwrap();
+    assert!(message.contains("\"code\":\"reserved_namespace\""));
+    assert!(message.contains("\"reason\":\"generic_access_forbidden\""));
+    assert!(message.contains("\"name\":\"__mutation_intents\""));
+    assert!(message.contains("\"operation\":\"audit\""));
 
     let approved = gql_as(
         &server,

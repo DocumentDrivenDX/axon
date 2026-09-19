@@ -47,7 +47,7 @@ use axon_api::request::{
     RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest, TransitionLifecycleRequest,
     TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
-use axon_api::response::GetEntityMarkdownResponse;
+use axon_api::response::{GetEntityMarkdownResponse, ReservedNamespaceError};
 use axon_audit::entry::{AuditAttribution, AuditEntry, MutationType};
 use axon_core::auth::{CallerIdentity as CoreCallerIdentity, ResolvedIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
@@ -231,11 +231,29 @@ fn axon_error_response(err: AxonError) -> Response {
             Json(ApiError::new("already_exists", msg)),
         )
             .into_response(),
-        AxonError::InvalidArgument(msg) => (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError::new("invalid_argument", msg)),
-        )
-            .into_response(),
+        AxonError::InvalidArgument(msg) => {
+            let err = AxonError::InvalidArgument(msg.clone());
+            if let Some(reserved) = ReservedNamespaceError::from_axon_error(&err) {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError::new(
+                        &reserved.code,
+                        json!({
+                            "reason": reserved.reason,
+                            "name": reserved.detail.name,
+                            "operation": reserved.detail.operation,
+                        }),
+                    )),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError::new("invalid_argument", msg)),
+                )
+                    .into_response()
+            }
+        }
         AxonError::InvalidOperation(msg) => (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new("invalid_operation", msg)),
@@ -1950,7 +1968,7 @@ async fn query_audit_by_entity(
         Err(error) => return axon_error_response(error),
     };
     let handler = handler.lock().await;
-    match handler.query_audit_with_caller(
+    match handler.query_application_audit_with_caller(
         QueryAuditRequest {
             database: requested_database_scope.database().map(str::to_string),
             collection: Some(qualify_collection_name(&collection, &current_database)),
@@ -2055,7 +2073,7 @@ async fn query_audit(
     match handler
         .lock()
         .await
-        .query_audit_with_caller(req, &caller, None)
+        .query_application_audit_with_caller(req, &caller, None)
     {
         Ok(resp) => {
             let next_cursor = resp.next_cursor;
@@ -3078,8 +3096,17 @@ async fn commit_transaction(
             // stamp each broadcast ChangeEvent with a resume cursor. All
             // entries share the tx_id; match each to its (collection, id) pair.
             let tx_entries = h
-                .audit_log()
-                .query_by_transaction_id(&tx_id)
+                .query_application_audit(QueryAuditRequest {
+                    database: Some(current_database.as_str().to_string()),
+                    limit: Some(usize::MAX),
+                    ..QueryAuditRequest::default()
+                })
+                .map(|resp| {
+                    resp.entries
+                        .into_iter()
+                        .filter(|entry| entry.transaction_id.as_deref() == Some(tx_id.as_str()))
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             for entity in &written {
                 notify_entity_change(&mcp_sessions, &current_database, entity);
@@ -4015,7 +4042,8 @@ mod tests {
         AuthContext, AuthError, AuthMode, Role, TailscaleWhoisProvider, TailscaleWhoisResponse,
     };
     use crate::tenant_router::TenantRouter;
-    use axon_core::id::{CollectionId, Namespace};
+    use axon_core::id::{CollectionId, EntityId, Namespace};
+    use axon_core::types::Entity;
     use axon_schema::schema::{CollectionSchema, CollectionView, IndexDef, IndexType};
     use axon_storage::adapter::StorageAdapter;
     use axon_storage::SqliteStorageAdapter;
@@ -4064,13 +4092,21 @@ mod tests {
         }
     }
 
-    fn test_server_with_handler() -> (TestServer, TenantHandler) {
-        let storage: Box<dyn StorageAdapter + Send + Sync> =
-            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
+    fn test_server_with_storage_setup(
+        setup: impl FnOnce(&mut SqliteStorageAdapter),
+    ) -> (TestServer, TenantHandler) {
+        let mut sqlite =
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        setup(&mut sqlite);
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(sqlite);
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler.clone()));
         let app = build_router(tenant_router, "memory", None);
         (TestServer::new(app), handler)
+    }
+
+    fn test_server_with_handler() -> (TestServer, TenantHandler) {
+        test_server_with_storage_setup(|_| {})
     }
 
     fn test_server() -> TestServer {
@@ -4195,11 +4231,11 @@ mod tests {
             handler
                 .lock()
                 .await
-                .storage_mut()
-                .put_collection_view(&CollectionView::new(
-                    CollectionId::new("tasks"),
-                    "# {{title}}\n\nStatus: {{status}}",
-                )),
+                .put_collection_template(PutCollectionTemplateRequest {
+                    collection: CollectionId::new("tasks"),
+                    template: "# {{title}}\n\nStatus: {{status}}".into(),
+                    actor: None,
+                }),
             "storing collection view for markdown HTTP test",
         );
 
@@ -4242,30 +4278,22 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_entity_get_markdown_render_failure_returns_entity_payload() {
-        let (server, handler) = test_server_with_handler();
-
-        server
-            .post("/tenants/default/databases/default/collections/tasks")
-            .json(&json!({"schema": {}}))
-            .await
-            .assert_status(StatusCode::CREATED);
-        server
-            .post("/tenants/default/databases/default/entities/tasks/t-001")
-            .json(&json!({"data": {"title": "hello", "status": "open"}}))
-            .await
-            .assert_status(StatusCode::CREATED);
-
-        ok_or_panic(
-            handler
-                .lock()
-                .await
-                .storage_mut()
-                .put_collection_view(&CollectionView::new(
-                    CollectionId::new("tasks"),
-                    "{{#title}",
-                )),
-            "storing invalid collection view for markdown HTTP test",
-        );
+        let (server, _) = test_server_with_storage_setup(|storage| {
+            let collection = CollectionId::new("tasks");
+            storage
+                .register_collection(&collection)
+                .expect("test storage should register tasks collection");
+            storage
+                .put(Entity::new(
+                    collection.clone(),
+                    EntityId::new("t-001"),
+                    json!({"title": "hello", "status": "open"}),
+                ))
+                .expect("test storage should seed task entity");
+            storage
+                .put_collection_view(&CollectionView::new(collection, "{{#title}"))
+                .expect("test storage should seed invalid collection view");
+        });
 
         let resp = server
             .get("/tenants/default/databases/default/collections/tasks/entities/t-001?format=markdown")
@@ -4376,45 +4404,46 @@ mod tests {
     async fn http_collection_template_responses_preserve_qualified_collection_id() {
         let (server, handler) = test_server_with_handler();
         let qualified = CollectionId::new("prod.billing.tasks");
-        let bare = CollectionId::new("tasks");
-        let billing = Namespace::new("prod", "billing");
 
         {
             let mut handler = handler.lock().await;
             ok_or_panic(
-                handler.storage_mut().create_database("prod"),
+                handler.create_database(axon_api::request::CreateDatabaseRequest {
+                    name: "prod".into(),
+                }),
                 "creating database for qualified template HTTP test",
             );
             ok_or_panic(
-                handler.storage_mut().create_namespace(&billing),
+                handler.create_namespace(axon_api::request::CreateNamespaceRequest {
+                    database: "prod".into(),
+                    schema: "billing".into(),
+                }),
                 "creating namespace for qualified template HTTP test",
             );
             ok_or_panic(
-                handler
-                    .storage_mut()
-                    .register_collection_in_namespace(&bare, &billing),
-                "registering collection in namespace for qualified template HTTP test",
-            );
-            ok_or_panic(
-                handler.storage_mut().put_schema(&CollectionSchema {
-                    collection: qualified.clone(),
-                    description: None,
-                    version: 1,
-                    entity_schema: Some(json!({
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"}
-                        },
-                        "required": ["title"]
-                    })),
-                    link_types: Default::default(),
-                    access_control: None,
-                    gates: Default::default(),
-                    validation_rules: Default::default(),
-                    indexes: Default::default(),
-                    compound_indexes: Default::default(),
-                    queries: Default::default(),
-                    lifecycles: Default::default(),
+                handler.create_collection(CreateCollectionRequest {
+                    name: qualified.clone(),
+                    schema: CollectionSchema {
+                        collection: qualified.clone(),
+                        description: None,
+                        version: 1,
+                        entity_schema: Some(json!({
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"}
+                            },
+                            "required": ["title"]
+                        })),
+                        link_types: Default::default(),
+                        access_control: None,
+                        gates: Default::default(),
+                        validation_rules: Default::default(),
+                        indexes: Default::default(),
+                        compound_indexes: Default::default(),
+                        queries: Default::default(),
+                        lifecycles: Default::default(),
+                    },
+                    actor: None,
                 }),
                 "storing qualified schema for template HTTP test",
             );
@@ -5964,28 +5993,28 @@ mod tests {
         let (server, handler) = test_server_with_handler();
         let billing = Namespace::new("prod", "billing");
         let engineering = Namespace::new("prod", "engineering");
-        let invoices = CollectionId::new("invoices");
         let billing_invoices = CollectionId::new("prod.billing.invoices");
         let engineering_invoices = CollectionId::new("prod.engineering.invoices");
 
         {
             let mut guard = handler.lock().await;
-            let storage = guard.storage_mut();
-            storage
-                .create_database("prod")
+            guard
+                .create_database(axon_api::request::CreateDatabaseRequest {
+                    name: "prod".into(),
+                })
                 .expect("database create should succeed");
-            storage
-                .create_namespace(&billing)
+            guard
+                .create_namespace(axon_api::request::CreateNamespaceRequest {
+                    database: billing.database.clone(),
+                    schema: billing.schema.clone(),
+                })
                 .expect("billing namespace create should succeed");
-            storage
-                .create_namespace(&engineering)
+            guard
+                .create_namespace(axon_api::request::CreateNamespaceRequest {
+                    database: engineering.database.clone(),
+                    schema: engineering.schema.clone(),
+                })
                 .expect("engineering namespace create should succeed");
-            storage
-                .register_collection_in_namespace(&invoices, &billing)
-                .expect("billing collection register should succeed");
-            storage
-                .register_collection_in_namespace(&invoices, &engineering)
-                .expect("engineering collection register should succeed");
 
             let schema = |collection: CollectionId| CollectionSchema {
                 collection,
@@ -6005,11 +6034,19 @@ mod tests {
                 queries: Default::default(),
                 lifecycles: Default::default(),
             };
-            storage
-                .put_schema(&schema(billing_invoices.clone()))
+            guard
+                .create_collection(CreateCollectionRequest {
+                    name: billing_invoices.clone(),
+                    schema: schema(billing_invoices.clone()),
+                    actor: None,
+                })
                 .expect("billing schema put should succeed");
-            storage
-                .put_schema(&schema(engineering_invoices.clone()))
+            guard
+                .create_collection(CreateCollectionRequest {
+                    name: engineering_invoices.clone(),
+                    schema: schema(engineering_invoices.clone()),
+                    actor: None,
+                })
                 .expect("engineering schema put should succeed");
         }
 
@@ -6293,14 +6330,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_health_reports_default_namespace_from_storage_state() {
-        let (server, handler) = test_server_with_handler();
-
-        handler
-            .lock()
-            .await
-            .storage_mut()
-            .drop_database(DEFAULT_DATABASE)
-            .expect("direct storage drop of default database should succeed for health regression");
+        let (server, _) = test_server_with_storage_setup(|storage| {
+            storage
+                .drop_database(DEFAULT_DATABASE)
+                .expect("test storage should drop default database");
+        });
 
         let resp = server.get("/health").await;
         resp.assert_status_ok();

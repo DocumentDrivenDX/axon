@@ -5,6 +5,13 @@ ddx:
     - helix.prd
     - FEAT-013
     - ADR-026
+  review:
+    self_hash: 82a972d29f478ad094cd7911c9166afe617d40f8727d338be87a13fa163e6417
+    deps:
+      ADR-026: f406c725f93ffdab41af5ddce6ea6f293adc65c4a3954bbeddc436a7783264d3
+      FEAT-013: e218b7499012d56e569acc094cc40b47360b34fda601b473ac425af2cec09b27
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 # ADR-028: Index-Key Store SSOT — Typed `IndexValue` vs. Canonical `index_key` Bytes
 

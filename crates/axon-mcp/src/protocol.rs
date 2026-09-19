@@ -1,6 +1,8 @@
 //! MCP JSON-RPC 2.0 protocol implementation.
 
 use axon_api::intent::MutationIntentCommitValidationError;
+use axon_api::response::ReservedNamespaceError;
+use axon_core::error::AxonError;
 use axon_core::intent::{
     MutationApprovalRoute, MutationIntent, MutationIntentToken, MutationIntentTokenLookupError,
     MutationReviewSummary,
@@ -10,7 +12,7 @@ use serde_json::Value;
 
 use crate::prompts::PromptRegistry;
 use crate::resources::ResourceRegistry;
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolError, ToolRegistry};
 
 /// MCP protocol error.
 #[derive(Debug, thiserror::Error)]
@@ -57,10 +59,16 @@ impl McpError {
                 "code": "not_found",
                 "detail": detail,
             })),
-            Self::InvalidParams(detail) => Some(serde_json::json!({
-                "code": "invalid_params",
-                "detail": detail,
-            })),
+            Self::InvalidParams(detail) => {
+                if let Some(reserved) = reserved_namespace_from_invalid_argument(detail) {
+                    Some(reserved_namespace_payload(&reserved))
+                } else {
+                    Some(serde_json::json!({
+                        "code": "invalid_params",
+                        "detail": detail,
+                    }))
+                }
+            }
             Self::Internal(detail) => Some(serde_json::json!({
                 "code": "internal_error",
                 "detail": detail,
@@ -68,6 +76,42 @@ impl McpError {
             Self::Parse(_) | Self::MethodNotFound(_) => None,
         }
     }
+}
+
+fn reserved_namespace_from_invalid_argument(detail: &str) -> Option<ReservedNamespaceError> {
+    ReservedNamespaceError::from_axon_error(&AxonError::InvalidArgument(detail.to_owned()))
+}
+
+fn reserved_namespace_from_tool_error(error: &ToolError) -> Option<ReservedNamespaceError> {
+    match error {
+        ToolError::InvalidArgument(detail) => reserved_namespace_from_invalid_argument(detail),
+        ToolError::NotFound(_) | ToolError::Conflict(_) | ToolError::Internal(_) => None,
+    }
+}
+
+fn reserved_namespace_payload(reserved: &ReservedNamespaceError) -> Value {
+    serde_json::json!({
+        "code": reserved.code.as_str(),
+        "reason": reserved.reason.as_str(),
+        "detail": {
+            "name": reserved.detail.name.as_str(),
+            "operation": reserved.detail.operation.as_str(),
+        },
+    })
+}
+
+fn tool_error_result(error: &ToolError) -> Value {
+    let mut result = serde_json::json!({
+        "content": [{
+            "type": "text",
+            "text": error.to_string()
+        }],
+        "isError": true
+    });
+    if let Some(reserved) = reserved_namespace_from_tool_error(error) {
+        result["structuredContent"] = reserved_namespace_payload(&reserved);
+    }
+    result
 }
 
 /// JSON-RPC 2.0 request.
@@ -748,13 +792,7 @@ impl McpServer {
         match self.tool_registry.call_tool(tool_name, &arguments) {
             Ok(result) => JsonRpcResponse::success(request.id.clone(), result),
             Err(e) => {
-                let result = serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": e.to_string()
-                    }],
-                    "isError": true
-                });
+                let result = tool_error_result(&e);
                 JsonRpcResponse::success(request.id.clone(), result)
             }
         }

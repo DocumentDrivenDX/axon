@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 axon-core = { path = "../axon-core" }
-axon-api = { path = "../axon-api", features = ["test-fixtures"] }
+axon-api = { path = "../axon-api" }
 axon-audit = { path = "../axon-audit" }
 axon-schema = { path = "../axon-schema" }
 axon-storage = { path = "../axon-storage" }
@@ -56,6 +56,7 @@ ignored = ["prost"]
 tonic-build.workspace = true
 
 [dev-dependencies]
+axon-api = { path = "../axon-api", features = ["test-fixtures"] }
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { version = "1", features = ["full"] }

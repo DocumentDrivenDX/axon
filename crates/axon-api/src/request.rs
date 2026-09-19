@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 
-use axon_audit::entry::AuditAttribution;
+use axon_audit::entry::{AuditAttribution, MutationIntentAuditOrigin};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use axon_core::id::{CollectionId, EntityId};
 use axon_schema::schema::CollectionSchema;
+
+use crate::intent::{
+    ApprovalState, MutationIntent, MutationIntentReviewMetadata, MutationIntentScopeBinding,
+};
+use crate::transaction::Transaction;
 
 /// Request to create a new entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +24,24 @@ pub struct CreateEntityRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_metadata: Option<HashMap<String, String>>,
     /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
+}
+
+/// Request to create an entity in a typed governed system collection.
+///
+/// The collection is derived from the module capability accepted by
+/// `AxonHandler`; callers never supply the reserved collection name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateGovernedSystemEntityRequest {
+    pub id: EntityId,
+    pub data: Value,
+    /// Optional actor identity for the audit log.
+    pub actor: Option<String>,
+    /// Optional key-value metadata attached to the audit entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_metadata: Option<HashMap<String, String>>,
+    /// JWT-derived attribution stamped onto the audit entry.
     #[serde(skip)]
     pub attribution: Option<AuditAttribution>,
 }
@@ -47,6 +70,26 @@ pub struct UpdateEntityRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_metadata: Option<HashMap<String, String>>,
     /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
+}
+
+/// Request to update an entity in a typed governed system collection.
+///
+/// The collection is derived from the module capability accepted by
+/// `AxonHandler`; callers never supply the reserved collection name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateGovernedSystemEntityRequest {
+    pub id: EntityId,
+    /// Replacement data for the entity.
+    pub data: Value,
+    /// The version the caller believes is current. Must match the stored version.
+    pub expected_version: u64,
+    pub actor: Option<String>,
+    /// Optional key-value metadata attached to the audit entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_metadata: Option<HashMap<String, String>>,
+    /// JWT-derived attribution stamped onto the audit entry.
     #[serde(skip)]
     pub attribution: Option<AuditAttribution>,
 }
@@ -112,6 +155,24 @@ pub struct CreateLinkRequest {
     pub attribution: Option<AuditAttribution>,
 }
 
+/// Request to create a self-targeting link inside a typed governed system collection.
+///
+/// Source and target collection are both derived from the module capability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateGovernedSystemLinkRequest {
+    pub source_id: EntityId,
+    pub target_id: EntityId,
+    /// Semantic label for the edge.
+    pub link_type: String,
+    /// Optional metadata stored on the link.
+    #[serde(default)]
+    pub metadata: Value,
+    pub actor: Option<String>,
+    /// JWT-derived attribution stamped onto the audit entry.
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
+}
+
 /// Request to delete a typed link between two entities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteLinkRequest {
@@ -156,6 +217,25 @@ pub struct TraverseRequest {
     pub hop_filter: Option<FilterNode>,
 }
 
+/// Request to traverse links within a typed governed system collection.
+///
+/// The starting collection and every traversable endpoint are the collection
+/// derived from the module capability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraverseGovernedSystemRequest {
+    /// Starting entity.
+    pub id: EntityId,
+    /// Filter traversal to this link type. If `None`, follow all link types.
+    pub link_type: Option<String>,
+    /// Maximum hop depth (default: 3, capped at 10).
+    pub max_depth: Option<usize>,
+    /// Direction of traversal: follow outbound or inbound links.
+    #[serde(default)]
+    pub direction: TraverseDirection,
+    /// Optional filter applied to each candidate entity at every hop.
+    pub hop_filter: Option<FilterNode>,
+}
+
 /// Request to check whether a target entity is reachable from a source entity.
 ///
 /// Short-circuits as soon as the target is found, avoiding a full BFS expansion.
@@ -166,6 +246,24 @@ pub struct ReachableRequest {
     pub source_id: EntityId,
     /// Target entity to search for.
     pub target_collection: CollectionId,
+    pub target_id: EntityId,
+    /// Filter traversal to this link type. If `None`, follow all link types.
+    pub link_type: Option<String>,
+    /// Maximum hop depth (default: 3, capped at 10).
+    pub max_depth: Option<usize>,
+    /// Direction of traversal.
+    #[serde(default)]
+    pub direction: TraverseDirection,
+}
+
+/// Request to check reachability within a typed governed system collection.
+///
+/// Source and target collection are both derived from the module capability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReachableGovernedSystemRequest {
+    /// Starting entity.
+    pub source_id: EntityId,
+    /// Target entity to search for.
     pub target_id: EntityId,
     /// Filter traversal to this link type. If `None`, follow all link types.
     pub link_type: Option<String>,
@@ -248,6 +346,95 @@ pub struct QueryAuditRequest {
     pub after_id: Option<u64>,
     /// Maximum number of entries to return per page.
     pub limit: Option<usize>,
+}
+
+/// Request to query Axon-owned system audit rows through the typed
+/// administrative audit surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuerySystemAuditRequest {
+    /// Tenant being inspected.
+    pub tenant_id: String,
+    /// Database being inspected within the tenant.
+    pub database: String,
+    /// Audit filters. The typed system-audit surface forces the database scope
+    /// above and never uses this as generic collection access.
+    #[serde(default)]
+    pub query: QueryAuditRequest,
+}
+
+/// Request to query auth/credential audit metadata through the typed
+/// administrative audit surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryAuthAuditRequest {
+    /// Tenant whose auth audit metadata is being inspected.
+    pub tenant_id: String,
+    /// Optional stable user id filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+}
+
+/// Request to persist a governed mutation-intent preview through
+/// [`AxonHandler`](crate::handler::AxonHandler).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewMutationIntentRequest {
+    /// Server-side intent record produced by the policy/explain preview path.
+    pub intent: MutationIntent,
+    /// Optional transport/tool origin attached to the preview audit entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MutationIntentAuditOrigin>,
+}
+
+/// Request to read a governed mutation-intent record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetMutationIntentRequest {
+    /// Tenant/database scope bound to the intent.
+    pub scope: MutationIntentScopeBinding,
+    /// Stable server-side intent id.
+    pub intent_id: String,
+    /// Current time in nanoseconds, used to materialize due expirations first.
+    pub now_ns: u64,
+}
+
+/// Request to list governed mutation-intent records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListMutationIntentsRequest {
+    /// Tenant/database scope to list within.
+    pub scope: MutationIntentScopeBinding,
+    /// Explicit approval states to include. Empty means pending review intents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<ApprovalState>,
+    /// Include expired intents when listing the default pending set.
+    #[serde(default)]
+    pub include_expired: bool,
+    /// Current time in nanoseconds, used to materialize due expirations first.
+    pub now_ns: u64,
+}
+
+/// Request to approve or reject a governed mutation intent.
+#[derive(Debug, Clone)]
+pub struct ReviewMutationIntentRequest {
+    /// Tenant/database scope bound to the intent.
+    pub scope: MutationIntentScopeBinding,
+    /// Stable server-side intent id.
+    pub intent_id: String,
+    /// Review decision metadata recorded in audit lineage.
+    pub metadata: MutationIntentReviewMetadata,
+    /// Current time in nanoseconds, used for expiry checks.
+    pub now_ns: u64,
+}
+
+/// In-process request to execute a staged transaction through
+/// [`AxonHandler`](crate::handler::AxonHandler).
+///
+/// `Transaction` is a staged runtime object, not a transport DTO, so this
+/// request intentionally does not derive serde traits.
+pub struct ExecuteTransactionRequest {
+    /// Staged transaction to validate, authorize, commit, and audit.
+    pub transaction: Transaction,
+    /// Actor recorded on transaction audit entries.
+    pub actor: Option<String>,
+    /// Optional authenticated attribution recorded on transaction audit entries.
+    pub attribution: Option<AuditAttribution>,
 }
 
 /// Request to revert an entity to the `before` state recorded in an audit entry.
@@ -394,6 +581,27 @@ pub struct QueryEntitiesRequest {
     pub count_only: bool,
 }
 
+/// Request to query entities in a typed governed system collection.
+///
+/// The collection is derived from the module capability accepted by
+/// `AxonHandler`; callers never supply the reserved collection name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QueryGovernedSystemEntitiesRequest {
+    /// Optional filter tree. When absent, all entities are returned.
+    pub filter: Option<FilterNode>,
+    /// Sort order. When empty, entities are returned in entity-ID order.
+    #[serde(default)]
+    pub sort: Vec<SortField>,
+    /// Maximum number of entities to return.
+    pub limit: Option<usize>,
+    /// Pagination cursor: the last entity ID seen on the previous page.
+    pub after_id: Option<EntityId>,
+    /// When `true`, return only the count of matching entities without
+    /// fetching their full data.
+    #[serde(default)]
+    pub count_only: bool,
+}
+
 // ── Collection lifecycle requests ────────────────────────────────────────────
 
 /// Request to explicitly create a named collection and record the event in the audit log.
@@ -404,6 +612,17 @@ pub struct CreateCollectionRequest {
     pub name: CollectionId,
     /// The schema that governs entities in this collection.
     /// `schema.collection` must match `name`.
+    pub schema: CollectionSchema,
+    pub actor: Option<String>,
+}
+
+/// Request to ensure a typed governed system collection exists.
+///
+/// The collection name is derived from the module capability. `schema.collection`
+/// is overwritten to that collection before validation and persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnsureGovernedSystemCollectionRequest {
+    /// The schema that governs entities in this collection.
     pub schema: CollectionSchema,
     pub actor: Option<String>,
 }
@@ -470,6 +689,27 @@ pub struct PutSchemaRequest {
     /// when `dry_run = true` and the proposed policy compiled successfully.
     /// Each input mirrors the active `explainPolicy` request shape; results
     /// land in `PutSchemaResponse.dry_run_explanations` in matching order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub explain_inputs: Vec<ExplainPolicyRequest>,
+}
+
+/// Request to store or replace a typed governed system collection schema.
+///
+/// The target collection is derived from the module capability. `schema.collection`
+/// is overwritten to that collection before compatibility checks, validation,
+/// audit, and persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutGovernedSystemSchemaRequest {
+    pub schema: CollectionSchema,
+    /// Optional actor identifier for audit provenance.
+    pub actor: Option<String>,
+    /// If true, apply even if the change is classified as breaking.
+    #[serde(default)]
+    pub force: bool,
+    /// If true, check compatibility and return the diff without applying.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Fixture explain inputs evaluated against the proposed schema/policy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub explain_inputs: Vec<ExplainPolicyRequest>,
 }

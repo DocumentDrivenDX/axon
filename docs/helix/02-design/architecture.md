@@ -15,22 +15,21 @@ ddx:
     - ADR-020
     - ADR-021
   review:
-    # TODO: refresh review stamp (read-side subsection + local-replica consumer added, 2026-06-27)
-    self_hash: 8a39d93af466d83f02851986a0a935ddb0b8b12d1552ee3bc7e7af3c91fb145a
+    self_hash: 2b8f67b0d5bde000a0bd4d9e59b40a5df06c5e685e5b3954bfcca9939bd1fc0d
     deps:
-      ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
-      ADR-004: 4c8ee66b80980bed2298d511d223f7faaace03864610faf8333af8659c4ce570
+      ADR-003: 056f2f887152bb12c36cfae79ee6ced4c33a6b6de4d73c2500cd087fd7fd1025
+      ADR-004: a58eda0c55e1ac9c4e8cd6fc69d213455354b62286d62be2579de9add3ad01d2
       ADR-010: 80dcbb947056ff9555019c8cbc3c3a6e9dbe67cdaa668402b15d7bbc5d905930
       ADR-011: 128732e07720a3aee6e4d88295cae04893d5c661d8744246532cccb1e667ea58
-      ADR-014: d0be4bb4fa8f98ca5e4518b4b1c0bc4a46882a42098d38931c6d5b649cbb9655
+      ADR-014: 6b9f2190081dd7dae202942b25247ee638b0359a4ead7109987b5bc4440c7347
       ADR-016: d023701c0bedc5ada8a9121fa850a6b78d7b2b2f39d2b7ac41d7d2c48de7a1b9
       ADR-017: f728a498d6498055fa260edf63ca07dee16c4101800198e8b5b59427fe29c045
-      ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
-      ADR-019: 3d6482363128cb8e6bc2cb86023a0a66c6a1c3027fab72ad99938d8136bb9732
+      ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
+      ADR-019: 3ec156d9ec6696d67e0f12a6c80495c9166470525128ac475b95dae0b5647f7e
       ADR-020: ed351273fc7b4c46f5114aa6f0e1e942ae3fcd2e7ca74ad989b23ea730d23790
       ADR-021: 7672758c3841fb3871bc2b8f90aeb7c63d5453c42dae5bedf5cf27d6394dda78
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:35Z"
 ---
 
 # Architecture
@@ -104,9 +103,9 @@ this document does not redefine any stage.
 
 | # | Stage | What it does | Governing artifacts |
 |---|-------|--------------|---------------------|
-| 1 | Authentication & tenancy | Verify JWT (signature, expiry, revocation, `aud` = URL tenant), resolve `(user, tenant, database)` from the path, check membership and grants | ADR-018, FEAT-012 |
+| 1 | Authentication & tenancy | Verify JWT (signature, expiry, revocation, `aud` = URL tenant), resolve `(user, tenant, database)` from the path, check membership, grants, and tenant `auth_epoch` freshness | ADR-018, FEAT-012 |
 | 2 | Guardrails | Per-actor sliding-window rate limits and entity-filter scope constraints, in-process, <1 ms overhead; rejections are audited | ADR-016 (architecture), ADR-024 (algorithm), FEAT-022 |
-| 3 | Policy | Compiled ESF `access_control` plan: row predicates, field write guards, transition guards, write envelopes (allow / needs_approval / deny) | ADR-019, CONTRACT-004, FEAT-029 |
+| 3 | Policy | Adapter-owned `policy_catalog` row for the target `(tenant_id, database_id)` pair, carrying `auth_scope_required`, `policy_epoch`, `policy_hash`, and the compiled ESF `access_control` plan; missing rows fail closed | ADR-019, CONTRACT-004, FEAT-029 |
 | 4 | Intent routing | Approval-routed writes become mutation intents: preview → approval → commit, with operation-hash and pre-image staleness checks; previews thread into audit | FEAT-030, ADR-019, ADR-023 |
 | 5 | Handler | `axon-api`: ESF schema validation, OCC version checks, transaction assembly | ADR-004, CONTRACT-010, FEAT-008 |
 | 6 | Storage | `StorageAdapter` commit against SQLite or PostgreSQL; numeric collection IDs, opaque entity blobs, EAV indexes, links table | ADR-003, ADR-010 |
@@ -115,7 +114,7 @@ this document does not redefine any stage.
 
 **Non-bypass invariant.** Every surface — GraphQL, MCP, REST, CLI, SDK, the
 admin UI, and the embedded in-process API — is a view over this one path. No
-surface bypasses any stage; parity is verified by shared fixtures. When a
+surface may bypass any stage; parity must be verified by shared fixtures. When a
 feature appears to need a bypass, the handler path changes instead. This is
 Principle 1, "Guardrails Are the Product"
 ([principles.md](../01-frame/principles.md)).
@@ -140,15 +139,18 @@ redaction stages above:
   "what changed, in order, resumably."
 
 The **client local read replica** (FEAT-032, FR-32) is a *consumer* of the
-event-derived projection: it bootstraps from a snapshot and tails the change
-stream using the same opaque, restart/schema-stable cursor vocabulary
-(ADR-025), maintaining a client-resident read model for responsive
+event-derived projection. FEAT-032 records the current partial substrate
+(`LocalReplica`, `StorageCursorStore`, and snapshot bootstrap events); this
+architecture treats that substrate as incomplete until every public stream
+consumer uses the same opaque, restart/schema-stable cursor vocabulary
+(ADR-025, CONTRACT-006). The intended replica boots from a snapshot and tails
+the change stream, maintaining a client-resident read model for responsive
 search/sort/filter without server round-trips. Redaction is applied at
 projection time so the replica never holds data the subject may not see
-(ADR-019). The local replica is **not yet implemented** — the durable cursor
-backend and opaque cursor tokens are FEAT-032 gaps (today only a non-durable
-`MemoryCursorStore` and a raw-`audit_id` resume point exist). Offline writes
-to the replica are out of scope (FR-33, deferred).
+(ADR-019). The boundary remains partial/unwired end-to-end: GraphQL
+subscriptions continue to expose raw `audit_id` reconnects, and the single
+opaque cursor vocabulary has not yet replaced every consumer. Replica
+writeback remains out of scope (FR-33, deferred).
 
 ## Level 2: Container Diagram
 
@@ -156,7 +158,7 @@ to the replica are out of scope (FR-33, deferred).
 |-----------|------------|------------------|---------------|
 | Axon server | Rust, axum + tonic (single `axon` binary, FEAT-028) | Hosts the governed request path; serves GraphQL, MCP, REST, gRPC; stateless — any instance serves any request | HTTP/1.1+2, JSON / GraphQL / MCP, path-based routing (ADR-018) |
 | Embedded Axon | Rust library (same crates, no server) | Same handler path in-process for dev/test/edge | Native Rust traits |
-| Backing store | SQLite/libSQL (embedded) or PostgreSQL 15+ (server) | Durable storage of entities, links, EAV indexes, audit, schemas; replication and failover | SQL over `rusqlite` / `tokio-postgres` (ADR-003) |
+| Backing store | SQLite/libSQL (embedded) or PostgreSQL 16 (server, 0.4.x pilot qualification only) | Durable storage of entities, links, EAV indexes, audit, schemas; replication and failover | SQL adapters through `sqlx` (ADR-003) |
 | CDC publisher | `rdkafka` producer inside the server | Tails audit log by cursor, emits Debezium envelopes, at-least-once | Kafka protocol; Confluent Schema Registry façade (ADR-014) |
 | Control plane | Rust (`axon-control-plane`) + PostgreSQL metadata DB | Tenant registry, health snapshots (60 s polling), tenant config, node registry / database placement; never reads entity data | HTTPS, HMAC-signed registration and instance tokens (ADR-017/018) |
 | Admin UI | SvelteKit + Bun + Vite (ADR-006) | Operator console: schemas, policy, intents, audit, tenants | GraphQL against the Axon server |
@@ -256,6 +258,10 @@ addressing), ADR-020 (data model), CONTRACT-010 (ESF).
 - **Entity storage**: document-shaped entities (not native RDF, ADR-020)
   stored as opaque blobs (JSONB on PostgreSQL, TEXT on SQLite); numeric
   collection IDs; UUIDv7 entity IDs (ADR-010).
+- **Policy catalog**: one adapter-owned `policy_catalog` row per
+  `(tenant_id, database_id)` pair carries the normalized policy AST and
+  `AXON-POLICY-HASH-1`; it is not an entity collection, and missing rows
+  fail closed.
 - **EAV secondary indexes**: per-type `index_{string,integer,float,datetime,boolean}`
   tables keyed `(collection_id, field_path, value, entity_id)`, plus
   compound indexes with binary tuple-encoded sort keys and unique indexes.
@@ -274,8 +280,9 @@ addressing), ADR-020 (data model), CONTRACT-010 (ESF).
 
 ## Deployment
 
-Three shapes, smallest to largest. All three run the identical governed
-request path and pass the identical correctness suite.
+Three shapes, smallest to largest. All three are required to run the identical
+governed request path and pass the identical correctness suite before claiming
+mode parity.
 
 | Component | Infrastructure | Instances | Scaling | Backup / Recovery |
 |-----------|----------------|-----------|---------|-------------------|
@@ -352,18 +359,19 @@ technical-requirements umbrella; verification methods are binding.
 |-----------|--------|----------|--------------|
 | Write latency | <10 ms p99 single-entity write (schema validation + audit); sub-5 ms SQLite, <10 ms PostgreSQL with audit (ADR-003) | Application-layer post-commit audit, no storage triggers; opaque entity blobs | Benchmark suite; p99 must not regress (HELIX ratchet) |
 | Read latency | <5 ms p99 point read; <100 ms collection scan (1 000 entities); <50 ms 3-hop traversal; <500 ms aggregation over 10 K entities | EAV index tables with B-tree key locality; links table with reverse index (ADR-010) | Benchmark suite |
-| Transactions | <20 ms p99 for 2–5 entity transactions; 100 ops/txn cap; 30 s timeout | OCC version vectors, snapshot isolation, no locks (ADR-004) | DST cycle tests (ring integrity) in `axon-sim` |
+| Transactions | <20 ms p99 for 2–5 entity transactions; 100 ops/txn cap; 30 s timeout | OCC version vectors, backend-qualified storage transactions (SQLite `BEGIN IMMEDIATE`, PostgreSQL `SERIALIZABLE`; `REPEATABLE READ` remains implementation work), memory process-lifetime snapshot apply (ADR-004) | DST cycle tests (ring integrity) in `axon-sim` |
 | Guardrail overhead | <1 ms per request | In-process sliding-window limiter and entity filters (ADR-016/024) | Microbenchmarks; shared-fixture parity tests |
 | Query bounds | Traversal depth ≤10; cardinality budget 1 M rows; 30 s timeout | Streaming Cypher executor with explicit path bounds (ADR-021) | Executor budget tests |
 | Availability | Any instance serves any request; horizontal scaling linear with backing store | Stateless servers — no consensus, no leader election; durability delegated (ADR-003) | Operational acceptance: `/health` with store connectivity; graceful SIGTERM drain; connection pooling |
-| Correctness | All invariants hold under fault injection: no lost updates, audit completeness/immutability, schema enforcement, link integrity, version monotonicity, transaction atomicity | Deterministic simulation with BUGGIFY (disk/network/clock/crash faults), seed-reproducible | `axon-sim` suite; identical suite passes in embedded and server modes (mode parity) |
+| Correctness | All invariants hold under fault injection: no lost updates, audit completeness/immutability, schema enforcement, link integrity, version monotonicity, transaction atomicity | Deterministic simulation with BUGGIFY (disk/network/clock/crash faults), seed-reproducible | `axon-sim` suite; identical suite must pass in embedded and server modes before mode parity is claimed |
 | Security | Every request authorized against `(user, tenant, database)`; grants ≤ issuer role ceiling; 401 vs 403 distinction; all rejections audited | JWT credentials with per-tenant `aud` (ADR-018); guardrails (ADR-016/024); policy (ADR-019); non-bypass invariant | Shared-fixture surface-parity tests; threat-model controls (`01-frame/threat-model.md`) |
 | Observability | OpenTelemetry traces and metrics for all operations; backing-store capacity metrics | Instrumented middleware in `axon-server` | Operational acceptance criteria |
-| Disaster recovery | RPO: 0 for committed transactions (durable in backing store at commit; post-commit audit gap closed by startup recovery scan). RTO: bounded by backing-store restore — embedded: single-file copy; server: PostgreSQL PITR | Durability fully delegated to the backing store; documented backup/restore procedure; transient store failures yield retryable errors, never corruption | Backup/restore drills per operational acceptance criteria; audit-gap count ratchet (toward 0) |
+| Disaster recovery | RPO: 0 for committed transactions on restart-durable backends (durable in backing store at commit; post-commit audit gap closed by startup recovery scan). Memory remains process-lifetime only. RTO: bounded by backing-store restore — embedded: single-file copy; server: PostgreSQL PITR | Durability fully delegated to the backing store; documented backup/restore procedure; transient store failures yield retryable errors, never corruption | Backup/restore drills per operational acceptance criteria; audit-gap count ratchet (toward 0) |
 
 Embedded-mode acceptance: zero external processes, single-file database
 (entities, links, audit, schemas), in-process API with the same Rust traits
-as server mode, full test-suite parity.
+as server mode, and full test-suite parity before an embedded-mode readiness
+claim.
 
 ## Decisions and Tradeoffs
 

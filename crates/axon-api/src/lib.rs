@@ -6,6 +6,7 @@
 //! layers and coordinates transactional entity operations.
 
 pub mod bead;
+pub mod builder;
 pub mod handler;
 pub mod intent;
 pub mod policy;
@@ -15,6 +16,7 @@ pub mod response;
 pub mod test_fixtures;
 pub mod transaction;
 
+pub use builder::{AxonBuilder, AxonStorageKind};
 pub use intent::{
     canonical_create_entity_operation, canonical_create_link_operation,
     canonical_delete_entity_operation, canonical_delete_link_operation,

@@ -34,8 +34,15 @@ fn test_server() -> axum_test::TestServer {
 }
 
 fn test_server_with_handler() -> (axum_test::TestServer, TestHandler) {
-    let storage: TestStorage =
-        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    test_server_with_storage_setup(|_| {})
+}
+
+fn test_server_with_storage_setup(
+    setup: impl FnOnce(&mut SqliteStorageAdapter),
+) -> (axum_test::TestServer, TestHandler) {
+    let mut sqlite = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite");
+    setup(&mut sqlite);
+    let storage: TestStorage = Box::new(sqlite);
     let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
     let tenant_router = Arc::new(TenantRouter::single(Arc::clone(&handler)));
     let app = build_router(tenant_router, "memory", None);
@@ -80,20 +87,19 @@ fn assert_pre_image(records: &Value, kind: &str, collection: &str, id: &str, ver
     );
 }
 
-async fn insert_test_intent(
-    handler: &TestHandler,
+fn test_intent(
     tenant_id: &str,
     database_id: &str,
     intent_id: &str,
     approval_state: ApprovalState,
     expires_at: u64,
-) {
+) -> MutationIntent {
     let decision = if approval_state == ApprovalState::None {
         MutationIntentDecision::Allow
     } else {
         MutationIntentDecision::NeedsApproval
     };
-    let intent = MutationIntent {
+    MutationIntent {
         intent_id: intent_id.to_string(),
         scope: MutationIntentScopeBinding {
             tenant_id: tenant_id.to_string(),
@@ -117,13 +123,7 @@ async fn insert_test_intent(
         approval_route: None,
         expires_at,
         review_summary: MutationReviewSummary::default(),
-    };
-    handler
-        .lock()
-        .await
-        .storage_mut()
-        .create_mutation_intent(&intent)
-        .expect("test intent should insert");
+    }
 }
 
 async fn effective_policy_as(
@@ -1600,36 +1600,37 @@ async fn graphql_preview_mutation_binds_versions_for_all_operation_shapes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_approval_inbox_lists_reviews_and_scopes_mutation_intents() {
-    let (server, handler) = test_server_with_handler();
+    let seeded_intents = [
+        test_intent(
+            "default",
+            "default",
+            "mint_committed_manual",
+            ApprovalState::Committed,
+            4_000_000_000_000_000_000,
+        ),
+        test_intent(
+            "default",
+            "default",
+            "mint_expired_manual",
+            ApprovalState::Pending,
+            0,
+        ),
+        test_intent(
+            "tenant-b",
+            "default",
+            "mint_tenant_b",
+            ApprovalState::Pending,
+            4_000_000_000_000_000_000,
+        ),
+    ];
+    let (server, _) = test_server_with_storage_setup(move |storage| {
+        for intent in &seeded_intents {
+            storage
+                .create_mutation_intent(intent)
+                .expect("test storage should seed mutation intent");
+        }
+    });
     seed_policy_fixture(&server).await;
-
-    insert_test_intent(
-        &handler,
-        "default",
-        "default",
-        "mint_committed_manual",
-        ApprovalState::Committed,
-        4_000_000_000_000_000_000,
-    )
-    .await;
-    insert_test_intent(
-        &handler,
-        "default",
-        "default",
-        "mint_expired_manual",
-        ApprovalState::Pending,
-        0,
-    )
-    .await;
-    insert_test_intent(
-        &handler,
-        "tenant-b",
-        "default",
-        "mint_tenant_b",
-        ApprovalState::Pending,
-        4_000_000_000_000_000_000,
-    )
-    .await;
 
     let approval_preview = gql_as(
         &server,

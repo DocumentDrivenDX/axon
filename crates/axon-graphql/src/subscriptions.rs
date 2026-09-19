@@ -6,7 +6,7 @@
 //! Subscriptions can filter by collection and/or specific fields.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use axon_core::id::CollectionId;
 use serde::{Deserialize, Serialize};
@@ -106,6 +106,13 @@ struct BrokerInner {
     subscribers: HashMap<SubscriptionId, Subscriber>,
 }
 
+fn lock_broker_inner(mutex: &Mutex<BrokerInner>) -> MutexGuard<'_, BrokerInner> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(error) => panic!("change feed broker mutex poisoned: {error}"),
+    }
+}
+
 impl ChangeFeedBroker {
     /// Create a new broker.
     pub fn new() -> Self {
@@ -117,7 +124,7 @@ impl ChangeFeedBroker {
     /// Returns a subscription ID that can be used to poll for events
     /// or unsubscribe.
     pub fn subscribe(&self, filter: SubscriptionFilter) -> SubscriptionId {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_broker_inner(&self.inner);
         inner.next_id += 1;
         let id = inner.next_id;
         inner.subscribers.insert(
@@ -133,13 +140,13 @@ impl ChangeFeedBroker {
 
     /// Unsubscribe and remove a subscription.
     pub fn unsubscribe(&self, id: SubscriptionId) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_broker_inner(&self.inner);
         inner.subscribers.remove(&id);
     }
 
     /// Publish a change event to all matching subscribers.
     pub fn publish(&self, event: ChangeEvent) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_broker_inner(&self.inner);
         for sub in inner.subscribers.values_mut() {
             if !sub.closed && sub.filter.matches(&event) {
                 sub.events.push(event.clone());
@@ -152,7 +159,7 @@ impl ChangeFeedBroker {
     /// Returns all buffered events and clears the buffer.
     /// Returns `None` if the subscription has been closed or doesn't exist.
     pub fn poll(&self, id: SubscriptionId) -> Option<Vec<ChangeEvent>> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_broker_inner(&self.inner);
         let sub = inner.subscribers.get_mut(&id)?;
         if sub.closed {
             return None;
@@ -163,7 +170,7 @@ impl ChangeFeedBroker {
 
     /// Close all subscriptions for a collection (e.g., when collection is dropped).
     pub fn close_collection(&self, collection: &CollectionId) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_broker_inner(&self.inner);
         for sub in inner.subscribers.values_mut() {
             if let Some(col) = &sub.filter.collection {
                 if col == collection {
@@ -175,13 +182,13 @@ impl ChangeFeedBroker {
 
     /// Number of active (non-closed) subscriptions.
     pub fn active_count(&self) -> usize {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = lock_broker_inner(&self.inner);
         inner.subscribers.values().filter(|s| !s.closed).count()
     }
 
     /// Check if a subscription is still active.
     pub fn is_active(&self, id: SubscriptionId) -> bool {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = lock_broker_inner(&self.inner);
         inner.subscribers.get(&id).is_some_and(|s| !s.closed)
     }
 }

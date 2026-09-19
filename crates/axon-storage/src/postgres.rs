@@ -19,6 +19,17 @@ use crate::adapter::{
     filter_audit_entries_for_query, prefix_successor, CompoundKey, IndexValue, StorageAdapter,
 };
 
+pub const POSTGRES_MUTATING_ROUTINE_NAME: &str = "axon_record_mutation_intent";
+pub const POSTGRES_MUTATING_ROUTINE_SIGNATURE: &str =
+    "axon_record_mutation_intent(TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, JSONB)";
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PostgresTenantRoles {
+    pub runtime: String,
+    pub capability: String,
+    pub migration: String,
+}
+
 fn pg_connect_options(params: &str) -> Result<PgConnectOptions, AxonError> {
     if params.starts_with("postgres://") || params.starts_with("postgresql://") {
         return PgConnectOptions::from_str(params)
@@ -117,6 +128,7 @@ impl PostgresStorageAdapter {
             in_tx: false,
         };
         adapter.init_schema()?;
+        crate::adapter::migrate_legacy_link_keys(&mut adapter)?;
         adapter.backfill_indexes_on_open()?;
         Ok(adapter)
     }
@@ -269,6 +281,7 @@ impl PostgresStorageAdapter {
             )
             .execute(&self.pool),
         )?;
+        self.ensure_postgres_routines()?;
         self.block_on(
             sqlx::raw_sql(
                 "CREATE INDEX IF NOT EXISTS idx_mutation_intents_pending
@@ -314,6 +327,63 @@ impl PostgresStorageAdapter {
         )?;
         self.ensure_namespace_catalog_tables()?;
         self.ensure_default_namespace()
+    }
+
+    fn ensure_postgres_routines(&self) -> Result<(), AxonError> {
+        self.block_on(
+            sqlx::raw_sql(
+                "CREATE OR REPLACE FUNCTION axon_record_mutation_intent(
+                    p_tenant_id TEXT,
+                    p_database_id TEXT,
+                    p_intent_id TEXT,
+                    p_decision TEXT,
+                    p_approval_state TEXT,
+                    p_expires_at_ns BIGINT,
+                    p_intent_json JSONB
+                )
+                RETURNS void
+                LANGUAGE SQL
+                SECURITY DEFINER
+                SET search_path = public
+                AS '
+                    INSERT INTO mutation_intents (
+                        tenant_id,
+                        database_id,
+                        intent_id,
+                        decision,
+                        approval_state,
+                        expires_at_ns,
+                        intent_json
+                    )
+                    VALUES (
+                        p_tenant_id,
+                        p_database_id,
+                        p_intent_id,
+                        p_decision,
+                        p_approval_state,
+                        p_expires_at_ns,
+                        p_intent_json
+                    )
+                    ON CONFLICT (tenant_id, database_id, intent_id)
+                    DO UPDATE SET
+                        decision = EXCLUDED.decision,
+                        approval_state = EXCLUDED.approval_state,
+                        expires_at_ns = EXCLUDED.expires_at_ns,
+                        intent_json = EXCLUDED.intent_json
+                ';
+                REVOKE ALL ON FUNCTION axon_record_mutation_intent(
+                    TEXT,
+                    TEXT,
+                    TEXT,
+                    TEXT,
+                    TEXT,
+                    BIGINT,
+                    JSONB
+                ) FROM PUBLIC;",
+            )
+            .execute(&self.pool),
+        )?;
+        Ok(())
     }
 
     fn collection_exists_in_namespace(
@@ -1527,6 +1597,18 @@ impl StorageAdapter for PostgresStorageAdapter {
         }
         self.block_on(sqlx::raw_sql("BEGIN").execute(&self.pool))?;
         self.in_tx = true;
+        Ok(())
+    }
+
+    fn lock_link_key_migration(&mut self) -> Result<(), AxonError> {
+        if !self.in_tx {
+            return Err(AxonError::Storage(
+                "LinkKey migration lock requires an active transaction".into(),
+            ));
+        }
+        self.block_on(
+            sqlx::raw_sql("LOCK TABLE entities IN SHARE ROW EXCLUSIVE MODE").execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -3380,6 +3462,19 @@ fn validate_pg_db_name(name: &str) -> Result<(), AxonError> {
     Ok(())
 }
 
+pub fn tenant_postgres_roles(tenant_db_name: &str) -> Result<PostgresTenantRoles, AxonError> {
+    validate_pg_db_name(tenant_db_name)?;
+    Ok(PostgresTenantRoles {
+        runtime: format!("axon_{tenant_db_name}_runtime"),
+        capability: format!("axon_{tenant_db_name}_capability"),
+        migration: format!("axon_{tenant_db_name}_migration"),
+    })
+}
+
+fn quote_pg_ident(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
 /// Derive a per-tenant DSN from a superadmin DSN by replacing/adding the
 /// `dbname` key.
 ///
@@ -3423,6 +3518,84 @@ pub fn tenant_dsn(superadmin_dsn: &str, tenant_db_name: &str) -> String {
     }
 }
 
+async fn create_postgres_tenant_roles(
+    pool: &sqlx::PgPool,
+    roles: &PostgresTenantRoles,
+) -> Result<(), AxonError> {
+    use sqlx::Row;
+
+    for role in [&roles.runtime, &roles.capability, &roles.migration] {
+        let row = sqlx::query("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)")
+            .bind(role)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let exists: bool = row.get(0);
+        if !exists {
+            sqlx::raw_sql(&format!("CREATE ROLE {} NOLOGIN", quote_pg_ident(role)))
+                .execute(pool)
+                .await
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn drop_postgres_tenant_roles(
+    pool: &sqlx::PgPool,
+    roles: &PostgresTenantRoles,
+) -> Result<(), AxonError> {
+    for role in [&roles.runtime, &roles.capability, &roles.migration] {
+        sqlx::raw_sql(&format!("DROP ROLE IF EXISTS {}", quote_pg_ident(role)))
+            .execute(pool)
+            .await
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+    }
+
+    Ok(())
+}
+
+fn apply_postgres_routine_privileges(
+    tenant_dsn: &str,
+    roles: &PostgresTenantRoles,
+) -> Result<(), AxonError> {
+    let options = pg_connect_options(tenant_dsn)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+    rt.block_on(async {
+        let pool = sqlx::PgPool::connect_with(options)
+            .await
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let runtime = quote_pg_ident(&roles.runtime);
+        let capability = quote_pg_ident(&roles.capability);
+        let migration = quote_pg_ident(&roles.migration);
+        let statements = [
+            format!("GRANT USAGE ON SCHEMA public TO {runtime}"),
+            format!("GRANT USAGE ON SCHEMA public TO {capability}"),
+            format!("GRANT USAGE ON SCHEMA public TO {migration}"),
+            format!("REVOKE ALL ON FUNCTION {POSTGRES_MUTATING_ROUTINE_SIGNATURE} FROM {runtime}"),
+            format!(
+                "GRANT EXECUTE ON FUNCTION {POSTGRES_MUTATING_ROUTINE_SIGNATURE} TO {capability}"
+            ),
+            format!(
+                "GRANT EXECUTE ON FUNCTION {POSTGRES_MUTATING_ROUTINE_SIGNATURE} TO {migration}"
+            ),
+        ];
+
+        for statement in statements {
+            sqlx::raw_sql(&statement)
+                .execute(&pool)
+                .await
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
+
+        Ok(())
+    })
+}
+
 /// Create a physical PostgreSQL database named `axon_{name}` using a
 /// superadmin connection.
 ///
@@ -3440,6 +3613,7 @@ pub fn tenant_dsn(superadmin_dsn: &str, tenant_db_name: &str) -> String {
 pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(), AxonError> {
     validate_pg_db_name(name)?;
     let full_name = format!("axon_{name}");
+    let roles = tenant_postgres_roles(name)?;
     let options = pg_connect_options(superadmin_dsn)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -3461,6 +3635,7 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
                 "PostgreSQL database '{full_name}'"
             )));
         }
+        create_postgres_tenant_roles(&pool, &roles).await?;
         // CREATE DATABASE cannot run inside a transaction; use raw_sql to
         // avoid the implicit transaction that execute() would open.
         sqlx::raw_sql(&format!("CREATE DATABASE \"{full_name}\""))
@@ -3468,7 +3643,12 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
-    })
+    })?;
+
+    let tenant = tenant_dsn(superadmin_dsn, name);
+    let adapter = PostgresStorageAdapter::connect(&tenant)?;
+    drop(adapter);
+    apply_postgres_routine_privileges(&tenant, &roles)
 }
 
 /// Drop the physical PostgreSQL database named `axon_{name}`.
@@ -3484,6 +3664,7 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
 pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(), AxonError> {
     validate_pg_db_name(name)?;
     let full_name = format!("axon_{name}");
+    let roles = tenant_postgres_roles(name)?;
     let options = pg_connect_options(superadmin_dsn)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -3509,6 +3690,7 @@ pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result
             .execute(&pool)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
+        drop_postgres_tenant_roles(&pool, &roles).await?;
         Ok(())
     })
 }
@@ -3528,10 +3710,11 @@ mod tests {
         CanonicalOperationMetadata, MutationIntentDecision, MutationIntentScopeBinding,
         MutationIntentSubjectBinding, MutationOperationKind, MutationReviewSummary,
     };
-    use axon_core::types::Link;
+    use axon_core::types::{Link, LinkKey};
 
     struct TestDatabase {
         url: String,
+        cleanup: Option<(String, String)>,
     }
 
     enum TestSetupError {
@@ -3567,12 +3750,47 @@ mod tests {
 
             Ok(Self {
                 url: super::tenant_dsn(&superadmin_dsn, &db_name),
+                cleanup: Some((superadmin_dsn, db_name)),
             })
         }
 
         fn url(&self) -> &str {
             &self.url
         }
+    }
+
+    impl Drop for TestDatabase {
+        fn drop(&mut self) {
+            if let Some((superadmin_dsn, database_name)) = self.cleanup.take() {
+                let _ = force_deprovision_test_database(&superadmin_dsn, &database_name);
+            }
+        }
+    }
+
+    fn force_deprovision_test_database(
+        superadmin_dsn: &str,
+        database_name: &str,
+    ) -> Result<(), AxonError> {
+        validate_pg_db_name(database_name)?;
+        let full_name = format!("axon_{database_name}");
+        let options = pg_connect_options(superadmin_dsn)?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| AxonError::Storage(error.to_string()))?;
+        rt.block_on(async {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .map_err(|error| AxonError::Storage(error.to_string()))?;
+            let result = sqlx::raw_sql(&format!("DROP DATABASE \"{full_name}\" WITH (FORCE)"))
+                .execute(&pool)
+                .await
+                .map_err(|error| AxonError::Storage(error.to_string()));
+            pool.close().await;
+            result.map(|_| ())
+        })
     }
 
     struct TestStore {
@@ -5559,6 +5777,159 @@ mod tests {
             assert_eq!(lookup_status(&store, "active"), vec![EntityId::new("p-1")]);
         }
     }
+
+    fn legacy_link_rows() -> (Entity, Entity, Link) {
+        let link = Link {
+            source_collection: CollectionId::new("src/集合"),
+            source_id: EntityId::new("source/one"),
+            target_collection: CollectionId::new("dst/集合"),
+            target_id: EntityId::new("target/two"),
+            link_type: "owns/typed".into(),
+            metadata: serde_json::json!({"legacy": true}),
+        };
+        let forward_id = EntityId::new(
+            [
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+            ]
+            .join("/"),
+        );
+        let reverse_id = EntityId::new(
+            [
+                link.target_collection.as_str(),
+                link.target_id.as_str(),
+                link.source_collection.as_str(),
+                link.source_id.as_str(),
+                link.link_type.as_str(),
+            ]
+            .join("/"),
+        );
+        let mut forward = Entity::new(
+            Link::links_collection(),
+            forward_id,
+            serde_json::to_value(&link).expect("link serializes"),
+        );
+        forward.version = 7;
+        let reverse = Entity::new(
+            Link::links_rev_collection(),
+            reverse_id,
+            serde_json::Value::Null,
+        );
+        (forward, reverse, link)
+    }
+
+    #[test]
+    fn legacy_link_key_migration_postgresql_16() {
+        let Some(mut storage) = store_or_skip("legacy_link_key_migration_postgresql_16") else {
+            return;
+        };
+        let (forward, reverse, link) = legacy_link_rows();
+        storage.put(forward).expect("legacy forward seeds");
+        storage.put(reverse).expect("legacy reverse seeds");
+
+        crate::adapter::migrate_legacy_link_keys(&mut *storage).expect("migration succeeds");
+        let migrated = storage
+            .get(
+                &Link::links_collection(),
+                &LinkKey::forward(&link).entity_id(),
+            )
+            .expect("typed lookup succeeds")
+            .expect("typed forward exists");
+        assert_eq!(migrated.version, 7);
+        assert_eq!(
+            storage
+                .list_inbound_links(&link.target_collection, &link.target_id, None)
+                .expect("reverse rebuilt"),
+            vec![link]
+        );
+    }
+
+    #[test]
+    fn legacy_link_key_migration_lock_blocks_concurrent_postgresql_16() {
+        let Some(mut migration) =
+            store_or_skip("legacy_link_key_migration_lock_blocks_concurrent_postgresql_16")
+        else {
+            return;
+        };
+        let database_url = migration._database.url().to_string();
+        let mut writer =
+            PostgresStorageAdapter::connect(&database_url).expect("second adapter connects");
+        writer
+            .block_on(sqlx::raw_sql("SET lock_timeout = '250ms'").execute(&writer.pool))
+            .expect("writer lock timeout configures");
+
+        migration.begin_tx().expect("migration transaction begins");
+        migration
+            .lock_link_key_migration()
+            .expect("migration lock acquired");
+        let link = Link {
+            source_collection: CollectionId::new("source"),
+            source_id: EntityId::new("one"),
+            target_collection: CollectionId::new("target"),
+            target_id: EntityId::new("two"),
+            link_type: "owns".into(),
+            metadata: serde_json::Value::Null,
+        };
+        let blocked = writer
+            .put_link(&link)
+            .expect_err("concurrent link insert must not pass migration preflight");
+        assert!(
+            blocked.to_string().contains("lock timeout"),
+            "unexpected blocked-writer error: {blocked}"
+        );
+
+        migration
+            .abort_tx()
+            .expect("migration transaction releases lock");
+        writer
+            .block_on(sqlx::raw_sql("SET lock_timeout = '0'").execute(&writer.pool))
+            .expect("writer lock timeout resets");
+        writer
+            .put_link(&link)
+            .expect("writer succeeds after migration lock releases");
+    }
+
+    #[test]
+    fn legacy_link_key_crash_resume_postgresql_16() {
+        let Some(mut storage) = store_or_skip("legacy_link_key_crash_resume_postgresql_16") else {
+            return;
+        };
+        let (forward, reverse, link) = legacy_link_rows();
+        let legacy_forward_id = forward.id.clone();
+        storage.put(forward).expect("legacy forward seeds");
+        storage.put(reverse).expect("legacy reverse seeds");
+
+        assert!(crate::adapter::migrate_legacy_link_keys_with_crash(&mut *storage).is_err());
+        assert!(storage
+            .get(&Link::links_collection(), &legacy_forward_id)
+            .expect("legacy lookup succeeds")
+            .is_some());
+        assert!(storage
+            .get(
+                &Link::links_collection(),
+                &LinkKey::forward(&link).entity_id()
+            )
+            .expect("typed lookup succeeds")
+            .is_none());
+
+        crate::adapter::migrate_legacy_link_keys(&mut *storage).expect("retry succeeds");
+        crate::adapter::migrate_legacy_link_keys(&mut *storage).expect("retry is idempotent");
+        assert_eq!(
+            storage
+                .get_link(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                )
+                .expect("typed link lookup"),
+            Some(link)
+        );
+    }
 }
 
 // ── L4 backend conformance — PostgresStorageAdapter ──────────────────────────
@@ -5635,7 +6006,7 @@ fn pg_conformance_make_adapter() -> Option<PostgresStorageAdapter> {
 
     let dsn = pg_conformance_superadmin_dsn()?;
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let db_name = format!("ct_{n:06}");
+    let db_name = format!("ct_{}_{n:06}", std::process::id());
 
     provision_postgres_database(&dsn, &db_name)
         .expect("conformance database provision should succeed");

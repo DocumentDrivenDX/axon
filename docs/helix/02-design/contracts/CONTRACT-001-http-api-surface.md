@@ -13,19 +13,19 @@ ddx:
     - FEAT-026
     - FEAT-029
   review:
-    self_hash: 56f09de1d818257f569cfef9c6845797d6a5c9c1a78a09fbec23789bbcca1bd2
+    self_hash: 6802fb83894ddfddd4307516c1d90fc61e83f0c7da9719f1868115b0e7a24fb8
     deps:
       ADR-016: d023701c0bedc5ada8a9121fa850a6b78d7b2b2f39d2b7ac41d7d2c48de7a1b9
-      ADR-018: 88bbe812ae5dfd953cc504c367b32f176ca8c182318c3bbbb16a60a962f94057
+      ADR-018: 6282a6ac66a0dcfd400663681132c9f5f85ed7c78793a1cf7f8bf06853cf1d97
       FEAT-004: 1ba0ba90778c2e6b4a38b11632d8ca73d3b328ac19ad326e151534c26ecd0b46
       FEAT-005: 1fab4e58214106451af84deee1a1bfb5c2b520333e6be2a7cd723153730c829c
-      FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
+      FEAT-008: 398492902a4c9d62e5fe6f2d8629ba67cb6175878128036f77f33e40e00d5f6a
       FEAT-010: f5e9cc42a1a1e5b377b069b10a011414e361565a26c13d7bead25314b5d3bf34
       FEAT-014: 89f20cc345d46dc650c9c0f1042da643fbc4e57b3e9278c287b2fb625cc6fd4f
       FEAT-023: 24416c13b9a48e864ae43e3967c63d2711763c745905850dbb4f03768ffc7949
       FEAT-026: 8751e34ac2140fb80077b881290769d82b1d39e7cb1fbaa60404bc82eae1b07b
-      # TODO: refresh review stamp — FEAT-029 dep hash needs recomputation via the review tooling
-    reviewed_at: "2026-06-15T00:35:16Z"
+      FEAT-029: f548dd83b06d298a7e8c575870ae1a06e5e9c53e94d6ccb64b2b876daf7b3b0c
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 
 # Contract
@@ -91,9 +91,9 @@ MUST nest under `/control`:
   `/tenants/{t}/databases/{d}/axon.EntityService/CreateEntity`.
 
 Legacy un-prefixed routes (`GET /auth/me`, `/databases/...`,
-`/collections/...`) are live in the current gateway and are **deprecated**:
-they MUST be removed in favor of the prefixed forms below and the
-control-plane GraphQL `currentUser` query (CONTRACT-002).
+`/collections/...`), where still present in a pre-release implementation, are
+**deprecated**: they MUST be removed in favor of the prefixed forms below and
+the control-plane GraphQL `currentUser` query (CONTRACT-002).
 
 ### Data-plane route inventory
 
@@ -129,7 +129,7 @@ All paths below are relative to `/tenants/{tenant}/databases/{database}`.
 | `/audit/tail` | GET | read | Audit streaming tail |
 | `/traverse/{collection}/{id}` | GET | read | Simple traversal (`link_type`, `max_depth`, `direction`) |
 | `/traverse/{collection}/{id}` | POST | read | Filtered traversal (`hop_filter` body) |
-| `/schema` | GET | read | Schema handshake manifest (hash + full schemas) |
+| `/schema` | GET | read | Schema handshake manifest (active structural hash + full schemas) |
 | `/graphql` | POST | per-operation | GraphQL (CONTRACT-002) |
 | `/graphql/ws` | WS | read at connect | GraphQL subscriptions (CONTRACT-002) |
 | `/mcp` | POST | per-tool | MCP JSON-RPC (CONTRACT-003) |
@@ -172,7 +172,7 @@ addressed only via the `tenant_databases` relationship and the URL path.
 |--------|-----------|-------|
 | `Authorization: Bearer <jwt>` | request | Required outside `--no-auth`/Tailscale modes; claim/verification rules per ADR-018 |
 | `x-request-id` | both | Emitted on every response; echoed if a valid value was supplied, else server generates UUIDv7 |
-| `x-axon-schema-hash` | both | Client asserts expected schema hash; emitted on schema-manifest responses; mismatch → 409 `schema_mismatch` |
+| `x-axon-schema-hash` | both | Client asserts expected `AXON-SCHEMA-CATALOG-HASH-1` active structural hash; emitted on schema-manifest responses; mismatch → 409 `schema_mismatch` |
 | `x-axon-actor` | request | Allowed in CORS preflight; route handlers use authenticated identity for writes |
 | `x-idempotent-cache` | response | `hit` when a transaction replay was served from the idempotency cache |
 | `x-axon-query-cost` | response | Optional; reserved for query-cost reporting; clients MUST treat as optional |
@@ -213,7 +213,7 @@ Clients MUST switch on `code`, never on the human-readable message.
 | 500 | `internal`, `storage_error`, render failure | Server error |
 
 `version_conflict` detail: `{ "expected": n, "actual": n, "current_entity": {...} }`.
-`schema_mismatch` detail: `{ "expected": "...", "actual": "...", "manifest": {...} }`.
+`schema_mismatch` detail: `{ "expected": "...", "actual": "...", "manifest": {...} }`, where `manifest` is the active `StructuralSchemaV1` payload.
 `schema_validation` detail: `{ "message": "...", "field_errors": [{ "field_path", "message", "severity", "fix"? }] }`
 (`field_errors` is `[]` for non-JSON-Schema validation failures).
 Unsupported audit filters return `unsupported_audit_filter` with
@@ -223,7 +223,8 @@ Unsupported audit filters return `unsupported_audit_filter` with
 
 Every entity (and link) response carries server-managed system fields
 alongside user data. System fields live outside the user schema namespace
-(CONTRACT-010) and MUST NOT be writable through entity payloads.
+(CONTRACT-010) and MUST NOT be writable through entity payloads. Reserved
+namespace collisions are rejected with `reserved_namespace`.
 
 | Field | Type | Rules |
 |-------|------|-------|
@@ -237,8 +238,8 @@ alongside user data. System fields live outside the user schema namespace
 - All six fields are present on every entity read/list/query response.
 - Links carry the same envelope semantics with at minimum `_id`,
   `_version`, `_created_at`, `_created_by`.
-- A client payload that attempts to set a system field is rejected with
-  400 `invalid_argument`.
+- A client payload that attempts to set a system field or reserved namespace
+  key is rejected with 400 `reserved_namespace`.
 
 ### Transaction and idempotency protocol (FEAT-008)
 
@@ -287,15 +288,20 @@ standard envelope: payload/size and count violations return 400
 `invalid_argument`; schema-shape violations (nesting, field counts) return
 422 `schema_validation`.
 
+AXON-CJSON-1 is the canonical byte-measurement rule for payload and link
+metadata limits: serialize the request or entity to canonical UTF-8 JSON
+with stable object-key ordering and no insignificant whitespace, then count
+the bytes of that canonical form.
+
 | Constraint | Limit | Notes |
 |-----------|-------|-------|
-| Entity size (serialized) | 1 MB default, 10 MB hard max | Configurable per collection up to the hard max |
+| Entity size (AXON-CJSON-1 canonical bytes) | 1 MB default, 10 MB hard max | Configurable per collection up to the hard max |
 | Entity nesting depth | 8 levels | Enforced at schema definition and at write time |
 | Fields per nesting level | 65,535 (u16) | |
 | Array/list elements | 4,294,967,295 (u32) | |
 | User-defined fields per entity | ≥ 1 | Beyond the system-metadata envelope |
 | String/blob field size | Bounded by entity size | No independent per-field limit |
-| Link metadata size | 64 KB | Links are lightweight |
+| Link metadata size | 64 KB | Measured in AXON-CJSON-1 canonical bytes; links are lightweight |
 | Traversal depth (`max_depth`) | 10 hops default | Configurable; warning emitted above 10 |
 | Operations per transaction | 100 | Normative rule above; the 101st is rejected |
 | Transaction timeout | 30 seconds | Configurable; expired transactions abort cleanly |
@@ -393,7 +399,7 @@ Template management (`/collections/{collection}/template`):
   clean break).
 - Schema compatibility: additive schema changes are compatible; breaking
   changes are rejected without `force`. Clients SHOULD compare
-  `schema_hash` on app load and fail closed on mismatch.
+  `AXON-SCHEMA-CATALOG-HASH-1` on app load and fail closed on mismatch.
 - The `{code, detail}` envelope and code strings are stable; new codes MAY
   be added, existing codes MUST NOT change meaning.
 - Deprecation rules: deprecated routes/headers (un-prefixed routes,

@@ -10,12 +10,12 @@ ddx:
   review:
     self_hash: 80dcbb947056ff9555019c8cbc3c3a6e9dbe67cdaa668402b15d7bbc5d905930
     deps:
-      ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
+      ADR-003: 056f2f887152bb12c36cfae79ee6ced4c33a6b6de4d73c2500cd087fd7fd1025
       ADR-007: 5a96b23ec82c256af094753065c60c6862a9a7c2fd8e7db3bb681d896627f727
       ADR-009: 7c5d1ebee3b962eae5cfaec389f6c7fb5b107928607f9d8040722afd4e17dc80
-      FEAT-002: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
+      FEAT-002: 84f680ec396f34b25b2a91172d8cab7a8e9204817430b9e3aa8f9ec1ee3afd03
       FEAT-004: 1ba0ba90778c2e6b4a38b11632d8ca73d3b328ac19ad326e151534c26ecd0b46
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T04:22:33Z"
 ---
 # ADR-010: Physical Storage Schema and Secondary Indexes
 

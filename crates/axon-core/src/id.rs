@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::marker::PhantomData;
 use uuid::Uuid;
 
 /// Default database name for single-tenant deployments.
@@ -110,6 +111,330 @@ impl CollectionId {
 impl fmt::Display for CollectionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+mod system_seal {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) struct Seal;
+}
+
+mod governed_system_seal {
+    pub trait Sealed {}
+}
+
+/// Typed class for reserved Axon-owned collection names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SystemCollectionClass {
+    /// Forward link store formerly exposed as a pseudo-collection.
+    LinkForwardStore,
+    /// Reverse inbound-link index formerly exposed as a pseudo-collection.
+    LinkReverseIndex,
+    /// Durable CDC/client-projection checkpoint collection.
+    CheckpointCursorStore,
+    /// Synthetic audit subject for mutation-intent lifecycle events.
+    MutationIntentAuditSubject,
+    /// Axon-native bead/task collection.
+    BeadCatalog,
+    /// Stale policy pseudo-collection alias retained only for compatibility docs.
+    LegacyPolicyAlias,
+}
+
+/// Sealed constructor surface for Axon-owned collection names.
+///
+/// `SystemCollection` is intentionally not constructible outside this module:
+/// callers must choose one of the named constructors, which keeps every reserved
+/// collection tied to a single typed class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemCollection {
+    name: &'static str,
+    class: SystemCollectionClass,
+    _seal: system_seal::Seal,
+}
+
+impl SystemCollection {
+    /// All Axon-owned collection names in the internal namespace manifest.
+    pub const ALL: [Self; 6] = [
+        Self::links(),
+        Self::links_rev(),
+        Self::cdc_cursors(),
+        Self::mutation_intents(),
+        Self::beads(),
+        Self::legacy_policies(),
+    ];
+
+    /// Internal forward link store (`__axon_links__`).
+    pub const fn links() -> Self {
+        Self::new("__axon_links__", SystemCollectionClass::LinkForwardStore)
+    }
+
+    /// Internal reverse inbound-link index (`__axon_links_rev__`).
+    pub const fn links_rev() -> Self {
+        Self::new(
+            "__axon_links_rev__",
+            SystemCollectionClass::LinkReverseIndex,
+        )
+    }
+
+    /// Durable CDC/client-projection cursor checkpoints (`_cdc_cursors`).
+    pub const fn cdc_cursors() -> Self {
+        Self::new("_cdc_cursors", SystemCollectionClass::CheckpointCursorStore)
+    }
+
+    /// Synthetic audit subject for mutation-intent lifecycle events.
+    pub const fn mutation_intents() -> Self {
+        Self::new(
+            "__mutation_intents",
+            SystemCollectionClass::MutationIntentAuditSubject,
+        )
+    }
+
+    /// Axon-native bead/task collection (`__axon_beads__`).
+    pub const fn beads() -> Self {
+        Self::new("__axon_beads__", SystemCollectionClass::BeadCatalog)
+    }
+
+    /// Stale policy pseudo-collection alias (`__axon_policies__`).
+    pub const fn legacy_policies() -> Self {
+        Self::new(
+            "__axon_policies__",
+            SystemCollectionClass::LegacyPolicyAlias,
+        )
+    }
+
+    /// Resolve a reserved name into its single system class.
+    pub fn from_reserved_name(name: &str) -> Option<Self> {
+        match name {
+            "__axon_links__" => Some(Self::links()),
+            "__axon_links_rev__" => Some(Self::links_rev()),
+            "_cdc_cursors" => Some(Self::cdc_cursors()),
+            "__mutation_intents" => Some(Self::mutation_intents()),
+            "__axon_beads__" => Some(Self::beads()),
+            "__axon_policies__" => Some(Self::legacy_policies()),
+            _ => None,
+        }
+    }
+
+    /// Resolve an unqualified or namespace-qualified collection string against
+    /// the internal namespace manifest.
+    pub fn from_collection_name(name: &str) -> Option<Self> {
+        let (_, collection) = Namespace::parse(name);
+        Self::from_reserved_name(&collection)
+    }
+
+    /// Reserved collection name.
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Typed class assigned to this reserved collection.
+    pub const fn class(&self) -> SystemCollectionClass {
+        self.class
+    }
+
+    /// Materialize the reserved name as a storage-facing [`CollectionId`].
+    pub fn collection_id(&self) -> CollectionId {
+        CollectionId::new(self.name)
+    }
+
+    const fn new(name: &'static str, class: SystemCollectionClass) -> Self {
+        Self {
+            name,
+            class,
+            _seal: system_seal::Seal,
+        }
+    }
+}
+
+/// Sealed marker for an Axon-owned module's governed system collection.
+pub trait GovernedSystemCollection: governed_system_seal::Sealed {
+    /// The single manifest collection governed by this module.
+    const SYSTEM_COLLECTION: SystemCollection;
+}
+
+/// Marker for the built-in bead/work-item module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeadSystemCollection {}
+
+impl governed_system_seal::Sealed for BeadSystemCollection {}
+
+impl GovernedSystemCollection for BeadSystemCollection {
+    const SYSTEM_COLLECTION: SystemCollection = SystemCollection::beads();
+}
+
+/// Sealed capability granting a module access to its governed system collection.
+///
+/// The target collection is an associated constant on a sealed marker type, not
+/// mutable capability state. External crates can pass the exported bead
+/// capability where Axon exposes one, but they cannot construct a new capability,
+/// implement a new marker, widen it into an all-system capability, or retarget it
+/// to another reserved name.
+#[derive(Debug, PartialEq, Eq)]
+pub struct GovernedSystemCapability<C: GovernedSystemCollection> {
+    _module: PhantomData<fn() -> C>,
+    _seal: system_seal::Seal,
+}
+
+impl<C: GovernedSystemCollection> Clone for GovernedSystemCapability<C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<C: GovernedSystemCollection> Copy for GovernedSystemCapability<C> {}
+
+impl<C: GovernedSystemCollection> GovernedSystemCapability<C> {
+    /// The only system collection addressable through this capability.
+    pub const fn collection(&self) -> SystemCollection {
+        C::SYSTEM_COLLECTION
+    }
+}
+
+/// Capability for the built-in bead/work-item module.
+pub type BeadSystemCapability = GovernedSystemCapability<BeadSystemCollection>;
+
+/// The only governed system capability currently exported by `axon-core`.
+pub const BEAD_SYSTEM_CAPABILITY: BeadSystemCapability = GovernedSystemCapability {
+    _module: PhantomData,
+    _seal: system_seal::Seal,
+};
+
+/// Typed class for audit-addressable subjects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AuditSubjectClass {
+    /// User-authored collection state.
+    UserCollection,
+    /// Reserved Axon-owned collection state.
+    SystemCollection(SystemCollectionClass),
+    /// Physical storage catalog table or index.
+    StorageCatalog,
+    /// Auth/tenancy physical table.
+    AuthCatalog,
+    /// Audit log physical table.
+    AuditLog,
+    /// Idempotency state outside entity collections.
+    Idempotency,
+    /// Derived read/projection state.
+    Projection,
+}
+
+/// Sealed audit subject constructor surface.
+///
+/// Public constructors validate or require typed inputs so a reserved
+/// collection cannot be smuggled in as an ordinary user collection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditSubject {
+    name: String,
+    class: AuditSubjectClass,
+    _seal: system_seal::Seal,
+}
+
+impl AuditSubject {
+    /// Build an audit subject for user collection state.
+    pub fn user_collection(collection: CollectionId) -> Option<Self> {
+        if SystemCollection::from_reserved_name(collection.as_str()).is_some() {
+            return None;
+        }
+        Some(Self::new(
+            collection.as_str().to_owned(),
+            AuditSubjectClass::UserCollection,
+        ))
+    }
+
+    /// Build an audit subject for a reserved system collection.
+    pub fn system_collection(collection: SystemCollection) -> Self {
+        Self::new(
+            collection.name().to_owned(),
+            AuditSubjectClass::SystemCollection(collection.class()),
+        )
+    }
+
+    /// Build an audit subject for a physical storage catalog object.
+    pub fn storage_catalog(name: &'static str) -> Self {
+        Self::new(name.to_owned(), AuditSubjectClass::StorageCatalog)
+    }
+
+    /// Build an audit subject for a physical auth/tenancy object.
+    pub fn auth_catalog(name: &'static str) -> Self {
+        Self::new(name.to_owned(), AuditSubjectClass::AuthCatalog)
+    }
+
+    /// Build an audit subject for the physical audit log.
+    pub fn audit_log(name: &'static str) -> Self {
+        Self::new(name.to_owned(), AuditSubjectClass::AuditLog)
+    }
+
+    /// Build an audit subject for idempotency state.
+    pub fn idempotency(name: &'static str) -> Self {
+        Self::new(name.to_owned(), AuditSubjectClass::Idempotency)
+    }
+
+    /// Build an audit subject for derived projection state.
+    pub fn projection(name: &'static str) -> Self {
+        Self::new(name.to_owned(), AuditSubjectClass::Projection)
+    }
+
+    /// Subject name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Typed subject class.
+    pub const fn class(&self) -> AuditSubjectClass {
+        self.class
+    }
+
+    fn new(name: String, class: AuditSubjectClass) -> Self {
+        Self {
+            name,
+            class,
+            _seal: system_seal::Seal,
+        }
+    }
+}
+
+/// Sealed token identifying the governed entity-write path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GovernedWriteTx {
+    _seal: system_seal::Seal,
+}
+
+/// Sealed token identifying storage migration authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationCapability {
+    _seal: system_seal::Seal,
+}
+
+/// Sealed token identifying checkpoint/cursor write authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckpointCapability {
+    _seal: system_seal::Seal,
+}
+
+#[cfg(test)]
+impl GovernedWriteTx {
+    pub(crate) const fn storage_adapter() -> Self {
+        Self {
+            _seal: system_seal::Seal,
+        }
+    }
+}
+
+#[cfg(test)]
+impl MigrationCapability {
+    pub(crate) const fn storage_migration() -> Self {
+        Self {
+            _seal: system_seal::Seal,
+        }
+    }
+}
+
+#[cfg(test)]
+impl CheckpointCapability {
+    pub(crate) const fn storage_checkpoint() -> Self {
+        Self {
+            _seal: system_seal::Seal,
+        }
     }
 }
 
@@ -227,6 +552,135 @@ mod tests {
         let id = CollectionId::new("tasks");
         assert_eq!(id.as_str(), "tasks");
         assert_eq!(id.to_string(), "tasks");
+    }
+
+    #[test]
+    fn system_collection_known_reserved_names_round_trip() {
+        let known = [
+            ("__axon_links__", SystemCollectionClass::LinkForwardStore),
+            (
+                "__axon_links_rev__",
+                SystemCollectionClass::LinkReverseIndex,
+            ),
+            ("_cdc_cursors", SystemCollectionClass::CheckpointCursorStore),
+            (
+                "__mutation_intents",
+                SystemCollectionClass::MutationIntentAuditSubject,
+            ),
+            ("__axon_beads__", SystemCollectionClass::BeadCatalog),
+            (
+                "__axon_policies__",
+                SystemCollectionClass::LegacyPolicyAlias,
+            ),
+        ];
+
+        assert_eq!(SystemCollection::ALL.len(), known.len());
+
+        for (collection, (name, class)) in SystemCollection::ALL.iter().copied().zip(known) {
+            assert_eq!(collection.name(), name);
+            assert_eq!(collection.class(), class);
+            assert_eq!(collection.collection_id().as_str(), name);
+            assert_eq!(SystemCollection::from_reserved_name(name), Some(collection));
+            assert_eq!(
+                SystemCollection::from_collection_name(&format!("prod.default.{name}")),
+                Some(collection)
+            );
+        }
+    }
+
+    #[test]
+    fn system_collection_rejects_unmanifested_reserved_names() {
+        assert!(SystemCollection::from_reserved_name("__axon_unknown__").is_none());
+        assert!(SystemCollection::from_reserved_name("tasks").is_none());
+        assert!(SystemCollection::from_collection_name("prod.default.__axon_unknown__").is_none());
+        assert!(SystemCollection::from_collection_name("prod.default.tasks").is_none());
+    }
+
+    #[test]
+    fn system_collection_audit_subjects_are_typed() {
+        let subject = AuditSubject::system_collection(SystemCollection::links());
+        assert_eq!(subject.name(), "__axon_links__");
+        assert_eq!(
+            subject.class(),
+            AuditSubjectClass::SystemCollection(SystemCollectionClass::LinkForwardStore)
+        );
+    }
+
+    #[test]
+    fn system_collection_reserved_names_cannot_be_user_audit_subjects() {
+        assert!(AuditSubject::user_collection(CollectionId::new("tasks")).is_some());
+        assert!(AuditSubject::user_collection(CollectionId::new("__axon_links__")).is_none());
+        assert!(AuditSubject::user_collection(CollectionId::new("__axon_policies__")).is_none());
+    }
+
+    #[test]
+    fn system_collection_capability_tokens_are_sealed() {
+        let governed = GovernedWriteTx::storage_adapter();
+        let migration = MigrationCapability::storage_migration();
+        let checkpoint = CheckpointCapability::storage_checkpoint();
+
+        assert_eq!(governed, GovernedWriteTx::storage_adapter());
+        assert_eq!(migration, MigrationCapability::storage_migration());
+        assert_eq!(checkpoint, CheckpointCapability::storage_checkpoint());
+    }
+
+    #[test]
+    fn governed_system_capability_bead_binding_is_manifest_exact() {
+        let capability = BEAD_SYSTEM_CAPABILITY;
+        let collection = capability.collection();
+
+        assert_eq!(collection, SystemCollection::beads());
+        assert_eq!(collection.name(), "__axon_beads__");
+        assert_eq!(collection.class(), SystemCollectionClass::BeadCatalog);
+        assert_eq!(
+            SystemCollection::from_reserved_name(collection.name()),
+            Some(SystemCollection::beads())
+        );
+    }
+
+    #[test]
+    fn governed_system_capability_does_not_target_hidden_physical_stores() {
+        let capability = BEAD_SYSTEM_CAPABILITY;
+        let hidden = [
+            SystemCollection::links(),
+            SystemCollection::links_rev(),
+            SystemCollection::cdc_cursors(),
+        ];
+
+        for collection in hidden {
+            assert_ne!(capability.collection(), collection);
+            assert_ne!(capability.collection().name(), collection.name());
+        }
+    }
+
+    #[test]
+    fn governed_system_capability_does_not_target_virtual_or_legacy_alias_names() {
+        let capability = BEAD_SYSTEM_CAPABILITY;
+        let virtual_or_alias = [
+            SystemCollection::mutation_intents(),
+            SystemCollection::legacy_policies(),
+        ];
+
+        for collection in virtual_or_alias {
+            assert_ne!(capability.collection(), collection);
+            assert_ne!(capability.collection().name(), collection.name());
+        }
+    }
+
+    #[test]
+    fn governed_system_capability_unmanifested_reserved_names_are_unbound() {
+        let capability = BEAD_SYSTEM_CAPABILITY;
+        let unknown_reserved_names = [
+            "__axon_unknown__",
+            "__axon_links_archive__",
+            "__mutation_intents_v2",
+            "_cdc_cursors_shadow",
+        ];
+
+        for name in unknown_reserved_names {
+            assert_ne!(capability.collection().name(), name);
+            assert!(SystemCollection::from_reserved_name(name).is_none());
+        }
     }
 
     #[test]

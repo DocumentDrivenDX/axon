@@ -14,10 +14,9 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, RwLock};
 
-use axon_api::handler::AxonHandler;
+use axon_api::{handler::AxonHandler, AxonBuilder};
 use axon_core::{AxonError, DEFAULT_DATABASE};
 use axon_storage::adapter::StorageAdapter;
-use axon_storage::{PostgresStorageAdapter, SqliteStorageAdapter};
 
 /// Shared, async-safe handle to an `AxonHandler` backed by a boxed
 /// `StorageAdapter`.  Used by the HTTP gateway for both SQLite and
@@ -254,12 +253,13 @@ impl TenantRouter {
                     )
                 })?;
 
-                let mut storage = SqliteStorageAdapter::open(path_str)
+                let mut storage = AxonBuilder::new()
+                    .sqlite_path(path_str)
+                    .build_storage()
                     .map_err(|e| format!("failed to open tenant database '{db_name}': {e}"))?;
                 ensure_logical_database(&mut storage, db_name)?;
 
-                let boxed: Box<dyn StorageAdapter + Send + Sync> = Box::new(storage);
-                let handler = Arc::new(Mutex::new(AxonHandler::new(boxed)));
+                let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
                 guard.insert(db_name.to_owned(), Arc::clone(&handler));
                 Ok(handler)
             }
@@ -330,14 +330,13 @@ impl TenantRouter {
                         }
                     }
 
-                    let mut storage = PostgresStorageAdapter::connect(&tenant_conn_str).map_err(|e| {
+                    let mut storage = AxonBuilder::new().postgres_dsn(&tenant_conn_str).build_storage().map_err(|e| {
                         format!(
                             "failed to connect to tenant PostgreSQL database 'axon_{physical_db_name}' for '{db_name_owned}': {e}"
                         )
                     })?;
                     ensure_logical_database(&mut storage, &db_name_owned)?;
-                    let boxed: Box<dyn StorageAdapter + Send + Sync> = Box::new(storage);
-                    Ok(Arc::new(Mutex::new(AxonHandler::new(boxed))))
+                    Ok(Arc::new(Mutex::new(AxonHandler::new(storage))))
                 })
                 .await
                 .map_err(|e| format!("thread join error while provisioning tenant: {e}"))??;
@@ -452,6 +451,7 @@ mod tests {
     use std::path::Path;
 
     use axon_api::request::{ListDatabasesRequest, ListNamespacesRequest};
+    use axon_storage::SqliteStorageAdapter;
 
     use super::*;
 

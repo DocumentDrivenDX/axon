@@ -6,8 +6,8 @@ ddx:
   review:
     self_hash: f548dd83b06d298a7e8c575870ae1a06e5e9c53e94d6ccb64b2b876daf7b3b0c
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:03:37Z"
 ---
 # Feature Specification: FEAT-029 — Data-Layer Access Control Policies
 

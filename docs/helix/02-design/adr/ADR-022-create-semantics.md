@@ -9,11 +9,11 @@ ddx:
   review:
     self_hash: c69f9d446653d563314eba51e7718aff6e33217d0063aae1b3620238fa276e7d
     deps:
-      ADR-004: 4c8ee66b80980bed2298d511d223f7faaace03864610faf8333af8659c4ce570
+      ADR-004: a58eda0c55e1ac9c4e8cd6fc69d213455354b62286d62be2579de9add3ad01d2
       ADR-012: cea81e56e4101b53f6b9a2e98c796278756bc657b895398ae226b6bc4f1f0188
       FEAT-004: 1ba0ba90778c2e6b4a38b11632d8ca73d3b328ac19ad326e151534c26ecd0b46
-      FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
-    reviewed_at: "2026-06-15T00:35:16Z"
+      FEAT-008: 398492902a4c9d62e5fe6f2d8629ba67cb6175878128036f77f33e40e00d5f6a
+    reviewed_at: "2026-07-11T04:22:34Z"
 ---
 # ADR-022: Create Semantics — Storage Upsert, Strict Create at Typed Surfaces
 

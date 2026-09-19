@@ -213,8 +213,8 @@ fn scn_001_payment_application_with_partial_payment() {
     )
     .unwrap();
 
-    let written = tx
-        .commit(h.storage_mut(), Some("payment-agent".into()), None)
+    let written = h
+        .commit_transaction(tx, Some("payment-agent".into()), None)
         .unwrap();
     assert_eq!(written.len(), 5);
 
@@ -282,7 +282,7 @@ fn scn_001_payment_application_with_partial_payment() {
             None,
         )
         .unwrap();
-    let err = bad_tx.commit(h.storage_mut(), None, None).unwrap_err();
+    let err = h.commit_transaction(bad_tx, None, None).unwrap_err();
     assert!(matches!(err, AxonError::ConflictingVersion { .. }));
 
     // INV-040 must be unchanged (no partial application).
@@ -379,7 +379,7 @@ fn scn_002_contact_merge_duplicate_resolution() {
     )
     .unwrap();
 
-    tx.commit(h.storage_mut(), Some("merge-agent".into()), None)
+    h.commit_transaction(tx, Some("merge-agent".into()), None)
         .unwrap();
 
     // Re-link Deal-1 from Contact-A to Contact-B.
@@ -998,7 +998,7 @@ fn scn_008_golden_record_merge_with_survivorship() {
         }),
     ))
     .unwrap();
-    tx.commit(h.storage_mut(), Some("mdm-engine".into()), None)
+    h.commit_transaction(tx, Some("mdm-engine".into()), None)
         .unwrap();
 
     // Link sources to golden record.

@@ -7,9 +7,9 @@ ddx:
   review:
     self_hash: afd04155485abee12677de4157c1ab17c946b9244822d695762ddc585a2b8704
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-      helix.product-vision: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+      helix.product-vision: 55456fd63c59b72cf433d259ce5d0015b3c6b8f1890e7e66ccc001b0b5187e53
+    reviewed_at: "2026-07-11T04:03:37Z"
 ---
 
 # Competitive Analysis: Axon

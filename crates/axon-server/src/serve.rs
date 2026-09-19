@@ -13,8 +13,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::service::{AxonServiceImpl, AxonServiceServer};
 use crate::{AuthContext, Role};
-use axon_api::handler::AxonHandler;
-use axon_storage::{provision_postgres_database, PostgresStorageAdapter, SqliteStorageAdapter};
+use axon_api::{handler::AxonHandler, AxonBuilder};
+use axon_storage::{provision_postgres_database, SqliteStorageAdapter, StorageAdapter};
 
 #[derive(Clone, Debug, clap::ValueEnum)]
 pub enum StorageBackend {
@@ -227,6 +227,22 @@ pub fn auth_context_from_serve_args(args: &ServeArgs) -> AuthContext {
     }
 }
 
+fn storage_builder_from_serve_args(args: &ServeArgs) -> Result<AxonBuilder, String> {
+    let builder = match &args.storage {
+        StorageBackend::Memory => AxonBuilder::new().memory(),
+        StorageBackend::Sqlite => AxonBuilder::new().sqlite_path(&args.sqlite_path),
+        StorageBackend::Postgres => {
+            let dsn = args
+                .postgres_dsn
+                .as_deref()
+                .ok_or_else(|| "--postgres-dsn is required when --storage=postgres".to_string())?;
+            AxonBuilder::new().postgres_dsn(dsn)
+        }
+    };
+    builder.validate().map_err(|error| error.to_string())?;
+    Ok(builder)
+}
+
 /// Fully initialized control-plane: opened DB, loaded stores, wired auth.
 ///
 /// Created by [`init_control_plane`] and consumed by each storage-backend startup
@@ -310,11 +326,13 @@ pub fn init_control_plane(
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
 
-    // Open a second SqliteStorageAdapter against the same control-plane file
+    // Open a second storage adapter against the same control-plane file
     // so the ControlPlaneState has an adapter implementing list_tenant_databases,
     // upsert_tenant_member, etc.  Without this, the /control/tenants/{id}/databases
     // and /control/tenants/{id}/members endpoints return "not_configured".
-    let adapter = SqliteStorageAdapter::open(control_plane_path)
+    let adapter = AxonBuilder::new()
+        .sqlite_path(control_plane_path)
+        .build_sqlite_storage()
         .map_err(|e| format!("failed to open control-plane storage adapter: {e}"))?;
     adapter
         .apply_auth_migrations()
@@ -364,9 +382,9 @@ pub fn init_control_plane(
 /// Entry point that replaces the former binary `main`.
 ///
 /// Selects the storage backend based on `args.storage` and delegates to
-/// [`run_with_sqlite_storage`].  The HTTP gateway always uses SQLite via
-/// [`TenantRouter`] for per-tenant isolation.  The `--storage=memory`
-/// backend uses an in-memory SQLite database.
+/// the common storage startup path.  The `--storage=memory` backend uses the
+/// in-memory adapter for the default database; non-default tenants still use
+/// [`TenantRouter`] isolation.
 pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // Install a rustls crypto provider once per process before any TLS I/O.
     // Without this, processes that pull in both aws-lc-rs and ring (via
@@ -385,22 +403,25 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         );
     }
 
-    match args.storage {
+    let storage_builder = storage_builder_from_serve_args(&args)?;
+
+    match &args.storage {
         StorageBackend::Memory => {
-            let storage = SqliteStorageAdapter::open_in_memory()
-                .map_err(|e| format!("failed to open in-memory SQLite: {e}"))?;
-            run_with_sqlite_storage(storage, &args, "memory").await
+            let storage = storage_builder
+                .build_storage()
+                .map_err(|error| format!("failed to open in-memory backing store: {error}"))?;
+            run_with_storage(storage, &args, "memory").await
         }
         StorageBackend::Sqlite => {
-            let storage = SqliteStorageAdapter::open(&args.sqlite_path)
+            let storage = storage_builder
+                .build_storage()
                 .map_err(|error| format!("failed to open SQLite backing store: {error}"))?;
-            run_with_sqlite_storage(storage, &args, format!("sqlite:{}", args.sqlite_path)).await
+            run_with_storage(storage, &args, format!("sqlite:{}", args.sqlite_path)).await
         }
         StorageBackend::Postgres => {
-            let superadmin_dsn = args
-                .postgres_dsn
-                .as_deref()
-                .ok_or_else(|| "--postgres-dsn is required when --storage=postgres".to_string())?;
+            let Some(superadmin_dsn) = args.postgres_dsn.as_deref() else {
+                return Err("--postgres-dsn is required when --storage=postgres".to_string());
+            };
             run_with_postgres_storage(superadmin_dsn, &args).await
         }
     }
@@ -412,6 +433,17 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
 /// [`TenantRouter`] for per-tenant handler isolation.
 pub async fn run_with_sqlite_storage(
     storage: SqliteStorageAdapter,
+    args: &ServeArgs,
+    backend: impl Into<String>,
+) -> Result<(), String> {
+    run_with_storage(Box::new(storage), args, backend).await
+}
+
+/// Run the server with a selected storage adapter.
+///
+/// This is the common startup path behind supported application construction.
+pub async fn run_with_storage(
+    storage: Box<dyn StorageAdapter + Send + Sync>,
     args: &ServeArgs,
     backend: impl Into<String>,
 ) -> Result<(), String> {
@@ -436,9 +468,7 @@ pub async fn run_with_sqlite_storage(
     let (auth, data_dir, cors_store) = (cp.auth, cp.data_dir, cp.cors_store);
 
     let handler: crate::tenant_router::TenantHandler =
-        Arc::new(tokio::sync::Mutex::new(AxonHandler::new(
-            Box::new(storage) as Box<dyn axon_storage::adapter::StorageAdapter + Send + Sync>
-        )));
+        Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
     let tenant_router = Arc::new(crate::tenant_router::TenantRouter::new(
         data_dir,
         handler.clone(),
@@ -560,7 +590,9 @@ pub async fn run_with_postgres_storage(
     let pg_master = tokio::task::spawn_blocking({
         let conn = master_conn_str.clone();
         move || {
-            PostgresStorageAdapter::connect(&conn)
+            AxonBuilder::new()
+                .postgres_dsn(conn)
+                .build_storage()
                 .map_err(|e| format!("failed to connect to axon_master: {e}"))
         }
     })
@@ -570,9 +602,7 @@ pub async fn run_with_postgres_storage(
     tracing::info!("connected to master PostgreSQL database at axon_master");
 
     let default_handler: crate::tenant_router::TenantHandler =
-        Arc::new(tokio::sync::Mutex::new(AxonHandler::new(
-            Box::new(pg_master) as Box<dyn axon_storage::adapter::StorageAdapter + Send + Sync>,
-        )));
+        Arc::new(tokio::sync::Mutex::new(AxonHandler::new(pg_master)));
     let tenant_router = Arc::new(crate::tenant_router::TenantRouter::new_postgres(
         superadmin_dsn_owned,
         default_handler,
@@ -756,6 +786,7 @@ async fn bind_https(
 
 #[cfg(test)]
 mod tests {
+    use axon_api::AxonStorageKind;
     use clap::Parser;
 
     use super::*;
@@ -859,6 +890,82 @@ mod tests {
             extras.ip_addresses[0],
             "100.64.0.5".parse::<std::net::IpAddr>().unwrap()
         );
+    }
+
+    #[test]
+    fn axon_builder_adapter_selection_memory_for_server_args() {
+        let args = ServeArgs::parse_from(["axon-serve", "--storage", "memory"]);
+        let builder = storage_builder_from_serve_args(&args).expect("memory builder");
+
+        assert_eq!(
+            builder.storage_kind().expect("storage kind"),
+            AxonStorageKind::Memory
+        );
+        builder
+            .build_storage()
+            .expect("memory storage should build");
+    }
+
+    #[test]
+    fn axon_builder_adapter_selection_sqlite_for_server_args() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sqlite_path = tmp.path().join("axon.db");
+        let sqlite_path = sqlite_path.to_string_lossy().into_owned();
+        let args = ServeArgs::parse_from([
+            "axon-serve",
+            "--storage",
+            "sqlite",
+            "--sqlite-path",
+            &sqlite_path,
+        ]);
+        let builder = storage_builder_from_serve_args(&args).expect("sqlite builder");
+
+        assert_eq!(
+            builder.storage_kind().expect("storage kind"),
+            AxonStorageKind::Sqlite
+        );
+        builder
+            .build_storage()
+            .expect("sqlite storage should build");
+    }
+
+    #[test]
+    fn axon_builder_adapter_selection_postgres_for_server_args() {
+        let args = ServeArgs::parse_from([
+            "axon-serve",
+            "--storage",
+            "postgres",
+            "--postgres-dsn",
+            "postgres://axon:secret@localhost:5432/postgres",
+        ]);
+        let builder = storage_builder_from_serve_args(&args).expect("postgres builder");
+
+        assert_eq!(
+            builder.storage_kind().expect("storage kind"),
+            AxonStorageKind::Postgres
+        );
+    }
+
+    #[test]
+    fn axon_builder_adapter_selection_rejects_invalid_or_missing_config() {
+        let postgres_missing = ServeArgs::parse_from(["axon-serve", "--storage", "postgres"]);
+        let missing_error = storage_builder_from_serve_args(&postgres_missing)
+            .expect_err("postgres requires a DSN");
+        assert!(missing_error.contains("--postgres-dsn is required"));
+
+        let sqlite_empty_path =
+            ServeArgs::parse_from(["axon-serve", "--storage", "sqlite", "--sqlite-path", ""]);
+        let invalid_error =
+            storage_builder_from_serve_args(&sqlite_empty_path).expect_err("sqlite path required");
+        assert!(invalid_error.contains("sqlite storage requires a non-empty path"));
+
+        let missing_builder = match AxonBuilder::new().build_storage() {
+            Ok(_) => panic!("builder requires storage selection"),
+            Err(error) => error,
+        };
+        assert!(missing_builder
+            .to_string()
+            .contains("requires a storage backend selection"));
     }
 
     /// A fresh service install (`axon server install` without --no-auth) uses

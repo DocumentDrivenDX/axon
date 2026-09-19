@@ -57,7 +57,9 @@ use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::CallerIdentity;
 use axon_core::error::{AxonError, PolicyDenial};
 use axon_core::id::{
-    CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
+    CollectionId, EntityId, GovernedSystemCapability, GovernedSystemCollection, Namespace,
+    QualifiedCollectionId, SystemCollection, SystemCollectionClass, DEFAULT_DATABASE,
+    DEFAULT_SCHEMA,
 };
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
@@ -75,45 +77,250 @@ use axon_schema::{
 use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdapter};
 
 use crate::intent::{
-    MutationIntent, MutationOperationKind, MutationReviewSummary, PreImageBinding,
+    ApprovalState, MutationIntent, MutationIntentCommitValidationAuditRequest,
+    MutationIntentCommitValidationError, MutationIntentDecision, MutationIntentLifecycleError,
+    MutationIntentLifecycleService, MutationIntentTransactionCommitRequest, MutationOperationKind,
+    MutationReviewSummary, PreImageBinding,
 };
-use crate::policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
+use crate::policy::{
+    authorize_system_audit_query, AdministrativeAuditCaller, PolicyRequestSnapshot,
+    PolicySubjectSnapshot, SystemAuditQueryError,
+};
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
-    CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
+    CreateDatabaseRequest, CreateEntityRequest, CreateGovernedSystemEntityRequest,
+    CreateGovernedSystemLinkRequest, CreateLinkRequest, CreateNamespaceRequest,
     DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
     DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, DropDatabaseRequest,
-    DropNamespaceRequest, ExplainActorOverride, ExplainPolicyRequest, FieldFilter, FilterNode,
-    FilterOp, GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest,
-    ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
-    ListNamespacesRequest, PatchEntityRequest, PutCollectionTemplateRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevalidateRequest,
-    RevertEntityRequest, RollbackCollectionRequest, RollbackEntityRequest, RollbackEntityTarget,
+    DropNamespaceRequest, EnsureGovernedSystemCollectionRequest, ExecuteTransactionRequest,
+    ExplainActorOverride, ExplainPolicyRequest, FieldFilter, FilterNode, FilterOp,
+    GetCollectionTemplateRequest, GetEntityRequest, GetMutationIntentRequest, GetSchemaRequest,
+    ListCollectionsRequest, ListDatabasesRequest, ListMutationIntentsRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
+    PreviewMutationIntentRequest, PutCollectionTemplateRequest, PutGovernedSystemSchemaRequest,
+    PutSchemaRequest, QueryAuditRequest, QueryAuthAuditRequest, QueryEntitiesRequest,
+    QueryGovernedSystemEntitiesRequest, QuerySystemAuditRequest, ReachableGovernedSystemRequest,
+    ReachableRequest, RevalidateRequest, RevertEntityRequest, ReviewMutationIntentRequest,
+    RollbackCollectionRequest, RollbackEntityRequest, RollbackEntityTarget,
     RollbackTransactionRequest, SnapshotRequest, SortDirection, TransitionLifecycleRequest,
-    TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    TraverseDirection, TraverseGovernedSystemRequest, TraverseRequest, UpdateEntityRequest,
+    UpdateGovernedSystemEntityRequest,
 };
+use crate::response::ReservedNamespaceError;
 use crate::response::{
-    AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
-    CreateCollectionResponse, CreateDatabaseResponse, CreateEntityResponse, CreateLinkResponse,
-    CreateNamespaceResponse, DeleteCollectionTemplateResponse, DeleteEntityResponse,
-    DeleteLinkResponse, DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse,
-    DropDatabaseResponse, DropNamespaceResponse, EffectivePolicyResponse,
-    GetCollectionTemplateResponse, GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse,
-    InvalidEntity, ListCollectionsResponse, ListDatabasesResponse,
-    ListNamespaceCollectionsResponse, ListNamespacesResponse, PatchEntityResponse,
-    PolicyApprovalEnvelopeSummary, PolicyExplanationResponse, PolicyQueryPlanDiagnostics,
-    PolicyRuleMatch, PutCollectionTemplateResponse, PutSchemaResponse, QueryAuditResponse,
-    QueryEntitiesResponse, ReachableResponse, ReadWarning, RevalidateResponse,
-    RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
-    RollbackEntityResponse, RollbackTransactionEntityResult, RollbackTransactionResponse,
-    SnapshotResponse, TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse,
-    UpdateEntityResponse,
+    AggregateGroup, AggregateResponse, CollectionMetadata, CommitMutationIntentTransactionResponse,
+    CountEntitiesResponse, CountGroup, CreateCollectionResponse, CreateDatabaseResponse,
+    CreateEntityResponse, CreateLinkResponse, CreateNamespaceResponse,
+    DeleteCollectionTemplateResponse, DeleteEntityResponse, DeleteLinkResponse,
+    DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse, DropDatabaseResponse,
+    DropNamespaceResponse, EffectivePolicyResponse, ExecuteTransactionResponse,
+    GetCollectionTemplateResponse, GetEntityMarkdownResponse, GetEntityResponse,
+    GetMutationIntentResponse, GetSchemaResponse, InvalidEntity, ListCollectionsResponse,
+    ListDatabasesResponse, ListMutationIntentsResponse, ListNamespaceCollectionsResponse,
+    ListNamespacesResponse, PatchEntityResponse, PolicyApprovalEnvelopeSummary,
+    PolicyExplanationResponse, PolicyQueryPlanDiagnostics, PolicyRuleMatch,
+    PreviewMutationIntentResponse, PutCollectionTemplateResponse, PutSchemaResponse,
+    QueryAuditResponse, QueryAuthAuditResponse, QueryEntitiesResponse, ReachableResponse,
+    ReadWarning, RevalidateResponse, RevertEntityResponse, ReviewMutationIntentResponse,
+    RollbackCollectionEntityResult, RollbackCollectionResponse, RollbackEntityResponse,
+    RollbackTransactionEntityResult, RollbackTransactionResponse, SnapshotResponse,
+    TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
 const MAX_DEPTH_CAP: usize = 10;
 const DEFAULT_MARKDOWN_TEMPLATE_CACHE_CAPACITY: usize = 256;
 const POLICY_POST_FILTER_COST_LIMIT: usize = 128;
+const OP_ENTITY: &str = "entity";
+const OP_SCHEMA: &str = "schema";
+const OP_TEMPLATE: &str = "template";
+const OP_LIFECYCLE: &str = "lifecycle";
+const OP_LINK: &str = "link";
+const OP_ROLLBACK: &str = "rollback";
+const OP_INTENT: &str = "intent";
+const OP_QUERY: &str = "query";
+const OP_TRAVERSE: &str = "traverse";
+const OP_TRANSACTION: &str = "transaction";
+const OP_AUDIT: &str = "audit";
+const HANDLER_AUDIT_DEFAULT_PAGE_SIZE: usize = 100;
+
+fn is_reserved_collection(collection: &CollectionId) -> bool {
+    SystemCollection::from_collection_name(collection.as_str()).is_some()
+}
+
+fn system_collection_class(collection: &CollectionId) -> Option<SystemCollectionClass> {
+    SystemCollection::from_collection_name(collection.as_str()).map(|collection| collection.class())
+}
+
+fn link_visible_to_generic_scans(link: &Link) -> bool {
+    !is_reserved_collection(&link.source_collection)
+        && !is_reserved_collection(&link.target_collection)
+}
+
+// Direct named access rejects every system collection. Incidental all-collection
+// scans hide physical internals without removing typed surfaces such as beads,
+// link audit events, or mutation-intent lineage from their existing APIs.
+fn is_hidden_physical_collection(collection: &CollectionId) -> bool {
+    matches!(
+        system_collection_class(collection),
+        Some(
+            SystemCollectionClass::LinkForwardStore
+                | SystemCollectionClass::LinkReverseIndex
+                | SystemCollectionClass::CheckpointCursorStore
+                | SystemCollectionClass::MutationIntentAuditSubject
+                | SystemCollectionClass::LegacyPolicyAlias
+        )
+    )
+}
+
+fn is_hidden_audit_collection(collection: &CollectionId) -> bool {
+    matches!(
+        system_collection_class(collection),
+        Some(
+            SystemCollectionClass::CheckpointCursorStore | SystemCollectionClass::LegacyPolicyAlias
+        )
+    )
+}
+
+fn reserved_namespace_error(collection: &CollectionId, operation: &str) -> AxonError {
+    ReservedNamespaceError::new(collection.as_str(), operation).into_axon_error()
+}
+
+fn ensure_generic_collection_access(
+    collection: &CollectionId,
+    operation: &str,
+) -> Result<(), AxonError> {
+    if is_reserved_collection(collection) {
+        return Err(reserved_namespace_error(collection, operation));
+    }
+    Ok(())
+}
+
+fn ensure_generic_collection_accesses<'a>(
+    collections: impl IntoIterator<Item = &'a CollectionId>,
+    operation: &str,
+) -> Result<(), AxonError> {
+    for collection in collections {
+        ensure_generic_collection_access(collection, operation)?;
+    }
+    Ok(())
+}
+
+fn visible_collection_ids(collections: Vec<CollectionId>) -> Vec<CollectionId> {
+    collections
+        .into_iter()
+        .filter(|collection| !is_hidden_physical_collection(collection))
+        .collect()
+}
+
+fn visible_audit_entries(entries: Vec<AuditEntry>) -> Vec<AuditEntry> {
+    entries
+        .into_iter()
+        .filter(|entry| !is_hidden_audit_collection(&entry.collection))
+        .collect()
+}
+
+fn system_audit_entries(entries: Vec<AuditEntry>) -> Vec<AuditEntry> {
+    entries
+        .into_iter()
+        .filter(|entry| is_reserved_collection(&entry.collection))
+        .collect()
+}
+
+fn visible_audit_page(entries: Vec<AuditEntry>, limit: usize) -> AuditPage {
+    let mut entries = visible_audit_entries(entries);
+    entries.sort_by_key(|entry| entry.id);
+    let has_more = entries.len() > limit;
+    entries.truncate(limit);
+    let next_cursor = if has_more {
+        entries.last().map(|entry| entry.id)
+    } else {
+        None
+    };
+    AuditPage {
+        entries,
+        next_cursor,
+    }
+}
+
+fn system_audit_page(entries: Vec<AuditEntry>, limit: usize) -> AuditPage {
+    let mut entries = system_audit_entries(entries);
+    entries.sort_by_key(|entry| entry.id);
+    let has_more = entries.len() > limit;
+    entries.truncate(limit);
+    let next_cursor = if has_more {
+        entries.last().map(|entry| entry.id)
+    } else {
+        None
+    };
+    AuditPage {
+        entries,
+        next_cursor,
+    }
+}
+
+fn audit_operation_filter(operation: Option<&str>) -> Result<Option<MutationType>, AxonError> {
+    let operation = match operation {
+        None => None,
+        Some("entity.create") => Some(MutationType::EntityCreate),
+        Some("entity.update") => Some(MutationType::EntityUpdate),
+        Some("entity.delete") => Some(MutationType::EntityDelete),
+        Some("entity.revert") => Some(MutationType::EntityRevert),
+        Some("link.create") => Some(MutationType::LinkCreate),
+        Some("link.delete") => Some(MutationType::LinkDelete),
+        Some("collection.create") => Some(MutationType::CollectionCreate),
+        Some("collection.drop") => Some(MutationType::CollectionDrop),
+        Some("template.create") => Some(MutationType::TemplateCreate),
+        Some("template.update") => Some(MutationType::TemplateUpdate),
+        Some("template.delete") => Some(MutationType::TemplateDelete),
+        Some("schema.update") => Some(MutationType::SchemaUpdate),
+        Some("mutation_intent.preview" | "intent.preview") => Some(MutationType::IntentPreview),
+        Some("intent.approve") => Some(MutationType::IntentApprove),
+        Some("intent.reject") => Some(MutationType::IntentReject),
+        Some("intent.expire") => Some(MutationType::IntentExpire),
+        Some("intent.commit") => Some(MutationType::IntentCommit),
+        Some(unknown) => {
+            return Err(AxonError::InvalidOperation(format!(
+                "unknown operation type: {unknown}"
+            )))
+        }
+    };
+    Ok(operation)
+}
+
+fn ensure_manifest_system_collection(collection: &CollectionId) -> Result<(), AxonError> {
+    if SystemCollection::from_collection_name(collection.as_str()).is_some() {
+        return Ok(());
+    }
+    Err(AxonError::InvalidArgument(format!(
+        "collection '{}' is not an Axon system collection",
+        collection
+    )))
+}
+
+fn governed_system_collection<C: GovernedSystemCollection>(
+    capability: GovernedSystemCapability<C>,
+) -> CollectionId {
+    capability.collection().collection_id()
+}
+
+fn ensure_generic_transaction_access(
+    tx: &crate::transaction::Transaction,
+) -> Result<(), AxonError> {
+    for op in tx.staged_ops() {
+        match op {
+            crate::transaction::StagedOp::Entity(op) => {
+                ensure_generic_collection_access(&op.entity.collection, OP_TRANSACTION)?;
+            }
+            crate::transaction::StagedOp::LinkCreate(link)
+            | crate::transaction::StagedOp::LinkDelete(link) => {
+                ensure_generic_collection_access(&link.source_collection, OP_TRANSACTION)?;
+                ensure_generic_collection_access(&link.target_collection, OP_TRANSACTION)?;
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy)]
 enum FieldWriteScope<'a> {
@@ -637,6 +844,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Subsequent creates and updates for that collection are validated
     /// against this schema. Replaces any previously stored schema.
     pub fn put_schema(&mut self, schema: CollectionSchema) -> Result<(), AxonError> {
+        ensure_generic_collection_access(&schema.collection, OP_SCHEMA)?;
         self.validate_schema_for_put(&schema)?;
         self.storage.put_schema(&schema)
     }
@@ -685,6 +893,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         collection: &CollectionId,
     ) -> Result<Option<CollectionSchema>, AxonError> {
+        ensure_generic_collection_access(collection, OP_SCHEMA)?;
         self.storage.get_schema(collection)
     }
 
@@ -701,8 +910,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self.storage
     }
 
-    /// Mutable access to the underlying storage adapter (used by simulation framework).
-    pub fn storage_mut(&mut self) -> &mut S {
+    /// Mutable access to the underlying storage adapter for crate-local tests.
+    #[cfg(test)]
+    pub(crate) fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
     }
 
@@ -839,6 +1049,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         schema: Option<&CollectionSchema>,
         snapshot: Option<&PolicyRequestSnapshot>,
         check: PolicyWriteCheck<'_>,
+        approval_envelopes_satisfied: bool,
     ) -> Result<(), AxonError> {
         let Some(schema) = schema else {
             return Ok(());
@@ -876,7 +1087,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             },
         )?;
         self.enforce_field_write_policy(&plan, snapshot, check.clone())?;
-        self.enforce_policy_envelopes(&plan, snapshot, check)?;
+        self.enforce_policy_envelopes(&plan, snapshot, check, approval_envelopes_satisfied)?;
 
         Ok(())
     }
@@ -1029,6 +1240,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         plan: &PolicyPlan,
         snapshot: &PolicyRequestSnapshot,
         check: PolicyWriteCheck<'_>,
+        approval_envelopes_satisfied: bool,
     ) -> Result<(), AxonError> {
         let mut needs_approval: Option<String> = None;
 
@@ -1062,6 +1274,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         if let Some(policy) = needs_approval {
+            if approval_envelopes_satisfied {
+                return Ok(());
+            }
             return Err(policy_forbidden(
                 "needs_approval",
                 check.collection,
@@ -3752,11 +3967,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(None)
     }
 
-    /// Consume this handler, returning the underlying storage adapter.
-    ///
-    /// Useful in tests that need to reconstruct a handler from the same storage
-    /// to verify that persisted state (e.g. collection registrations) survives.
-    pub fn into_storage(self) -> S {
+    /// Consume this handler, returning the underlying storage adapter for crate-local tests.
+    #[cfg(test)]
+    pub(crate) fn into_storage(self) -> S {
         self.storage
     }
 
@@ -3770,6 +3983,260 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.commit_transaction_inner(tx, actor, attribution, None)
     }
 
+    /// Persist a mutation-intent preview through this handler's governed
+    /// storage and audit boundary.
+    pub fn preview_mutation_intent(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: PreviewMutationIntentRequest,
+    ) -> Result<PreviewMutationIntentResponse, MutationIntentLifecycleError> {
+        ensure_generic_mutation_intent_access(&req.intent)
+            .map_err(MutationIntentLifecycleError::from)?;
+        service
+            .create_preview_record_with_origin(&mut self.storage, req.intent, req.origin)
+            .map(Into::into)
+    }
+
+    /// Read a mutation intent through this handler's governed namespace and
+    /// lifecycle boundary, first materializing due expiry audit records.
+    pub fn get_mutation_intent(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: GetMutationIntentRequest,
+    ) -> Result<GetMutationIntentResponse, MutationIntentLifecycleError> {
+        service.expire_due_with_audit(&mut self.storage, &req.scope, req.now_ns, None)?;
+        let intent = self
+            .storage
+            .get_mutation_intent(&req.scope.tenant_id, &req.scope.database_id, &req.intent_id)
+            .map_err(MutationIntentLifecycleError::from)?;
+        if let Some(intent) = &intent {
+            ensure_generic_mutation_intent_access(intent)
+                .map_err(MutationIntentLifecycleError::from)?;
+        }
+        Ok(GetMutationIntentResponse { intent })
+    }
+
+    /// List mutation intents through this handler's governed namespace and
+    /// lifecycle boundary, first materializing due expiry audit records.
+    pub fn list_mutation_intents(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: ListMutationIntentsRequest,
+    ) -> Result<ListMutationIntentsResponse, MutationIntentLifecycleError> {
+        service.expire_due_with_audit(&mut self.storage, &req.scope, req.now_ns, None)?;
+        let intents = if req.states.is_empty() {
+            let mut pending = self
+                .storage
+                .list_pending_mutation_intents(
+                    &req.scope.tenant_id,
+                    &req.scope.database_id,
+                    req.now_ns,
+                    None,
+                )
+                .map_err(MutationIntentLifecycleError::from)?;
+            if req.include_expired {
+                pending.extend(
+                    self.storage
+                        .list_mutation_intents_by_state(
+                            &req.scope.tenant_id,
+                            &req.scope.database_id,
+                            crate::ApprovalState::Expired,
+                            None,
+                        )
+                        .map_err(MutationIntentLifecycleError::from)?,
+                );
+            }
+            pending
+        } else {
+            let mut by_state = Vec::new();
+            for state in req.states {
+                by_state.extend(
+                    self.storage
+                        .list_mutation_intents_by_state(
+                            &req.scope.tenant_id,
+                            &req.scope.database_id,
+                            state,
+                            None,
+                        )
+                        .map_err(MutationIntentLifecycleError::from)?,
+                );
+            }
+            by_state
+        };
+
+        for intent in &intents {
+            ensure_generic_mutation_intent_access(intent)
+                .map_err(MutationIntentLifecycleError::from)?;
+        }
+        Ok(ListMutationIntentsResponse { intents })
+    }
+
+    /// Approve a mutation intent through this handler's governed namespace and
+    /// audited lifecycle boundary.
+    pub fn approve_mutation_intent(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: ReviewMutationIntentRequest,
+    ) -> Result<ReviewMutationIntentResponse, MutationIntentLifecycleError> {
+        self.review_mutation_intent_inner(service, req, true)
+    }
+
+    /// Reject a mutation intent through this handler's governed namespace and
+    /// audited lifecycle boundary.
+    pub fn reject_mutation_intent(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: ReviewMutationIntentRequest,
+    ) -> Result<ReviewMutationIntentResponse, MutationIntentLifecycleError> {
+        self.review_mutation_intent_inner(service, req, false)
+    }
+
+    fn review_mutation_intent_inner(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: ReviewMutationIntentRequest,
+        approve: bool,
+    ) -> Result<ReviewMutationIntentResponse, MutationIntentLifecycleError> {
+        service.expire_due_with_audit(&mut self.storage, &req.scope, req.now_ns, None)?;
+        let intent = self
+            .storage
+            .get_mutation_intent(&req.scope.tenant_id, &req.scope.database_id, &req.intent_id)
+            .map_err(MutationIntentLifecycleError::from)?
+            .ok_or_else(|| MutationIntentLifecycleError::NotFound {
+                intent_id: req.intent_id.clone(),
+            })?;
+        ensure_generic_mutation_intent_access(&intent)
+            .map_err(MutationIntentLifecycleError::from)?;
+
+        let intent = if approve {
+            service.approve_with_audit(
+                &mut self.storage,
+                &req.scope,
+                &req.intent_id,
+                req.metadata,
+                req.now_ns,
+            )
+        } else {
+            service.reject_with_audit(
+                &mut self.storage,
+                &req.scope,
+                &req.intent_id,
+                req.metadata,
+                req.now_ns,
+            )
+        }?;
+        Ok(ReviewMutationIntentResponse { intent })
+    }
+
+    /// Execute a staged transaction through the same namespace, schema, policy,
+    /// transaction, and audit path used by lower-level transaction commits.
+    pub fn execute_transaction(
+        &mut self,
+        req: ExecuteTransactionRequest,
+    ) -> Result<ExecuteTransactionResponse, AxonError> {
+        self.execute_transaction_inner(req, None)
+    }
+
+    /// Execute a staged transaction, attributing audit entries to `caller`.
+    pub fn execute_transaction_with_caller(
+        &mut self,
+        mut req: ExecuteTransactionRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<ExecuteTransactionResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
+        self.execute_transaction_inner(req, Some(caller))
+    }
+
+    fn execute_transaction_inner(
+        &mut self,
+        req: ExecuteTransactionRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<ExecuteTransactionResponse, AxonError> {
+        let transaction_id = req.transaction.id.clone();
+        let written =
+            self.commit_transaction_inner(req.transaction, req.actor, req.attribution, caller)?;
+        Ok(ExecuteTransactionResponse {
+            transaction_id,
+            written,
+        })
+    }
+
+    /// Consume a mutation intent by committing its bound transaction through
+    /// this handler's governed policy and audit boundary.
+    pub fn commit_mutation_intent_transaction(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        req: MutationIntentTransactionCommitRequest,
+    ) -> Result<CommitMutationIntentTransactionResponse, MutationIntentCommitValidationError> {
+        self.commit_mutation_intent_transaction_inner(service, req, None)
+    }
+
+    /// Consume a mutation intent by committing its bound transaction while
+    /// attributing audit entries to `caller`.
+    pub fn commit_mutation_intent_transaction_with_caller(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        mut req: MutationIntentTransactionCommitRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<CommitMutationIntentTransactionResponse, MutationIntentCommitValidationError> {
+        req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
+        self.commit_mutation_intent_transaction_inner(service, req, Some(caller))
+    }
+
+    fn commit_mutation_intent_transaction_inner(
+        &mut self,
+        service: &MutationIntentLifecycleService,
+        mut req: MutationIntentTransactionCommitRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<CommitMutationIntentTransactionResponse, MutationIntentCommitValidationError> {
+        ensure_generic_transaction_access(&req.transaction)
+            .map_err(|error| mutation_intent_commit_failed("unknown", error))?;
+
+        let operation = req.canonical_operation.clone().unwrap_or_else(|| {
+            crate::intent::canonical_staged_transaction_operation(&req.transaction)
+        });
+        let mut current = req.current.clone();
+        current.operation_hash = operation.operation_hash.clone();
+
+        let intent = service.validate_commit_bindings_with_audit(
+            &mut self.storage,
+            MutationIntentCommitValidationAuditRequest {
+                scope: &req.scope,
+                token: &req.token,
+                current: &current,
+                now_ns: req.now_ns,
+                actor: req.actor.as_deref(),
+            },
+        )?;
+        let intent_id = intent.intent_id.clone();
+        let approval_envelopes_satisfied = matches!(
+            (&intent.decision, &intent.approval_state),
+            (
+                MutationIntentDecision::NeedsApproval,
+                ApprovalState::Approved
+            )
+        );
+
+        self.enforce_transaction_policy(
+            &req.transaction,
+            req.actor.as_deref(),
+            req.attribution.as_ref(),
+            caller,
+            approval_envelopes_satisfied,
+        )
+        .map_err(|error| mutation_intent_commit_failed(intent_id.clone(), error))?;
+
+        req.canonical_operation = Some(operation);
+        req.current = current;
+        service
+            .commit_transaction_intent(&mut self.storage, req)
+            .map(Into::into)
+    }
+
     fn commit_transaction_inner(
         &mut self,
         tx: crate::transaction::Transaction,
@@ -3777,7 +4244,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
         attribution: Option<AuditAttribution>,
         caller: Option<&CallerIdentity>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
-        self.enforce_transaction_policy(&tx, actor.as_deref(), attribution.as_ref(), caller)?;
+        ensure_generic_transaction_access(&tx)?;
+        self.enforce_transaction_policy(
+            &tx,
+            actor.as_deref(),
+            attribution.as_ref(),
+            caller,
+            false,
+        )?;
         tx.commit(&mut self.storage, actor, attribution)
     }
 
@@ -3787,6 +4261,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         actor: Option<&str>,
         attribution: Option<&AuditAttribution>,
         caller: Option<&CallerIdentity>,
+        approval_envelopes_satisfied: bool,
     ) -> Result<(), AxonError> {
         for (operation_index, op) in tx.staged_ops().iter().enumerate() {
             match op {
@@ -3807,12 +4282,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             &op.entity.data,
                             FieldWriteScope::PresentFields(&op.entity.data),
                         ),
-                        MutationType::EntityUpdate => (
-                            PolicyOperation::Update,
-                            current.as_ref().map(|entity| &entity.data),
-                            &op.entity.data,
-                            FieldWriteScope::PresentFields(&op.entity.data),
-                        ),
+                        MutationType::EntityUpdate => {
+                            let field_scope = transaction_write_scope(op, current.as_ref())?;
+                            (
+                                PolicyOperation::Update,
+                                current.as_ref().map(|entity| &entity.data),
+                                &op.entity.data,
+                                field_scope,
+                            )
+                        }
                         MutationType::EntityDelete => {
                             let data = current
                                 .as_ref()
@@ -3841,6 +4319,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             field_scope,
                             operation_index: Some(operation_index),
                         },
+                        approval_envelopes_satisfied,
                     )?;
                 }
                 crate::transaction::StagedOp::LinkCreate(_)
@@ -4039,6 +4518,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: CreateEntityRequest,
         caller: Option<&CallerIdentity>,
     ) -> Result<CreateEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
         if let Some(current) = self.storage.get(&req.collection, &req.id)? {
             return Err(AxonError::ConflictingVersion {
                 expected: 0,
@@ -4050,6 +4530,33 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     fn create_entity_inner(
+        &mut self,
+        req: CreateEntityRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<CreateEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
+        self.create_entity_inner_unchecked(req, caller)
+    }
+
+    pub(crate) fn create_entity_in_system_collection<C: GovernedSystemCollection>(
+        &mut self,
+        capability: GovernedSystemCapability<C>,
+        req: CreateGovernedSystemEntityRequest,
+    ) -> Result<CreateEntityResponse, AxonError> {
+        self.create_entity_inner_unchecked(
+            CreateEntityRequest {
+                collection: governed_system_collection(capability),
+                id: req.id,
+                data: req.data,
+                actor: req.actor,
+                audit_metadata: req.audit_metadata,
+                attribution: req.attribution,
+            },
+            None,
+        )
+    }
+
+    fn create_entity_inner_unchecked(
         &mut self,
         req: CreateEntityRequest,
         caller: Option<&CallerIdentity>,
@@ -4087,6 +4594,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 field_scope: FieldWriteScope::PresentFields(&req.data),
                 operation_index: None,
             },
+            false,
         )?;
 
         // Schema validation.
@@ -4383,6 +4891,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
         tx: &mut crate::transaction::Transaction,
         collections: &[CollectionId],
     ) -> Result<(), AxonError> {
+        ensure_generic_collection_accesses(collections, OP_QUERY)?;
+        self.tx_record_scan_collections_unchecked(tx, collections)
+    }
+
+    fn tx_record_scan_collections_unchecked(
+        &self,
+        tx: &mut crate::transaction::Transaction,
+        collections: &[CollectionId],
+    ) -> Result<(), AxonError> {
         for collection in collections {
             let observed = self.scan_signature(tx, collection)?;
             tx.record_scan_read(collection.clone(), observed)?;
@@ -4418,7 +4935,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if axon_cypher_ast::references_relationships(&query) {
             collections.push(Link::links_collection());
         }
-        self.tx_record_scan_collections(tx, &collections)
+        ensure_generic_collection_accesses(
+            collections
+                .iter()
+                .filter(|collection| *collection != &Link::links_collection()),
+            OP_QUERY,
+        )?;
+        self.tx_record_scan_collections_unchecked(tx, &collections)
     }
 
     fn get_entity_with_read_context(
@@ -4427,6 +4950,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<GetEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
         match self.get_visible_entity_for_read_with_context(
             &req.collection,
             &req.id,
@@ -4484,6 +5008,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<GetEntityMarkdownResponse, AxonError> {
+        ensure_generic_collection_access(collection, OP_ENTITY)?;
         let entity = self
             .get_visible_entity_for_read_with_context(collection, id, caller, attribution)?
             .ok_or_else(|| AxonError::NotFound(id.to_string()))?;
@@ -4530,6 +5055,34 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     fn update_entity_inner(
+        &mut self,
+        req: UpdateEntityRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<UpdateEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
+        self.update_entity_inner_unchecked(req, caller)
+    }
+
+    pub(crate) fn update_entity_in_system_collection<C: GovernedSystemCollection>(
+        &mut self,
+        capability: GovernedSystemCapability<C>,
+        req: UpdateGovernedSystemEntityRequest,
+    ) -> Result<UpdateEntityResponse, AxonError> {
+        self.update_entity_inner_unchecked(
+            UpdateEntityRequest {
+                collection: governed_system_collection(capability),
+                id: req.id,
+                data: req.data,
+                expected_version: req.expected_version,
+                actor: req.actor,
+                audit_metadata: req.audit_metadata,
+                attribution: req.attribution,
+            },
+            None,
+        )
+    }
+
+    fn update_entity_inner_unchecked(
         &mut self,
         req: UpdateEntityRequest,
         caller: Option<&CallerIdentity>,
@@ -4598,6 +5151,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 field_scope: FieldWriteScope::PresentFields(&req.data),
                 operation_index: None,
             },
+            false,
         )?;
 
         // Materialize gate results on the entity itself (FEAT-019).
@@ -4688,6 +5242,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         mut req: PatchEntityRequest,
         caller: Option<&CallerIdentity>,
     ) -> Result<PatchEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
         // Read current entity.
         let existing = self
             .storage
@@ -4752,6 +5307,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 field_scope: FieldWriteScope::Patch(&req.patch),
                 operation_index: None,
             },
+            false,
         )?;
 
         let before = Some(existing.data.clone());
@@ -4839,6 +5395,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         mut req: DeleteEntityRequest,
         caller: Option<&CallerIdentity>,
     ) -> Result<DeleteEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ENTITY)?;
         let schema = self.storage.get_schema(&req.collection)?;
         let policy_snapshot = self.policy_snapshot_for_request(
             &req.collection,
@@ -4851,15 +5408,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // Referential integrity: reject delete when inbound links exist
         // (unless `force` is set).
         if !req.force {
-            let links_rev_col = Link::links_rev_collection();
-            let rev_prefix = format!("{}/{}/", req.collection, req.id);
-            let rev_start = EntityId::new(&rev_prefix);
-            let rev_candidates =
-                self.storage
-                    .range_scan(&links_rev_col, Some(&rev_start), None, Some(1))?;
-            let has_inbound = rev_candidates
-                .iter()
-                .any(|e| e.id.as_str().starts_with(&rev_prefix));
+            let has_inbound = !self
+                .storage
+                .list_inbound_links(&req.collection, &req.id, None)?
+                .is_empty();
             if has_inbound {
                 return Err(AxonError::InvalidOperation(format!(
                     "entity {}/{} has inbound link(s); delete or re-target those links first, or use force=true",
@@ -4886,6 +5438,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     field_scope: FieldWriteScope::PresentFields(&current.data),
                     operation_index: None,
                 },
+                false,
             )?;
         }
 
@@ -4962,6 +5515,35 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     fn query_entities_with_read_context(
+        &self,
+        req: QueryEntitiesRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_QUERY)?;
+        self.query_entities_with_read_context_unchecked(req, caller, attribution)
+    }
+
+    pub(crate) fn query_entities_in_system_collection<C: GovernedSystemCollection>(
+        &self,
+        capability: GovernedSystemCapability<C>,
+        req: QueryGovernedSystemEntitiesRequest,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
+        self.query_entities_with_read_context_unchecked(
+            QueryEntitiesRequest {
+                collection: governed_system_collection(capability),
+                filter: req.filter,
+                sort: req.sort,
+                limit: req.limit,
+                after_id: req.after_id,
+                count_only: req.count_only,
+            },
+            None,
+            None,
+        )
+    }
+
+    fn query_entities_with_read_context_unchecked(
         &self,
         req: QueryEntitiesRequest,
         caller: Option<&CallerIdentity>,
@@ -5184,17 +5766,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// multi-page consistency requires storage-level snapshot support and is
     /// deferred to a later release.
     pub fn snapshot_entities(&self, req: SnapshotRequest) -> Result<SnapshotResponse, AxonError> {
+        // Resolve the list of collections to scan.
+        let collections: Vec<CollectionId> = match req.collections {
+            Some(list) => {
+                ensure_generic_collection_accesses(&list, OP_QUERY)?;
+                list
+            }
+            None => visible_collection_ids(self.storage.list_collections()?),
+        };
+
         // Capture the audit high-water mark *before* reading entities so the
         // cursor correctly represents "no changes newer than this snapshot".
         // This happens under the same `&self` reference as the entity scan, so
         // no writer can interleave between the cursor read and the data read.
-        let audit_cursor = self.audit_log().entries().last().map(|e| e.id).unwrap_or(0);
-
-        // Resolve the list of collections to scan.
-        let collections: Vec<CollectionId> = match req.collections {
-            Some(list) => list,
-            None => self.storage.list_collections()?,
-        };
+        let audit_cursor = visible_audit_entries(self.audit_log().entries())
+            .last()
+            .map(|e| e.id)
+            .unwrap_or(0);
 
         // Collect entities from all requested collections into a single
         // ordered stream. Sorting by (collection, id) guarantees deterministic
@@ -5256,6 +5844,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: CountEntitiesRequest,
     ) -> Result<CountEntitiesResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_QUERY)?;
         // Try index-accelerated lookup (FEAT-013).
         let schema = self.storage.get_schema(&req.collection)?;
         let index_candidates = try_index_lookup(
@@ -5327,6 +5916,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     /// Compute a numeric aggregation (SUM, AVG, MIN, MAX) over entities.
     pub fn aggregate(&self, req: AggregateRequest) -> Result<AggregateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_QUERY)?;
         // Try index-accelerated lookup (FEAT-013).
         let schema = self.storage.get_schema(&req.collection)?;
         let index_candidates = try_index_lookup(
@@ -5442,6 +6032,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.query_audit_with_read_context(req, None, None)
     }
 
+    /// Query application-visible audit entries through the governed handler API.
+    pub fn query_application_audit(
+        &self,
+        req: QueryAuditRequest,
+    ) -> Result<QueryAuditResponse, AxonError> {
+        self.query_audit(req)
+    }
+
     pub fn query_audit_with_caller(
         &self,
         req: QueryAuditRequest,
@@ -5451,41 +6049,32 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.query_audit_with_read_context(req, Some(caller), attribution.as_ref())
     }
 
+    /// Query caller-scoped application-visible audit entries through the
+    /// governed handler API.
+    pub fn query_application_audit_with_caller(
+        &self,
+        req: QueryAuditRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<QueryAuditResponse, AxonError> {
+        self.query_audit_with_caller(req, caller, attribution)
+    }
+
     fn query_audit_with_read_context(
         &self,
         req: QueryAuditRequest,
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<QueryAuditResponse, AxonError> {
-        use axon_audit::entry::MutationType as MT;
+        if let Some(collection) = &req.collection {
+            ensure_generic_collection_access(collection, OP_AUDIT)?;
+        }
+        ensure_generic_collection_accesses(&req.collection_ids, OP_AUDIT)?;
 
-        let operation: Option<MT> = match req.operation.as_deref() {
-            None => None,
-            Some("entity.create") => Some(MT::EntityCreate),
-            Some("entity.update") => Some(MT::EntityUpdate),
-            Some("entity.delete") => Some(MT::EntityDelete),
-            Some("entity.revert") => Some(MT::EntityRevert),
-            Some("link.create") => Some(MT::LinkCreate),
-            Some("link.delete") => Some(MT::LinkDelete),
-            Some("collection.create") => Some(MT::CollectionCreate),
-            Some("collection.drop") => Some(MT::CollectionDrop),
-            Some("template.create") => Some(MT::TemplateCreate),
-            Some("template.update") => Some(MT::TemplateUpdate),
-            Some("template.delete") => Some(MT::TemplateDelete),
-            Some("schema.update") => Some(MT::SchemaUpdate),
-            Some("mutation_intent.preview" | "intent.preview") => Some(MT::IntentPreview),
-            Some("intent.approve") => Some(MT::IntentApprove),
-            Some("intent.reject") => Some(MT::IntentReject),
-            Some("intent.expire") => Some(MT::IntentExpire),
-            Some("intent.commit") => Some(MT::IntentCommit),
-            Some(unknown) => {
-                return Err(AxonError::InvalidOperation(format!(
-                    "unknown operation type: {unknown}"
-                )))
-            }
-        };
+        let operation = audit_operation_filter(req.operation.as_deref())?;
 
-        let query = AuditQuery {
+        let requested_limit = req.limit.unwrap_or(HANDLER_AUDIT_DEFAULT_PAGE_SIZE);
+        let mut query = AuditQuery {
             database: req.database,
             collection: req.collection,
             collection_ids: req.collection_ids,
@@ -5499,8 +6088,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
             after_id: req.after_id,
             limit: req.limit,
         };
+        query.limit = Some(usize::MAX);
 
-        let page: AuditPage = self.audit_log().query_paginated(query)?;
+        let page: AuditPage = visible_audit_page(
+            self.audit_log().query_paginated(query)?.entries,
+            requested_limit,
+        );
         let mut entries = page.entries;
         for entry in &mut entries {
             self.redact_audit_entry_for_read_with_context(entry, caller, attribution)?;
@@ -5509,6 +6102,79 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entries,
             next_cursor: page.next_cursor,
         })
+    }
+
+    /// Query Axon-owned system audit rows through the typed administrative
+    /// audit API. This path authorizes by explicit administrative capability
+    /// and does not call the generic reserved-collection guard.
+    pub fn query_system_audit(
+        &self,
+        req: QuerySystemAuditRequest,
+        caller: Option<&AdministrativeAuditCaller>,
+    ) -> Result<QueryAuditResponse, SystemAuditQueryError> {
+        authorize_system_audit_query(caller, &req.tenant_id, &req.database)?;
+
+        if let Some(collection) = &req.query.collection {
+            ensure_manifest_system_collection(collection)?;
+        }
+        for collection in &req.query.collection_ids {
+            ensure_manifest_system_collection(collection)?;
+        }
+
+        let requested_limit = req.query.limit.unwrap_or(HANDLER_AUDIT_DEFAULT_PAGE_SIZE);
+        let operation = audit_operation_filter(req.query.operation.as_deref())?;
+        let mut query = AuditQuery {
+            database: Some(req.database),
+            collection: req.query.collection,
+            collection_ids: req.query.collection_ids,
+            entity_id: req.query.entity_id,
+            actor: req.query.actor,
+            operation,
+            intent_id: req.query.intent_id,
+            approval_id: req.query.approval_id,
+            since_ns: req.query.since_ns,
+            until_ns: req.query.until_ns,
+            after_id: req.query.after_id,
+            limit: req.query.limit,
+        };
+        query.limit = Some(usize::MAX);
+
+        let page = system_audit_page(
+            self.audit_log().query_paginated(query)?.entries,
+            requested_limit,
+        );
+        Ok(QueryAuditResponse {
+            entries: page.entries,
+            next_cursor: page.next_cursor,
+        })
+    }
+
+    /// Query Axon-owned system audit rows through the governed handler API.
+    pub fn query_governed_system_audit(
+        &self,
+        req: QuerySystemAuditRequest,
+        caller: Option<&AdministrativeAuditCaller>,
+    ) -> Result<QueryAuditResponse, SystemAuditQueryError> {
+        self.query_system_audit(req, caller)
+    }
+
+    /// Query auth/credential audit metadata through the typed administrative
+    /// audit API. The response is always the redacted V1 view.
+    pub fn query_auth_audit(
+        &self,
+        req: QueryAuthAuditRequest,
+    ) -> Result<QueryAuthAuditResponse, AxonError> {
+        let entries = self
+            .storage
+            .list_credentials(
+                axon_core::auth::TenantId::new(req.tenant_id),
+                req.user_id.map(axon_core::auth::UserId::new),
+            )?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        Ok(QueryAuthAuditResponse { entries })
     }
 
     pub fn redact_mutation_intent_for_read(
@@ -5597,6 +6263,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             let PreImageBinding::Entity { collection, id, .. } = affected_record else {
                 continue;
             };
+            ensure_generic_collection_access(collection, OP_INTENT)?;
             let Some(entity) = self.storage.get(collection, id)? else {
                 continue;
             };
@@ -5636,6 +6303,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             return Ok(());
         }
 
+        ensure_generic_intent_operation_access(operation)?;
         let Some((collection, id)) = intent_operation_entity_ref(operation) else {
             return Ok(());
         };
@@ -5940,6 +6608,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .audit_log()
             .find_by_id(req.audit_entry_id)?
             .ok_or_else(|| AxonError::NotFound(format!("audit entry {}", req.audit_entry_id)))?;
+        if is_reserved_collection(&source.collection) {
+            return Err(AxonError::NotFound(format!(
+                "audit entry {}",
+                req.audit_entry_id
+            )));
+        }
+        ensure_generic_collection_access(&source.collection, OP_ROLLBACK)?;
 
         let before_data = source.data_before.clone().ok_or_else(|| {
             AxonError::InvalidOperation(format!(
@@ -5988,6 +6663,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 field_scope: FieldWriteScope::PresentFields(&before_data),
                 operation_index: None,
             },
+            false,
         )?;
         // Apply the revert write together with its durable audit append,
         // co-located inside one storage transaction on durable backends
@@ -6062,6 +6738,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: RollbackEntityRequest,
     ) -> Result<RollbackEntityResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ROLLBACK)?;
         struct DeletedEntityContext {
             deleted_version: u64,
             created_at_ns: Option<u64>,
@@ -6194,6 +6871,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     field_scope: FieldWriteScope::PresentFields(&target_data),
                     operation_index: None,
                 },
+                false,
             )?;
         }
 
@@ -6320,6 +6998,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: RollbackCollectionRequest,
     ) -> Result<RollbackCollectionResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_ROLLBACK)?;
         // 1. Query the audit log for all entity-level mutations in this
         //    collection that occurred strictly after the target timestamp.
         let page = self.audit_log().query_paginated(AuditQuery {
@@ -6631,9 +7310,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: RollbackTransactionRequest,
     ) -> Result<RollbackTransactionResponse, AxonError> {
         // 1. Find all audit entries from the target transaction.
-        let tx_entries = self
-            .audit_log()
-            .query_by_transaction_id(&req.transaction_id)?;
+        let tx_entries = visible_audit_entries(
+            self.audit_log()
+                .query_by_transaction_id(&req.transaction_id)?,
+        );
 
         if tx_entries.is_empty() {
             return Err(AxonError::NotFound(format!(
@@ -6648,6 +7328,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let mut seen = HashSet::new();
         let mut entity_entries: Vec<&AuditEntry> = Vec::new();
         for entry in tx_entries.iter().rev() {
+            ensure_generic_collection_access(&entry.collection, OP_ROLLBACK)?;
             let key = (entry.collection.clone(), entry.entity_id.clone());
             if seen.insert(key) {
                 entity_entries.push(entry);
@@ -7019,6 +7700,57 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: CreateCollectionRequest,
     ) -> Result<CreateCollectionResponse, AxonError> {
+        ensure_generic_collection_access(&req.name, OP_SCHEMA)?;
+        self.create_collection_inner(req)
+    }
+
+    pub(crate) fn ensure_governed_system_collection<C: GovernedSystemCollection>(
+        &mut self,
+        capability: GovernedSystemCapability<C>,
+        req: EnsureGovernedSystemCollectionRequest,
+    ) -> Result<CreateCollectionResponse, AxonError> {
+        let name = governed_system_collection(capability);
+        let mut schema = req.schema;
+        schema.collection = name.clone();
+        let (namespace, bare_name) = Namespace::parse(name.as_str());
+        let bare_collection = CollectionId::new(&bare_name);
+        if self
+            .storage
+            .collection_registered_in_namespace(&bare_collection, &namespace)?
+        {
+            let should_update_schema = self
+                .storage
+                .get_schema(&name)?
+                .as_ref()
+                .map_or(true, |existing| existing.version < schema.version);
+            if should_update_schema {
+                self.handle_put_schema_in_system_collection(
+                    capability,
+                    PutGovernedSystemSchemaRequest {
+                        schema,
+                        actor: req.actor,
+                        force: false,
+                        dry_run: false,
+                        explain_inputs: Vec::new(),
+                    },
+                )?;
+            }
+            return Ok(CreateCollectionResponse {
+                name: name.to_string(),
+            });
+        }
+
+        self.create_collection_inner(CreateCollectionRequest {
+            name,
+            schema,
+            actor: req.actor,
+        })
+    }
+
+    fn create_collection_inner(
+        &mut self,
+        req: CreateCollectionRequest,
+    ) -> Result<CreateCollectionResponse, AxonError> {
         let (namespace, bare_name) = Namespace::parse(req.name.as_str());
         let bare_collection = CollectionId::new(&bare_name);
 
@@ -7148,7 +7880,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         _req: ListCollectionsRequest,
     ) -> Result<ListCollectionsResponse, AxonError> {
         // Storage returns names already sorted ascending.
-        let names = self.storage.list_collections()?;
+        let names = visible_collection_ids(self.storage.list_collections()?);
         let collections: Vec<CollectionMetadata> = names
             .iter()
             .map(|name| {
@@ -7181,6 +7913,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: DescribeCollectionRequest,
     ) -> Result<DescribeCollectionResponse, AxonError> {
+        ensure_generic_collection_access(&req.name, OP_QUERY)?;
         self.ensure_collection_exists(&req.name)?;
 
         let entity_count = self.storage.count(&req.name)?;
@@ -7203,6 +7936,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: PutCollectionTemplateRequest,
     ) -> Result<PutCollectionTemplateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_TEMPLATE)?;
         self.ensure_collection_exists(&req.collection)?;
         let before_view = self.storage.get_collection_view(&req.collection)?;
         axon_render::compile(req.template.clone())?;
@@ -7270,6 +8004,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: GetCollectionTemplateRequest,
     ) -> Result<GetCollectionTemplateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_TEMPLATE)?;
         self.ensure_collection_exists(&req.collection)?;
         let view = self
             .storage
@@ -7290,6 +8025,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DeleteCollectionTemplateRequest,
     ) -> Result<DeleteCollectionTemplateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_TEMPLATE)?;
         self.ensure_collection_exists(&req.collection)?;
         let before_view = self.storage.get_collection_view(&req.collection)?;
         if let Some(before_view) = before_view {
@@ -7348,7 +8084,31 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: PutSchemaRequest,
     ) -> Result<PutSchemaResponse, AxonError> {
         let collection = req.schema.collection.clone();
+        ensure_generic_collection_access(&collection, OP_SCHEMA)?;
+        self.handle_put_schema_inner(req)
+    }
 
+    pub(crate) fn handle_put_schema_in_system_collection<C: GovernedSystemCollection>(
+        &mut self,
+        capability: GovernedSystemCapability<C>,
+        req: PutGovernedSystemSchemaRequest,
+    ) -> Result<PutSchemaResponse, AxonError> {
+        let mut schema = req.schema;
+        schema.collection = governed_system_collection(capability);
+        self.handle_put_schema_inner(PutSchemaRequest {
+            schema,
+            actor: req.actor,
+            force: req.force,
+            dry_run: req.dry_run,
+            explain_inputs: req.explain_inputs,
+        })
+    }
+
+    fn handle_put_schema_inner(
+        &mut self,
+        req: PutSchemaRequest,
+    ) -> Result<PutSchemaResponse, AxonError> {
+        let collection = req.schema.collection.clone();
         // Compatibility check against existing schema.
         let existing = self.storage.get_schema(&collection)?;
         let old_entity_schema = existing.as_ref().and_then(|s| s.entity_schema.as_ref());
@@ -7615,6 +8375,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ///
     /// Returns [`AxonError::NotFound`] if no schema has been stored.
     pub fn handle_get_schema(&self, req: GetSchemaRequest) -> Result<GetSchemaResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_SCHEMA)?;
         self.storage
             .get_schema(&req.collection)?
             .map(|schema| GetSchemaResponse {
@@ -7630,6 +8391,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Scans all entities and reports which ones fail validation, including
     /// the entity ID, version, and specific errors.
     pub fn revalidate(&self, req: RevalidateRequest) -> Result<RevalidateResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_SCHEMA)?;
         let schema = self.storage.get_schema(&req.collection)?.ok_or_else(|| {
             AxonError::NotFound(format!("schema for collection '{}'", req.collection))
         })?;
@@ -7693,6 +8455,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .storage
             .list_namespace_collections(&Namespace::new(&req.database, &req.schema))?
             .into_iter()
+            .filter(|collection| !is_reserved_collection(collection))
             .map(|collection| collection.to_string())
             .collect();
         Ok(ListNamespaceCollectionsResponse {
@@ -7830,6 +8593,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: DiffSchemaRequest,
     ) -> Result<DiffSchemaResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_SCHEMA)?;
         let schema_a = self
             .storage
             .get_schema_version(&req.collection, req.version_a)?
@@ -7868,6 +8632,33 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Both source and target must exist in storage; if either is missing,
     /// [`AxonError::NotFound`] is returned.
     pub fn create_link(&mut self, req: CreateLinkRequest) -> Result<CreateLinkResponse, AxonError> {
+        ensure_generic_collection_access(&req.source_collection, OP_LINK)?;
+        ensure_generic_collection_access(&req.target_collection, OP_LINK)?;
+        self.create_link_inner(req)
+    }
+
+    pub(crate) fn create_link_in_system_collection<C: GovernedSystemCollection>(
+        &mut self,
+        capability: GovernedSystemCapability<C>,
+        req: CreateGovernedSystemLinkRequest,
+    ) -> Result<CreateLinkResponse, AxonError> {
+        let collection = governed_system_collection(capability);
+        self.create_link_inner(CreateLinkRequest {
+            source_collection: collection.clone(),
+            source_id: req.source_id,
+            target_collection: collection,
+            target_id: req.target_id,
+            link_type: req.link_type,
+            metadata: req.metadata,
+            actor: req.actor,
+            attribution: req.attribution,
+        })
+    }
+
+    fn create_link_inner(
+        &mut self,
+        req: CreateLinkRequest,
+    ) -> Result<CreateLinkResponse, AxonError> {
         // Verify source and target exist.
         if self
             .storage
@@ -7918,19 +8709,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 match link_def.cardinality {
                     Cardinality::OneToOne | Cardinality::ManyToOne => {
                         // Source can have at most one outgoing link of this type.
-                        let prefix = format!(
-                            "{}/{}/{}/",
-                            req.source_collection, req.source_id, req.link_type
-                        );
-                        let start = EntityId::new(&prefix);
-                        let existing = self.storage.range_scan(
-                            &Link::links_collection(),
-                            Some(&start),
-                            None,
-                            Some(1),
-                        )?;
-                        let has_outgoing =
-                            existing.iter().any(|e| e.id.as_str().starts_with(&prefix));
+                        let has_outgoing = !self
+                            .storage
+                            .list_outbound_links(
+                                &req.source_collection,
+                                &req.source_id,
+                                Some(&req.link_type),
+                            )?
+                            .is_empty();
                         if has_outgoing {
                             return Err(AxonError::SchemaValidation(format!(
                                 "cardinality violation: source {}/{} already has a '{}' link \
@@ -7947,17 +8733,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 match link_def.cardinality {
                     Cardinality::OneToOne | Cardinality::OneToMany => {
                         // Target can have at most one inbound link of this type.
-                        // Scan the reverse-index: {target_col}/{target_id}/.../{link_type}
-                        let rev_col = Link::links_rev_collection();
-                        let prefix = format!("{}/{}/", req.target_collection, req.target_id);
-                        let start = EntityId::new(&prefix);
-                        let candidates =
-                            self.storage
-                                .range_scan(&rev_col, Some(&start), None, None)?;
-                        let has_inbound = candidates.iter().any(|e| {
-                            let id = e.id.as_str();
-                            id.starts_with(&prefix) && id.ends_with(&format!("/{}", req.link_type))
-                        });
+                        let has_inbound = !self
+                            .storage
+                            .list_inbound_links(
+                                &req.target_collection,
+                                &req.target_id,
+                                Some(&req.link_type),
+                            )?
+                            .is_empty();
                         if has_inbound {
                             return Err(AxonError::SchemaValidation(format!(
                                 "cardinality violation: target {}/{} already has an inbound '{}' link \
@@ -8038,6 +8821,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// reverse-index entry from `__axon_links_rev__`. If the link does not exist,
     /// [`AxonError::NotFound`] is returned.
     pub fn delete_link(&mut self, req: DeleteLinkRequest) -> Result<DeleteLinkResponse, AxonError> {
+        ensure_generic_collection_access(&req.source_collection, OP_LINK)?;
+        ensure_generic_collection_access(&req.target_collection, OP_LINK)?;
         let link_id = Link::storage_id(
             &req.source_collection,
             &req.source_id,
@@ -8124,6 +8909,37 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<TraverseResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection, OP_TRAVERSE)?;
+        self.traverse_with_read_context_unchecked(req, caller, attribution, false)
+    }
+
+    pub(crate) fn traverse_system_collection<C: GovernedSystemCollection>(
+        &self,
+        capability: GovernedSystemCapability<C>,
+        req: TraverseGovernedSystemRequest,
+    ) -> Result<TraverseResponse, AxonError> {
+        self.traverse_with_read_context_unchecked(
+            TraverseRequest {
+                collection: governed_system_collection(capability),
+                id: req.id,
+                link_type: req.link_type,
+                max_depth: req.max_depth,
+                direction: req.direction,
+                hop_filter: req.hop_filter,
+            },
+            None,
+            None,
+            true,
+        )
+    }
+
+    fn traverse_with_read_context_unchecked(
+        &self,
+        req: TraverseRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+        include_system_links: bool,
+    ) -> Result<TraverseResponse, AxonError> {
         let max_depth = req
             .max_depth
             .unwrap_or(DEFAULT_MAX_DEPTH)
@@ -8140,7 +8956,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
         }
 
-        let all_links = self.load_all_links()?;
+        let all_links = if include_system_links {
+            self.load_all_links()?
+        } else {
+            self.load_generic_links()?
+        };
         let reverse = req.direction == TraverseDirection::Reverse;
 
         let mut visited: HashSet<(String, String)> = HashSet::new();
@@ -8270,12 +9090,50 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<ReachableResponse, AxonError> {
+        ensure_generic_collection_access(&req.source_collection, OP_TRAVERSE)?;
+        ensure_generic_collection_access(&req.target_collection, OP_TRAVERSE)?;
+        self.reachable_with_read_context_unchecked(req, caller, attribution, false)
+    }
+
+    pub(crate) fn reachable_system_collection<C: GovernedSystemCollection>(
+        &self,
+        capability: GovernedSystemCapability<C>,
+        req: ReachableGovernedSystemRequest,
+    ) -> Result<ReachableResponse, AxonError> {
+        let collection = governed_system_collection(capability);
+        self.reachable_with_read_context_unchecked(
+            ReachableRequest {
+                source_collection: collection.clone(),
+                source_id: req.source_id,
+                target_collection: collection,
+                target_id: req.target_id,
+                link_type: req.link_type,
+                max_depth: req.max_depth,
+                direction: req.direction,
+            },
+            None,
+            None,
+            true,
+        )
+    }
+
+    fn reachable_with_read_context_unchecked(
+        &self,
+        req: ReachableRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+        include_system_links: bool,
+    ) -> Result<ReachableResponse, AxonError> {
         let max_depth = req
             .max_depth
             .unwrap_or(DEFAULT_MAX_DEPTH)
             .min(MAX_DEPTH_CAP);
 
-        let all_links = self.load_all_links()?;
+        let all_links = if include_system_links {
+            self.load_all_links()?
+        } else {
+            self.load_generic_links()?
+        };
         let reverse = req.direction == TraverseDirection::Reverse;
         let target_key = (req.target_collection.to_string(), req.target_id.to_string());
 
@@ -8411,6 +9269,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<crate::response::FindLinkCandidatesResponse, AxonError> {
+        ensure_generic_collection_access(&req.source_collection, OP_LINK)?;
         // Verify source entity exists.
         if self
             .get_visible_entity_for_read_with_context(
@@ -8436,6 +9295,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let target_collection = link_def
             .map(|d| CollectionId::new(&d.target_collection))
             .unwrap_or_else(|| req.source_collection.clone());
+        ensure_generic_collection_access(&target_collection, OP_LINK)?;
 
         let cardinality_str = link_def
             .map(|d| {
@@ -8446,7 +9306,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .unwrap_or_else(|| "unknown".into());
 
         // Get all existing links of this type from the source.
-        let all_links = self.load_all_links()?;
+        let all_links = self.load_generic_links()?;
         let mut existing_targets = HashSet::new();
         for link in all_links.iter().filter(|link| {
             link.source_collection == req.source_collection
@@ -8560,6 +9420,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<crate::response::ListNeighborsResponse, AxonError> {
         use std::collections::BTreeMap;
 
+        ensure_generic_collection_access(&req.collection, OP_LINK)?;
+
         // Verify entity exists.
         if self
             .get_visible_entity_for_read_with_context(
@@ -8576,7 +9438,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
-        let all_links = self.load_all_links()?;
+        let all_links = self.load_generic_links()?;
 
         // group key: (link_type, direction)
         let mut groups: BTreeMap<(String, String), Vec<Entity>> = BTreeMap::new();
@@ -8670,6 +9532,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(entities.iter().filter_map(Link::from_entity).collect())
     }
 
+    /// Load only links whose endpoints are ordinary user collections.
+    fn load_generic_links(&self) -> Result<Vec<Link>, AxonError> {
+        Ok(self
+            .load_all_links()?
+            .into_iter()
+            .filter(link_visible_to_generic_scans)
+            .collect())
+    }
+
     /// Transition an entity through a named lifecycle state machine (FEAT-015).
     ///
     /// Steps:
@@ -8682,6 +9553,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: TransitionLifecycleRequest,
     ) -> Result<TransitionLifecycleResponse, AxonError> {
+        ensure_generic_collection_access(&req.collection_id, OP_LIFECYCLE)?;
         // (1) Load schema and find the lifecycle definition.
         let schema = self
             .storage
@@ -9653,6 +10525,60 @@ fn intent_operation_entity_ref(operation: &Value) -> Option<(CollectionId, Entit
     ))
 }
 
+fn ensure_generic_intent_operation_access(operation: &Value) -> Result<(), AxonError> {
+    for key in ["collection", "source_collection", "target_collection"] {
+        if let Some(name) = operation.get(key).and_then(Value::as_str) {
+            ensure_generic_collection_access(&CollectionId::new(name), OP_INTENT)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_generic_mutation_intent_access(intent: &MutationIntent) -> Result<(), AxonError> {
+    let operation = intent
+        .operation
+        .canonical_operation
+        .as_ref()
+        .ok_or_else(|| {
+            AxonError::InvalidArgument(
+                "mutation intent preview requires canonical_operation for namespace validation"
+                    .into(),
+            )
+        })?;
+    ensure_generic_intent_operation_kind_access(&intent.operation.operation_kind, operation)
+}
+
+fn ensure_generic_intent_operation_kind_access(
+    operation_kind: &MutationOperationKind,
+    operation: &Value,
+) -> Result<(), AxonError> {
+    if operation_kind != &MutationOperationKind::Transaction {
+        return ensure_generic_intent_operation_access(operation);
+    }
+
+    let Some(operations) = operation.get("operations").and_then(Value::as_array) else {
+        return ensure_generic_intent_operation_access(operation);
+    };
+    for child in operations {
+        if let Some(child_kind) = transaction_child_operation_kind(child) {
+            ensure_generic_intent_operation_kind_access(&child_kind, child)?;
+        } else {
+            ensure_generic_intent_operation_access(child)?;
+        }
+    }
+    Ok(())
+}
+
+fn mutation_intent_commit_failed(
+    intent_id: impl Into<String>,
+    error: AxonError,
+) -> MutationIntentCommitValidationError {
+    MutationIntentCommitValidationError::CommitFailed {
+        intent_id: intent_id.into(),
+        source: error.to_string(),
+    }
+}
+
 fn transaction_child_operation_kind(operation: &Value) -> Option<MutationOperationKind> {
     match operation.get("op")?.as_str()? {
         "create_entity" => Some(MutationOperationKind::CreateEntity),
@@ -10080,6 +11006,32 @@ fn policy_forbidden(
     AxonError::PolicyDenied(Box::new(denial))
 }
 
+fn transaction_write_scope<'a>(
+    op: &'a crate::transaction::WriteOp,
+    current: Option<&'a Entity>,
+) -> Result<FieldWriteScope<'a>, AxonError> {
+    match &op.write_scope {
+        crate::transaction::WriteFieldScope::PresentEntity => {
+            Ok(FieldWriteScope::PresentFields(&op.entity.data))
+        }
+        crate::transaction::WriteFieldScope::Patch(patch) => {
+            if let Some(before) = current
+                .map(|entity| &entity.data)
+                .or(op.data_before.as_ref())
+            {
+                let mut merged = before.clone();
+                json_merge_patch(&mut merged, patch);
+                if merged != op.entity.data {
+                    return Err(AxonError::InvalidOperation(
+                        "patch transaction write scope does not match staged entity data".into(),
+                    ));
+                }
+            }
+            Ok(FieldWriteScope::Patch(patch.as_ref()))
+        }
+    }
+}
+
 fn field_write_scope_touches_path(scope: FieldWriteScope<'_>, field_path: &str) -> bool {
     match scope {
         FieldWriteScope::PresentFields(data) => !policy_values_at_path(data, field_path).is_empty(),
@@ -10226,10 +11178,17 @@ fn collect_policy_values_at_path<'a>(
 #[allow(clippy::manual_string_new, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::fmt::Display;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use axon_core::auth::Role;
-    use axon_core::id::{CollectionId, EntityId, Namespace};
+    use axon_core::auth::{
+        AuthError, CredentialMetadata, GrantedDatabase, Grants, Op, Role, TenantId, TenantRole,
+        UserId,
+    };
+    use axon_core::id::{
+        CollectionId, EntityId, Namespace, SystemCollection, BEAD_SYSTEM_CAPABILITY,
+    };
     use axon_schema::schema::{
         Cardinality, CollectionSchema, CollectionView, EsfDocument, IndexDef, IndexType,
         LinkTypeDef, NamedQueryDef,
@@ -10244,9 +11203,131 @@ mod tests {
     use serde_json::json;
 
     use crate::test_fixtures::seed_procurement_fixture;
+    use crate::test_fixtures::{
+        reserved_namespace_surface_parity_vectors, ReservedNamespaceSurfaceParityVector,
+        RESERVED_NAMESPACE_CLASS_GOVERNED_SYSTEM, RESERVED_NAMESPACE_CLASS_HIDDEN,
+        RESERVED_NAMESPACE_CLASS_VIRTUAL, RESERVED_NAMESPACE_SURFACE_PARITY_OPERATIONS,
+    };
 
     fn handler() -> AxonHandler<MemoryStorageAdapter> {
         AxonHandler::new(MemoryStorageAdapter::default())
+    }
+
+    #[derive(Default)]
+    struct LookupCountingStorageAdapter {
+        inner: MemoryStorageAdapter,
+        storage_calls: AtomicUsize,
+    }
+
+    impl LookupCountingStorageAdapter {
+        fn storage_calls(&self) -> usize {
+            self.storage_calls.load(Ordering::SeqCst)
+        }
+
+        fn note_storage_call(&self) {
+            self.storage_calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl StorageAdapter for LookupCountingStorageAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.note_storage_call();
+            self.inner.get(collection, id)
+        }
+
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.put(entity)
+        }
+
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.delete(collection, id)
+        }
+
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.note_storage_call();
+            self.inner.count(collection)
+        }
+
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.note_storage_call();
+            self.inner.range_scan(collection, start, end, limit)
+        }
+
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.note_storage_call();
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.note_storage_call();
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
+
+        fn begin_tx(&mut self) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.begin_tx()
+        }
+
+        fn commit_tx(&mut self) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.commit_tx()
+        }
+
+        fn abort_tx(&mut self) -> Result<(), AxonError> {
+            self.note_storage_call();
+            self.inner.abort_tx()
+        }
+
+        fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+            self.note_storage_call();
+            self.inner.append_audit_entry(entry)
+        }
+
+        fn owns_audit_log(&self) -> bool {
+            self.note_storage_call();
+            self.inner.owns_audit_log()
+        }
+
+        fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+            self.note_storage_call();
+            self.inner.query_audit_paginated(query)
+        }
+
+        fn get_schema(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionSchema>, AxonError> {
+            self.note_storage_call();
+            self.inner.get_schema(collection)
+        }
+
+        fn get_collection_view(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionView>, AxonError> {
+            self.note_storage_call();
+            self.inner.get_collection_view(collection)
+        }
     }
 
     fn handler_with_markdown_template_cache_capacity(
@@ -10256,6 +11337,78 @@ mod tests {
             MemoryStorageAdapter::default(),
             capacity,
         )
+    }
+
+    #[derive(Default)]
+    struct AuthAuditStorageAdapter {
+        inner: MemoryStorageAdapter,
+        credentials: Vec<CredentialMetadata>,
+    }
+
+    impl StorageAdapter for AuthAuditStorageAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.inner.get(collection, id)
+        }
+
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.inner.put(entity)
+        }
+
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.inner.delete(collection, id)
+        }
+
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.inner.count(collection)
+        }
+
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.inner.range_scan(collection, start, end, limit)
+        }
+
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
+
+        fn list_credentials(
+            &self,
+            tenant_id: TenantId,
+            user_filter: Option<UserId>,
+        ) -> Result<Vec<CredentialMetadata>, AxonError> {
+            Ok(self
+                .credentials
+                .iter()
+                .filter(|credential| credential.tenant_id == tenant_id)
+                .filter(|credential| {
+                    user_filter
+                        .as_ref()
+                        .map_or(true, |user_id| &credential.user_id == user_id)
+                })
+                .cloned()
+                .collect())
+        }
     }
 
     #[derive(Default)]
@@ -10436,6 +11589,126 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FailingAuditMemoryAdapter {
+        inner: MemoryStorageAdapter,
+        fail_audit: bool,
+    }
+
+    impl FailingAuditMemoryAdapter {
+        fn fail_audit_appends(&mut self) {
+            self.fail_audit = true;
+        }
+
+        fn allow_audit_appends(&mut self) {
+            self.fail_audit = false;
+        }
+    }
+
+    impl StorageAdapter for FailingAuditMemoryAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.inner.get(collection, id)
+        }
+
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.inner.put(entity)
+        }
+
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.inner.delete(collection, id)
+        }
+
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.inner.count(collection)
+        }
+
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.inner.range_scan(collection, start, end, limit)
+        }
+
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
+
+        fn begin_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.begin_tx()
+        }
+
+        fn commit_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.commit_tx()
+        }
+
+        fn abort_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.abort_tx()
+        }
+
+        fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+            if self.fail_audit {
+                return Err(AxonError::Storage("injected audit append failure".into()));
+            }
+            self.inner.append_audit_entry(entry)
+        }
+
+        fn owns_audit_log(&self) -> bool {
+            true
+        }
+
+        fn query_audit_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError> {
+            self.inner.query_audit_paginated(query)
+        }
+
+        fn get_schema(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionSchema>, AxonError> {
+            self.inner.get_schema(collection)
+        }
+
+        fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+            self.inner.put_schema(schema)
+        }
+
+        fn collection_registered_in_namespace(
+            &self,
+            collection: &CollectionId,
+            namespace: &Namespace,
+        ) -> Result<bool, AxonError> {
+            self.inner
+                .collection_registered_in_namespace(collection, namespace)
+        }
+
+        fn register_collection_in_namespace(
+            &mut self,
+            collection: &CollectionId,
+            namespace: &Namespace,
+        ) -> Result<(), AxonError> {
+            self.inner
+                .register_collection_in_namespace(collection, namespace)
+        }
+    }
+
     fn register_prod_billing_and_engineering_collection(
         h: &mut AxonHandler<MemoryStorageAdapter>,
         collection: &str,
@@ -10491,6 +11764,1694 @@ mod tests {
                 panic!("expected markdown render to succeed: {detail}")
             }
         }
+    }
+
+    fn assert_reserved_namespace_guard_error(
+        err: AxonError,
+        expected_name: &str,
+        expected_operation: &str,
+    ) {
+        let envelope = ReservedNamespaceError::from_axon_error(&err)
+            .unwrap_or_else(|| panic!("expected reserved namespace error, got: {err}"));
+        assert_eq!(envelope.code, crate::response::RESERVED_NAMESPACE_CODE);
+        assert_eq!(envelope.reason, crate::response::RESERVED_NAMESPACE_REASON);
+        assert_eq!(envelope.detail.name, expected_name);
+        assert_eq!(envelope.detail.operation, expected_operation);
+    }
+
+    fn assert_reserved_namespace_surface_parity_error(
+        err: AxonError,
+        vector: &ReservedNamespaceSurfaceParityVector,
+    ) {
+        let envelope = ReservedNamespaceError::from_axon_error(&err)
+            .unwrap_or_else(|| panic!("expected reserved namespace error, got: {err}"));
+        assert_eq!(envelope.code, vector.code);
+        assert_eq!(envelope.reason, vector.reason);
+        assert_eq!(envelope.detail.name, vector.detail_name);
+        assert_eq!(envelope.detail.operation, vector.detail_operation);
+    }
+
+    fn reserved_namespace_intent(
+        collection: &CollectionId,
+        id: &EntityId,
+    ) -> crate::MutationIntent {
+        crate::MutationIntent {
+            intent_id: format!("reserved-namespace-parity-{collection}"),
+            scope: crate::MutationIntentScopeBinding {
+                tenant_id: DEFAULT_DATABASE.into(),
+                database_id: DEFAULT_DATABASE.into(),
+            },
+            subject: crate::MutationIntentSubjectBinding::default(),
+            schema_version: 1,
+            policy_version: 1,
+            operation: crate::CanonicalOperationMetadata {
+                operation_kind: crate::MutationOperationKind::UpdateEntity,
+                operation_hash: "sha256:reserved-namespace-parity".into(),
+                canonical_operation: Some(json!({
+                    "collection": collection.as_str(),
+                    "id": id.as_str(),
+                    "data": { "title": "reserved namespace parity" },
+                    "expected_version": 1
+                })),
+            },
+            pre_images: Vec::new(),
+            decision: crate::MutationIntentDecision::NeedsApproval,
+            approval_state: crate::ApprovalState::Pending,
+            approval_route: None,
+            expires_at: 1,
+            review_summary: crate::MutationReviewSummary::default(),
+        }
+    }
+
+    fn reserved_namespace_surface_parity_embedded_error(
+        vector: &ReservedNamespaceSurfaceParityVector,
+    ) -> AxonError {
+        let collection = CollectionId::new(vector.detail_name);
+        let id = EntityId::new("reserved-namespace-parity-id");
+        let mut handler = AxonHandler::new(LookupCountingStorageAdapter::default());
+        let result: Result<(), AxonError> = match vector.detail_operation {
+            OP_ENTITY => handler
+                .get_entity(GetEntityRequest { collection, id })
+                .map(|_| ()),
+            OP_SCHEMA => handler
+                .handle_get_schema(GetSchemaRequest { collection })
+                .map(|_| ()),
+            OP_TEMPLATE => handler
+                .get_collection_template(GetCollectionTemplateRequest { collection })
+                .map(|_| ()),
+            OP_LIFECYCLE => handler
+                .transition_lifecycle(TransitionLifecycleRequest {
+                    collection_id: collection,
+                    entity_id: id,
+                    lifecycle_name: "workflow".into(),
+                    target_state: "done".into(),
+                    expected_version: 1,
+                    actor: Some("reserved-namespace-parity".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .map(|_| ()),
+            OP_LINK => handler
+                .create_link(CreateLinkRequest {
+                    source_collection: collection,
+                    source_id: id,
+                    target_collection: CollectionId::new("public-target"),
+                    target_id: EntityId::new("target"),
+                    link_type: "reserved-namespace-parity".into(),
+                    metadata: json!({}),
+                    actor: Some("reserved-namespace-parity".into()),
+                    attribution: None,
+                })
+                .map(|_| ()),
+            OP_ROLLBACK => handler
+                .rollback_entity(RollbackEntityRequest {
+                    collection,
+                    id,
+                    target: RollbackEntityTarget::Version(1),
+                    expected_version: None,
+                    actor: Some("reserved-namespace-parity".into()),
+                    dry_run: true,
+                })
+                .map(|_| ()),
+            OP_INTENT => {
+                let mut intent = reserved_namespace_intent(&collection, &id);
+                handler.redact_mutation_intent_for_read(
+                    &mut intent,
+                    &CallerIdentity::anonymous(),
+                    None,
+                )
+            }
+            OP_QUERY => handler
+                .query_entities(QueryEntitiesRequest {
+                    collection,
+                    ..QueryEntitiesRequest::default()
+                })
+                .map(|_| ()),
+            OP_TRAVERSE => handler
+                .traverse(TraverseRequest {
+                    collection,
+                    id,
+                    link_type: None,
+                    max_depth: Some(1),
+                    direction: TraverseDirection::Forward,
+                    hop_filter: None,
+                })
+                .map(|_| ()),
+            OP_TRANSACTION => {
+                let mut tx = crate::Transaction::new();
+                tx.create(Entity::new(
+                    collection,
+                    id,
+                    json!({ "title": "reserved namespace parity" }),
+                ))
+                .expect("fixture transaction should stage");
+                handler
+                    .commit_transaction(tx, Some("reserved-namespace-parity".into()), None)
+                    .map(|_| ())
+            }
+            OP_AUDIT => handler
+                .query_audit(QueryAuditRequest {
+                    collection: Some(collection),
+                    limit: Some(1),
+                    ..QueryAuditRequest::default()
+                })
+                .map(|_| ()),
+            other => panic!("unknown reserved namespace parity operation: {other}"),
+        };
+        let err = result.expect_err("embedded reserved namespace vector must be rejected");
+        assert_eq!(
+            handler.storage_ref().storage_calls(),
+            0,
+            "embedded {} vector for {} touched storage before rejection",
+            vector.detail_operation,
+            vector.detail_name
+        );
+        err
+    }
+
+    #[test]
+    fn reserved_namespace_surface_parity() {
+        let vectors = reserved_namespace_surface_parity_vectors();
+        let classifications = vectors
+            .iter()
+            .map(|vector| vector.classification)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            classifications,
+            BTreeSet::from([
+                RESERVED_NAMESPACE_CLASS_HIDDEN,
+                RESERVED_NAMESPACE_CLASS_VIRTUAL,
+                RESERVED_NAMESPACE_CLASS_GOVERNED_SYSTEM,
+            ])
+        );
+
+        let operations = vectors
+            .iter()
+            .map(|vector| vector.detail_operation)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            operations,
+            RESERVED_NAMESPACE_SURFACE_PARITY_OPERATIONS
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
+
+        let names = vectors
+            .iter()
+            .map(|vector| vector.detail_name)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            names,
+            SystemCollection::ALL
+                .into_iter()
+                .map(|collection| collection.name())
+                .collect::<BTreeSet<_>>()
+        );
+
+        for vector in vectors {
+            let guard_err = ensure_generic_collection_access(
+                &CollectionId::new(vector.detail_name),
+                vector.detail_operation,
+            )
+            .expect_err("shared reserved namespace guard must reject the vector");
+            assert_reserved_namespace_surface_parity_error(guard_err, &vector);
+
+            let embedded_err = reserved_namespace_surface_parity_embedded_error(&vector);
+            assert_reserved_namespace_surface_parity_error(embedded_err, &vector);
+        }
+    }
+
+    #[test]
+    fn reserved_namespace_guard_returns_stable_error_for_generic_operations() {
+        let reserved = CollectionId::new(SystemCollection::links().name());
+        for operation in [
+            OP_ENTITY,
+            OP_SCHEMA,
+            OP_TEMPLATE,
+            OP_LIFECYCLE,
+            OP_LINK,
+            OP_ROLLBACK,
+            OP_INTENT,
+            OP_QUERY,
+            OP_TRAVERSE,
+            OP_TRANSACTION,
+            OP_AUDIT,
+        ] {
+            let err = ensure_generic_collection_access(&reserved, operation)
+                .expect_err("reserved collection must be rejected");
+            assert_reserved_namespace_guard_error(err, reserved.as_str(), operation);
+        }
+    }
+
+    #[test]
+    fn reserved_namespace_guard_covers_system_collection_manifest_names() {
+        for collection in SystemCollection::ALL {
+            let name = CollectionId::new(collection.name());
+            let err = ensure_generic_collection_access(&name, OP_ENTITY)
+                .expect_err("manifested system collection must be rejected");
+            assert_reserved_namespace_guard_error(err, collection.name(), OP_ENTITY);
+        }
+
+        ensure_generic_collection_access(&CollectionId::new("tasks"), OP_ENTITY)
+            .expect("ordinary user collection remains allowed");
+    }
+
+    #[test]
+    fn governed_system_generic_access_rejected_before_storage() {
+        let mut h = AxonHandler::new(LookupCountingStorageAdapter::default());
+        let beads = CollectionId::new(SystemCollection::beads().name());
+        let id = EntityId::new("bead-1");
+
+        let create_err = h
+            .create_entity(CreateEntityRequest {
+                collection: beads.clone(),
+                id: id.clone(),
+                data: json!({"title": "reserved"}),
+                actor: Some("app".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("generic create must reject __axon_beads__");
+        assert_reserved_namespace_guard_error(create_err, beads.as_str(), OP_ENTITY);
+
+        let get_err = h
+            .get_entity(GetEntityRequest {
+                collection: beads.clone(),
+                id: id.clone(),
+            })
+            .expect_err("generic get must reject __axon_beads__");
+        assert_reserved_namespace_guard_error(get_err, beads.as_str(), OP_ENTITY);
+
+        let query_err = h
+            .query_entities(QueryEntitiesRequest {
+                collection: beads.clone(),
+                ..Default::default()
+            })
+            .expect_err("generic query must reject __axon_beads__");
+        assert_reserved_namespace_guard_error(query_err, beads.as_str(), OP_QUERY);
+
+        assert_eq!(
+            h.storage_ref().storage_calls(),
+            0,
+            "generic __axon_beads__ rejection must happen before storage access"
+        );
+    }
+
+    #[test]
+    fn generic_system_rows_unobservable_forward_reverse_index_checkpoint() {
+        let mut h = handler();
+        let public = CollectionId::new("public_system_scan_anchor");
+        let source_id = EntityId::new("source");
+        let target_id = EntityId::new("target");
+        let checkpoint = CollectionId::new(SystemCollection::cdc_cursors().name());
+        let checkpoint_id = EntityId::new("replica\x1fpublic_system_scan_anchor");
+
+        h.create_collection(CreateCollectionRequest {
+            name: public.clone(),
+            schema: CollectionSchema::new(public.clone()),
+            actor: Some("fixture".into()),
+        })
+        .expect("public collection should be registered");
+        for id in [&source_id, &target_id] {
+            h.create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: id.clone(),
+                data: json!({ "title": id.as_str() }),
+                actor: Some("fixture".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("public row should be created through generic API");
+        }
+
+        for collection in [
+            Link::links_collection(),
+            Link::links_rev_collection(),
+            checkpoint.clone(),
+        ] {
+            h.storage_mut()
+                .register_collection_in_namespace(&collection, &Namespace::default_ns())
+                .expect("system collection fixture should be registered below API");
+        }
+
+        let mut checkpoint_schema = CollectionSchema::new(checkpoint.clone());
+        checkpoint_schema.indexes = vec![IndexDef {
+            field: "sink".into(),
+            index_type: IndexType::String,
+            unique: false,
+        }];
+        h.storage_mut()
+            .put_schema(&checkpoint_schema)
+            .expect("system checkpoint schema should be stored below API");
+        h.storage_mut()
+            .put(Entity::new(
+                checkpoint.clone(),
+                checkpoint_id.clone(),
+                json!({
+                    "sink": "replica",
+                    "collection": public.as_str(),
+                    "audit_id": 42,
+                    "secret": "checkpoint row"
+                }),
+            ))
+            .expect("checkpoint row should be stored below API");
+
+        let indexed_ids = h
+            .storage_ref()
+            .index_lookup(
+                &checkpoint,
+                "sink",
+                &axon_storage::IndexValue::String("replica".into()),
+            )
+            .expect("fixture should create a secondary index row internally");
+        assert_eq!(indexed_ids, vec![checkpoint_id.clone()]);
+
+        let link_type = "system-hop";
+        let public_to_system = Link {
+            source_collection: public.clone(),
+            source_id: source_id.clone(),
+            target_collection: checkpoint.clone(),
+            target_id: checkpoint_id.clone(),
+            link_type: link_type.into(),
+            metadata: json!({"kind": "forward row"}),
+        };
+        let system_to_public = Link {
+            source_collection: checkpoint.clone(),
+            source_id: checkpoint_id.clone(),
+            target_collection: public.clone(),
+            target_id: target_id.clone(),
+            link_type: link_type.into(),
+            metadata: json!({"kind": "reverse row"}),
+        };
+        h.storage_mut()
+            .put_link(&public_to_system)
+            .expect("forward system link row should be stored below API");
+        h.storage_mut()
+            .put_link(&system_to_public)
+            .expect("reverse system link row should be stored below API");
+
+        let forward_rows = h
+            .storage_ref()
+            .range_scan(&Link::links_collection(), None, None, None)
+            .expect("raw forward rows should remain readable internally");
+        assert!(forward_rows.iter().any(|row| {
+            row.id == Link::storage_id(&public, &source_id, link_type, &checkpoint, &checkpoint_id)
+        }));
+        let reverse_rows = h
+            .storage_ref()
+            .range_scan(&Link::links_rev_collection(), None, None, None)
+            .expect("raw reverse rows should remain readable internally");
+        assert!(reverse_rows.iter().any(|row| {
+            row.id
+                == Link::rev_storage_id(&public, &target_id, &checkpoint, &checkpoint_id, link_type)
+        }));
+
+        for collection in [
+            Link::links_collection(),
+            Link::links_rev_collection(),
+            checkpoint.clone(),
+        ] {
+            let err = h
+                .query_entities(QueryEntitiesRequest {
+                    collection: collection.clone(),
+                    ..Default::default()
+                })
+                .expect_err("direct generic system collection scan must be rejected");
+            assert_reserved_namespace_guard_error(err, collection.as_str(), OP_QUERY);
+        }
+        let index_err = h
+            .query_entities(QueryEntitiesRequest {
+                collection: checkpoint.clone(),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "sink".into(),
+                    op: FilterOp::Eq,
+                    value: json!("replica"),
+                })),
+                ..Default::default()
+            })
+            .expect_err("generic indexed checkpoint query must be rejected before planning");
+        assert_reserved_namespace_guard_error(index_err, checkpoint.as_str(), OP_QUERY);
+        let checkpoint_get_err = h
+            .get_entity(GetEntityRequest {
+                collection: checkpoint.clone(),
+                id: checkpoint_id.clone(),
+            })
+            .expect_err("direct generic checkpoint row read must be rejected");
+        assert_reserved_namespace_guard_error(checkpoint_get_err, checkpoint.as_str(), OP_ENTITY);
+
+        let collections = h
+            .list_collections(ListCollectionsRequest {})
+            .expect("generic collection list should succeed");
+        assert_eq!(collections.collections.len(), 1);
+        assert_eq!(collections.collections[0].name, public.as_str());
+
+        let snapshot = h
+            .snapshot_entities(SnapshotRequest {
+                collections: None,
+                limit: Some(2),
+                after_page_token: None,
+            })
+            .expect("generic snapshot should succeed");
+        assert_eq!(snapshot.entities.len(), 2);
+        assert!(snapshot
+            .entities
+            .iter()
+            .all(|entity| entity.collection == public));
+        assert_eq!(snapshot.next_page_token, None);
+        let snapshot_json = serde_json::to_string(&snapshot).expect("snapshot serializes");
+        assert!(!snapshot_json.contains(checkpoint.as_str()));
+        assert!(!snapshot_json.contains("checkpoint row"));
+
+        let forward = h
+            .traverse(TraverseRequest {
+                collection: public.clone(),
+                id: source_id.clone(),
+                link_type: Some(link_type.into()),
+                max_depth: Some(2),
+                direction: TraverseDirection::Forward,
+                hop_filter: None,
+            })
+            .expect("generic forward traversal should succeed");
+        assert!(forward.entities.is_empty());
+        assert!(forward.links.is_empty());
+        assert!(forward.paths.is_empty());
+
+        let reverse = h
+            .traverse(TraverseRequest {
+                collection: public.clone(),
+                id: target_id.clone(),
+                link_type: Some(link_type.into()),
+                max_depth: Some(2),
+                direction: TraverseDirection::Reverse,
+                hop_filter: None,
+            })
+            .expect("generic reverse traversal should succeed");
+        assert!(reverse.entities.is_empty());
+        assert!(reverse.links.is_empty());
+        assert!(reverse.paths.is_empty());
+
+        let reachable = h
+            .reachable(ReachableRequest {
+                source_collection: public.clone(),
+                source_id: source_id.clone(),
+                target_collection: public.clone(),
+                target_id: target_id.clone(),
+                link_type: Some(link_type.into()),
+                max_depth: Some(2),
+                direction: TraverseDirection::Forward,
+            })
+            .expect("generic reachability should succeed");
+        assert!(!reachable.reachable);
+
+        let neighbors = h
+            .list_neighbors(crate::request::ListNeighborsRequest {
+                collection: public.clone(),
+                id: source_id.clone(),
+                link_type: Some(link_type.into()),
+                direction: Some(TraverseDirection::Forward),
+            })
+            .expect("generic link enumeration should succeed");
+        assert_eq!(neighbors.total_count, 0);
+        assert!(neighbors.groups.is_empty());
+
+        let typed_bead_query = h
+            .query_entities_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                QueryGovernedSystemEntitiesRequest {
+                    filter: Some(FilterNode::Field(FieldFilter {
+                        field: "sink".into(),
+                        op: FilterOp::Eq,
+                        value: json!("replica"),
+                    })),
+                    ..Default::default()
+                },
+            )
+            .expect("bead capability query is bound to the bead collection");
+        assert!(
+            typed_bead_query.entities.is_empty(),
+            "bead capability query must not expose checkpoint rows"
+        );
+
+        let typed_system_traversal = h
+            .traverse_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                TraverseGovernedSystemRequest {
+                    id: checkpoint_id,
+                    link_type: Some(link_type.into()),
+                    max_depth: Some(1),
+                    direction: TraverseDirection::Forward,
+                    hop_filter: None,
+                },
+            )
+            .expect("bead capability traversal is bound to the bead collection");
+        assert!(
+            typed_system_traversal.entities.is_empty(),
+            "bead capability traversal must not expose checkpoint rows"
+        );
+    }
+
+    fn governed_system_collection_id() -> CollectionId {
+        SystemCollection::beads().collection_id()
+    }
+
+    fn governed_system_schema(version: u32, include_summary: bool) -> CollectionSchema {
+        let mut entity_schema = json!({
+            "type": "object",
+            "required": ["owner_id", "title"],
+            "properties": {
+                "owner_id": {"type": "string"},
+                "title": {"type": "string"},
+                "status": {"type": "string"},
+                "secret": {"type": "string"}
+            }
+        });
+        if include_summary {
+            entity_schema["properties"]["summary"] = json!({"type": "string"});
+        }
+
+        let mut schema = CollectionSchema {
+            collection: CollectionId::new("caller_supplied_collection_is_ignored"),
+            description: Some("governed system handler test schema".into()),
+            version,
+            entity_schema: Some(entity_schema),
+            link_types: Default::default(),
+            access_control: None,
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            queries: Default::default(),
+            lifecycles: Default::default(),
+        };
+        schema.link_types.insert(
+            "related".into(),
+            LinkTypeDef {
+                target_collection: SystemCollection::beads().name().into(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string"}
+                    }
+                })),
+            },
+        );
+        schema
+    }
+
+    fn ensure_governed_system_for_test<S: StorageAdapter>(h: &mut AxonHandler<S>) -> CollectionId {
+        h.ensure_governed_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            EnsureGovernedSystemCollectionRequest {
+                schema: governed_system_schema(1, false),
+                actor: Some("system-test".into()),
+            },
+        )
+        .expect("governed system collection should be ensured");
+        governed_system_collection_id()
+    }
+
+    fn governed_system_policy_schema() -> CollectionSchema {
+        let mut access_control = AccessControlPolicy {
+            create: Some(allow_all_policy()),
+            fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+            ..Default::default()
+        };
+        access_control.identity = Some(AccessControlIdentity {
+            subject: HashMap::from([("user_id".into(), "subject.user_id".into())]),
+            attributes: HashMap::new(),
+            aliases: HashMap::new(),
+        });
+
+        let mut schema = governed_system_schema(1, false);
+        schema.access_control = Some(access_control);
+        schema
+    }
+
+    #[test]
+    fn governed_system_handler_idempotent_collection_bootstrap() {
+        let mut h = handler();
+        let collection = governed_system_collection_id();
+        let supplied = CollectionId::new("caller_supplied_collection_is_ignored");
+
+        let first = h
+            .ensure_governed_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                EnsureGovernedSystemCollectionRequest {
+                    schema: governed_system_schema(1, false),
+                    actor: Some("system-test".into()),
+                },
+            )
+            .expect("first bootstrap should create collection");
+        let second = h
+            .ensure_governed_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                EnsureGovernedSystemCollectionRequest {
+                    schema: governed_system_schema(1, false),
+                    actor: Some("system-test".into()),
+                },
+            )
+            .expect("second bootstrap should be idempotent");
+
+        assert_eq!(first.name, collection.as_str());
+        assert_eq!(second.name, collection.as_str());
+        assert!(h
+            .storage_ref()
+            .collection_registered_in_namespace(&collection, &Namespace::default_ns())
+            .expect("collection registration lookup"));
+        assert!(!h
+            .storage_ref()
+            .collection_registered_in_namespace(&supplied, &Namespace::default_ns())
+            .expect("supplied collection registration lookup"));
+        let stored = h
+            .storage_ref()
+            .get_schema(&collection)
+            .expect("schema lookup")
+            .expect("schema should be stored");
+        assert_eq!(stored.collection, collection);
+        assert_eq!(
+            h.audit_log()
+                .query_by_operation(&MutationType::CollectionCreate)
+                .expect("collection create audit query")
+                .len(),
+            1,
+            "idempotent bootstrap must not append a duplicate collection audit"
+        );
+    }
+
+    #[test]
+    fn governed_system_handler_compatible_schema_evolution_activates() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+
+        let response = h
+            .handle_put_schema_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                PutGovernedSystemSchemaRequest {
+                    schema: governed_system_schema(2, true),
+                    actor: Some("system-test".into()),
+                    force: false,
+                    dry_run: false,
+                    explain_inputs: Vec::new(),
+                },
+            )
+            .expect("compatible governed system schema should activate");
+
+        assert_eq!(response.schema.collection, collection);
+        assert_eq!(
+            response.compatibility,
+            Some(axon_schema::Compatibility::Compatible)
+        );
+        let stored = h
+            .storage_ref()
+            .get_schema(&collection)
+            .expect("schema lookup")
+            .expect("schema should exist");
+        assert_eq!(stored.version, 2);
+        assert!(stored
+            .entity_schema
+            .as_ref()
+            .and_then(|schema| schema.pointer("/properties/summary"))
+            .is_some());
+    }
+
+    #[test]
+    fn governed_system_handler_entity_create_update_query() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+
+        let invalid = h
+            .create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new("missing-title"),
+                    data: json!({"owner_id": "alice"}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect_err("standard schema validation must reject invalid system entity");
+        assert!(matches!(invalid, AxonError::SchemaValidation(_)));
+
+        let created = h
+            .create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new("bead-1"),
+                    data: json!({"owner_id": "alice", "title": "First", "status": "open"}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("valid system entity should create");
+        assert_eq!(created.entity.collection, collection);
+        assert_eq!(created.entity.version, 1);
+
+        h.update_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            UpdateGovernedSystemEntityRequest {
+                id: EntityId::new("bead-1"),
+                data: json!({"owner_id": "alice", "title": "Second", "status": "open"}),
+                expected_version: created.entity.version,
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect("system entity update should use normal OCC path");
+
+        let queried = h
+            .query_entities_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                QueryGovernedSystemEntitiesRequest {
+                    filter: Some(FilterNode::Field(FieldFilter {
+                        field: "title".into(),
+                        op: FilterOp::Eq,
+                        value: json!("Second"),
+                    })),
+                    ..Default::default()
+                },
+            )
+            .expect("system entity query should use normal query path");
+        assert_eq!(queried.entities.len(), 1);
+        assert_eq!(queried.entities[0].collection, collection);
+        assert_eq!(queried.entities[0].data["title"], json!("Second"));
+    }
+
+    #[test]
+    fn governed_system_handler_self_targeting_link_create_traverse() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+        for id in ["source", "target"] {
+            h.create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new(id),
+                    data: json!({"owner_id": "alice", "title": id}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("fixture entity should create");
+        }
+
+        let created = h
+            .create_link_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemLinkRequest {
+                    source_id: EntityId::new("source"),
+                    target_id: EntityId::new("target"),
+                    link_type: "related".into(),
+                    metadata: json!({"kind": "fixture"}),
+                    actor: Some("alice".into()),
+                    attribution: None,
+                },
+            )
+            .expect("self-targeting governed system link should create");
+        assert_eq!(created.link.source_collection, collection);
+        assert_eq!(created.link.target_collection, collection);
+
+        let traversed = h
+            .traverse_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                TraverseGovernedSystemRequest {
+                    id: EntityId::new("source"),
+                    link_type: Some("related".into()),
+                    max_depth: Some(1),
+                    direction: TraverseDirection::Forward,
+                    hop_filter: None,
+                },
+            )
+            .expect("system traversal should include system links");
+        assert_eq!(traversed.entities.len(), 1);
+        assert_eq!(traversed.entities[0].id, EntityId::new("target"));
+        assert_eq!(traversed.links.len(), 1);
+        assert_eq!(traversed.links[0].source_collection, collection);
+        assert_eq!(traversed.links[0].target_collection, collection);
+    }
+
+    #[test]
+    fn governed_system_handler_occ_conflict() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+        h.create_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemEntityRequest {
+                id: EntityId::new("bead-1"),
+                data: json!({"owner_id": "alice", "title": "First"}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect("fixture entity should create");
+
+        let err = h
+            .update_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                UpdateGovernedSystemEntityRequest {
+                    id: EntityId::new("bead-1"),
+                    data: json!({"owner_id": "alice", "title": "Stale"}),
+                    expected_version: 0,
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect_err("stale governed system update must conflict");
+        assert!(matches!(
+            err,
+            AxonError::ConflictingVersion {
+                expected: 0,
+                actual: 1,
+                ..
+            }
+        ));
+        let stored = h
+            .storage_ref()
+            .get(&collection, &EntityId::new("bead-1"))
+            .expect("entity lookup")
+            .expect("entity should still exist");
+        assert_eq!(stored.data["title"], json!("First"));
+    }
+
+    #[test]
+    fn governed_system_handler_policy_denial() {
+        let mut h = handler();
+        let collection = governed_system_collection_id();
+        h.ensure_governed_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            EnsureGovernedSystemCollectionRequest {
+                schema: governed_system_policy_schema(),
+                actor: Some("system-test".into()),
+            },
+        )
+        .expect("policy-governed system collection should be ensured");
+        let audit_before = h.audit_log().len();
+
+        let denial = expect_policy_denial(
+            h.create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new("denied"),
+                    data: json!({
+                        "owner_id": "blocked",
+                        "title": "Denied",
+                        "secret": "classified"
+                    }),
+                    actor: Some("blocked".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect_err("field policy must deny governed system create"),
+        );
+        assert_eq!(denial.reason, "field_write_denied");
+        assert_eq!(denial.field_path.as_deref(), Some("secret"));
+        assert!(h
+            .storage_ref()
+            .get(&collection, &EntityId::new("denied"))
+            .expect("entity lookup")
+            .is_none());
+        assert_eq!(
+            h.audit_log().len(),
+            audit_before,
+            "policy denial must not append audit"
+        );
+    }
+
+    #[test]
+    fn governed_system_handler_durable_audit_lineage() {
+        let mut h = handler();
+        let collection = ensure_governed_system_for_test(&mut h);
+        let created = h
+            .create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new("bead-1"),
+                    data: json!({"owner_id": "alice", "title": "First"}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("entity create should audit");
+        let updated = h
+            .update_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                UpdateGovernedSystemEntityRequest {
+                    id: EntityId::new("bead-1"),
+                    data: json!({"owner_id": "alice", "title": "Second"}),
+                    expected_version: created.entity.version,
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("entity update should audit");
+        h.create_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemEntityRequest {
+                id: EntityId::new("bead-2"),
+                data: json!({"owner_id": "alice", "title": "Other"}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect("second entity should create");
+        h.create_link_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemLinkRequest {
+                source_id: EntityId::new("bead-1"),
+                target_id: EntityId::new("bead-2"),
+                link_type: "related".into(),
+                metadata: json!({"kind": "lineage"}),
+                actor: Some("alice".into()),
+                attribution: None,
+            },
+        )
+        .expect("link create should audit");
+
+        let create_audit_id = created.audit_id.expect("create returns audit id");
+        let update_audit_id = updated.audit_id.expect("update returns audit id");
+        let history = h
+            .audit_log()
+            .query_by_entity(&collection, &EntityId::new("bead-1"))
+            .expect("entity audit history");
+        assert!(history.iter().any(|entry| {
+            entry.id == create_audit_id
+                && entry.mutation == MutationType::EntityCreate
+                && entry.actor == "alice"
+                && entry.data_before.is_none()
+                && entry.data_after.as_ref().and_then(|data| data.get("title"))
+                    == Some(&json!("First"))
+        }));
+        assert!(history.iter().any(|entry| {
+            entry.id == update_audit_id
+                && entry.mutation == MutationType::EntityUpdate
+                && entry.actor == "alice"
+                && entry
+                    .data_before
+                    .as_ref()
+                    .and_then(|data| data.get("title"))
+                    == Some(&json!("First"))
+                && entry.data_after.as_ref().and_then(|data| data.get("title"))
+                    == Some(&json!("Second"))
+        }));
+
+        let link_audit = h
+            .audit_log()
+            .query_by_operation(&MutationType::LinkCreate)
+            .expect("link audit query");
+        assert_eq!(link_audit.len(), 1);
+        assert_eq!(link_audit[0].collection, Link::links_collection());
+        assert_eq!(
+            link_audit[0]
+                .data_after
+                .as_ref()
+                .and_then(|data| data.get("source_collection")),
+            Some(&json!(collection.as_str()))
+        );
+    }
+
+    #[test]
+    fn governed_system_audit_failure_rolls_back() {
+        let collection = governed_system_collection_id();
+
+        let mut failed_bootstrap = AxonHandler::new(FailingAuditMemoryAdapter::default());
+        failed_bootstrap.storage_mut().fail_audit_appends();
+        failed_bootstrap
+            .ensure_governed_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                EnsureGovernedSystemCollectionRequest {
+                    schema: governed_system_schema(1, false),
+                    actor: Some("system-test".into()),
+                },
+            )
+            .expect_err("collection bootstrap must fail when audit append fails");
+        assert!(!failed_bootstrap
+            .storage_ref()
+            .collection_registered_in_namespace(&collection, &Namespace::default_ns())
+            .expect("registration lookup"));
+        assert!(failed_bootstrap
+            .storage_ref()
+            .get_schema(&collection)
+            .expect("schema lookup")
+            .is_none());
+        assert_eq!(failed_bootstrap.audit_log().len(), 0);
+
+        let mut h = AxonHandler::new(FailingAuditMemoryAdapter::default());
+        h.storage_mut().allow_audit_appends();
+        ensure_governed_system_for_test(&mut h);
+        for id in ["a", "b"] {
+            h.create_entity_in_system_collection(
+                BEAD_SYSTEM_CAPABILITY,
+                CreateGovernedSystemEntityRequest {
+                    id: EntityId::new(id),
+                    data: json!({"owner_id": "alice", "title": id}),
+                    actor: Some("alice".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+            )
+            .expect("fixture entity should create");
+        }
+        h.create_link_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemLinkRequest {
+                source_id: EntityId::new("a"),
+                target_id: EntityId::new("b"),
+                link_type: "related".into(),
+                metadata: json!({"kind": "before"}),
+                actor: Some("alice".into()),
+                attribution: None,
+            },
+        )
+        .expect("fixture link should create");
+
+        let before_schema = h
+            .storage_ref()
+            .get_schema(&collection)
+            .expect("schema lookup")
+            .expect("schema should exist");
+        let before_entities = h
+            .storage_ref()
+            .range_scan(&collection, None, None, None)
+            .expect("entity snapshot");
+        let before_links = h
+            .storage_ref()
+            .range_scan(&Link::links_collection(), None, None, None)
+            .expect("link snapshot");
+        let before_audit_len = h.audit_log().len();
+
+        h.storage_mut().fail_audit_appends();
+
+        h.handle_put_schema_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            PutGovernedSystemSchemaRequest {
+                schema: governed_system_schema(2, true),
+                actor: Some("system-test".into()),
+                force: false,
+                dry_run: false,
+                explain_inputs: Vec::new(),
+            },
+        )
+        .expect_err("schema update must fail when audit append fails");
+        assert_eq!(
+            h.storage_ref()
+                .get_schema(&collection)
+                .expect("schema lookup")
+                .expect("schema should exist"),
+            before_schema
+        );
+
+        h.create_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemEntityRequest {
+                id: EntityId::new("c"),
+                data: json!({"owner_id": "alice", "title": "c"}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect_err("entity create must fail when audit append fails");
+        h.update_entity_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            UpdateGovernedSystemEntityRequest {
+                id: EntityId::new("a"),
+                data: json!({"owner_id": "alice", "title": "changed"}),
+                expected_version: 1,
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            },
+        )
+        .expect_err("entity update must fail when audit append fails");
+        assert_eq!(
+            h.storage_ref()
+                .range_scan(&collection, None, None, None)
+                .expect("entity snapshot"),
+            before_entities
+        );
+
+        h.create_link_in_system_collection(
+            BEAD_SYSTEM_CAPABILITY,
+            CreateGovernedSystemLinkRequest {
+                source_id: EntityId::new("b"),
+                target_id: EntityId::new("a"),
+                link_type: "related".into(),
+                metadata: json!({"kind": "after"}),
+                actor: Some("alice".into()),
+                attribution: None,
+            },
+        )
+        .expect_err("link create must fail when audit append fails");
+        assert_eq!(
+            h.storage_ref()
+                .range_scan(&Link::links_collection(), None, None, None)
+                .expect("link snapshot"),
+            before_links
+        );
+        assert_eq!(h.audit_log().len(), before_audit_len);
+    }
+
+    fn audit_grants(database: &str, ops: Vec<Op>) -> Grants {
+        Grants {
+            databases: vec![GrantedDatabase {
+                name: database.into(),
+                ops,
+            }],
+        }
+    }
+
+    fn administrative_audit_caller(
+        tenant_id: &str,
+        tenant_role: Option<TenantRole>,
+        grants: Grants,
+        deployment_admin: bool,
+    ) -> AdministrativeAuditCaller {
+        AdministrativeAuditCaller {
+            user_id: "user-admin".into(),
+            tenant_id: tenant_id.into(),
+            tenant_role,
+            grants,
+            deployment_admin,
+        }
+    }
+
+    fn assert_system_audit_auth_error(
+        result: Result<QueryAuditResponse, SystemAuditQueryError>,
+        expected: AuthError,
+    ) {
+        match result {
+            Err(SystemAuditQueryError::Auth(actual)) => assert_eq!(actual, expected),
+            other => panic!("expected system audit auth error {expected:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn query_system_audit_authorization() {
+        let mut h = handler();
+        let reserved = CollectionId::new(SystemCollection::cdc_cursors().name());
+        let reserved_id = EntityId::new("cursor-tenant-a");
+        let audit_id =
+            append_reserved_audit_entry(&mut h, &reserved, &reserved_id, "system-daemon", None);
+        let req = QuerySystemAuditRequest {
+            tenant_id: "tenant-a".into(),
+            database: DEFAULT_DATABASE.into(),
+            query: QueryAuditRequest {
+                collection: Some(reserved.clone()),
+                limit: Some(10),
+                ..QueryAuditRequest::default()
+            },
+        };
+
+        assert_eq!(
+            authorize_system_audit_query(None, "tenant-a", DEFAULT_DATABASE),
+            Err(AuthError::Unauthenticated)
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), None),
+            AuthError::Unauthenticated,
+        );
+
+        let wrong_tenant = administrative_audit_caller(
+            "tenant-b",
+            Some(TenantRole::Admin),
+            audit_grants(DEFAULT_DATABASE, vec![Op::Admin]),
+            false,
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), Some(&wrong_tenant)),
+            AuthError::CredentialWrongTenant,
+        );
+
+        let tenant_reader = administrative_audit_caller(
+            "tenant-a",
+            Some(TenantRole::Read),
+            audit_grants(DEFAULT_DATABASE, vec![Op::Admin]),
+            false,
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), Some(&tenant_reader)),
+            AuthError::OpNotGranted,
+        );
+
+        let under_scoped_admin = administrative_audit_caller(
+            "tenant-a",
+            Some(TenantRole::Admin),
+            audit_grants(DEFAULT_DATABASE, vec![Op::Read]),
+            false,
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), Some(&under_scoped_admin)),
+            AuthError::OpNotGranted,
+        );
+
+        let ungranted_database = administrative_audit_caller(
+            "tenant-a",
+            Some(TenantRole::Admin),
+            audit_grants("analytics", vec![Op::Admin]),
+            false,
+        );
+        assert_system_audit_auth_error(
+            h.query_system_audit(req.clone(), Some(&ungranted_database)),
+            AuthError::DatabaseNotGranted,
+        );
+
+        let tenant_admin = administrative_audit_caller(
+            "tenant-a",
+            Some(TenantRole::Admin),
+            audit_grants(DEFAULT_DATABASE, vec![Op::Admin]),
+            false,
+        );
+        let typed = h
+            .query_system_audit(req.clone(), Some(&tenant_admin))
+            .expect("tenant admin should query typed system audit");
+        assert_eq!(typed.entries.len(), 1);
+        assert_eq!(typed.entries[0].id, audit_id);
+        assert_eq!(typed.entries[0].collection, reserved);
+
+        let generic = h
+            .query_audit(QueryAuditRequest {
+                collection: Some(reserved.clone()),
+                limit: Some(10),
+                ..QueryAuditRequest::default()
+            })
+            .expect_err("generic audit path must still reject reserved collection access");
+        assert_reserved_namespace_guard_error(generic, reserved.as_str(), OP_AUDIT);
+
+        let deployment_admin =
+            administrative_audit_caller("tenant-b", None, Grants { databases: vec![] }, true);
+        let deployment = h
+            .query_system_audit(req, Some(&deployment_admin))
+            .expect("deployment admin should query typed system audit across tenants");
+        assert_eq!(deployment.entries.len(), 1);
+        assert_eq!(deployment.entries[0].id, audit_id);
+    }
+
+    #[test]
+    fn query_auth_audit_redaction() {
+        let tenant_id = TenantId::new("tenant-redaction");
+        let user_id = UserId::new("user-redaction");
+        let jti = "credential-redacted-001";
+        let grants_json_with_secret_shaped_noise = json!({
+            "databases": [{
+                "name": DEFAULT_DATABASE,
+                "ops": ["read", "admin"],
+                "credential_secret": "credential-secret-value",
+                "token": "jwt-token-value",
+                "provider_secret": "provider-secret-value"
+            }],
+            "hash": "hash-value",
+            "salt": "salt-value",
+            "pepper": "pepper-value",
+            "kdf": "argon2id",
+            "key": "signing-key-value",
+            "session": "session-value",
+            "internal_storage_bytes": "deadbeef"
+        })
+        .to_string();
+        let h = AxonHandler::new(AuthAuditStorageAdapter {
+            inner: MemoryStorageAdapter::default(),
+            credentials: vec![CredentialMetadata {
+                jti: jti.into(),
+                user_id: user_id.clone(),
+                tenant_id: tenant_id.clone(),
+                issued_at_ms: 10,
+                expires_at_ms: 20,
+                revoked: false,
+                grants_json: grants_json_with_secret_shaped_noise,
+            }],
+        });
+
+        let response = h
+            .query_auth_audit(QueryAuthAuditRequest {
+                tenant_id: tenant_id.to_string(),
+                user_id: Some(user_id.to_string()),
+            })
+            .expect("auth audit query should succeed");
+
+        assert_eq!(response.entries.len(), 1);
+        let entry = &response.entries[0];
+        assert_eq!(entry.jti, jti);
+        assert_eq!(entry.user_id, user_id.to_string());
+        assert_eq!(entry.tenant_id, tenant_id.to_string());
+        assert_eq!(entry.issued_at_ms, 10);
+        assert_eq!(entry.expires_at_ms, 20);
+        assert_eq!(entry.grants.len(), 1);
+        assert_eq!(entry.grants[0].database, DEFAULT_DATABASE);
+        assert_eq!(entry.grants[0].ops, vec!["read", "admin"]);
+
+        let value = serde_json::to_value(&response).expect("response should serialize");
+        let entry_keys: BTreeSet<_> = value["entries"][0]
+            .as_object()
+            .expect("redacted entry should be an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            entry_keys,
+            BTreeSet::from([
+                "expires_at_ms",
+                "grants",
+                "issued_at_ms",
+                "jti",
+                "revoked",
+                "tenant_id",
+                "user_id",
+            ])
+        );
+
+        let serialized = value.to_string();
+        for forbidden in [
+            "credential_secret",
+            "credential-secret-value",
+            "hash",
+            "hash-value",
+            "salt",
+            "salt-value",
+            "pepper",
+            "pepper-value",
+            "kdf",
+            "argon2id",
+            "key",
+            "signing-key-value",
+            "token",
+            "jwt-token-value",
+            "session",
+            "session-value",
+            "provider_secret",
+            "provider-secret-value",
+            "internal_storage_bytes",
+            "deadbeef",
+            "grants_json",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "AuthAuditRedactionV1 leaked forbidden auth audit material: {forbidden}"
+            );
+        }
+    }
+
+    fn seed_reserved_physical_collection(
+        h: &mut AxonHandler<MemoryStorageAdapter>,
+    ) -> (CollectionId, EntityId) {
+        let collection = CollectionId::new(SystemCollection::cdc_cursors().name());
+        let id = EntityId::new("reserved-cursor-001");
+        h.storage_mut()
+            .register_collection_in_namespace(&collection, &Namespace::default_ns())
+            .expect("fixture should register reserved collection directly");
+        h.storage_mut()
+            .put(Entity::new(
+                collection.clone(),
+                id.clone(),
+                json!({"secret": true, "kind": "cursor"}),
+            ))
+            .expect("fixture should seed reserved row directly");
+        (collection, id)
+    }
+
+    fn append_reserved_audit_entry(
+        h: &mut AxonHandler<MemoryStorageAdapter>,
+        collection: &CollectionId,
+        id: &EntityId,
+        actor: &str,
+        transaction_id: Option<&str>,
+    ) -> u64 {
+        let mut entry = AuditEntry::new(
+            collection.clone(),
+            id.clone(),
+            1,
+            MutationType::EntityCreate,
+            None,
+            Some(json!({"secret": true, "kind": "cursor"})),
+            Some(actor.into()),
+        );
+        entry.transaction_id = transaction_id.map(String::from);
+        h.storage_mut()
+            .append_audit_entry(entry)
+            .expect("fixture should append reserved audit directly")
+            .id
+    }
+
+    #[test]
+    fn reserved_namespace_no_leak_rejects_key_filter_count_and_rollback_paths() {
+        let mut h = handler();
+        let (reserved, id) = seed_reserved_physical_collection(&mut h);
+        let hidden_audit_id =
+            append_reserved_audit_entry(&mut h, &reserved, &id, "hidden-system", Some("tx-hidden"));
+
+        let key_err = h
+            .get_entity(GetEntityRequest {
+                collection: reserved.clone(),
+                id: id.clone(),
+            })
+            .expect_err("reserved key lookup must be rejected before lookup");
+        assert_reserved_namespace_guard_error(key_err, reserved.as_str(), OP_ENTITY);
+
+        let filter_err = h
+            .query_entities(QueryEntitiesRequest {
+                collection: reserved.clone(),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "secret".into(),
+                    op: FilterOp::Eq,
+                    value: json!(true),
+                })),
+                ..QueryEntitiesRequest::default()
+            })
+            .expect_err("reserved filter query must be rejected before lookup");
+        assert_reserved_namespace_guard_error(filter_err, reserved.as_str(), OP_QUERY);
+
+        let count_err = h
+            .count_entities(CountEntitiesRequest {
+                collection: reserved.clone(),
+                filter: None,
+                group_by: None,
+            })
+            .expect_err("reserved count query must be rejected before lookup");
+        assert_reserved_namespace_guard_error(count_err, reserved.as_str(), OP_QUERY);
+
+        let rollback_preview_err = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: reserved.clone(),
+                id: id.clone(),
+                target: RollbackEntityTarget::Version(1),
+                expected_version: None,
+                actor: Some("operator".into()),
+                dry_run: true,
+            })
+            .expect_err("reserved rollback preview must be rejected before lookup");
+        assert_reserved_namespace_guard_error(rollback_preview_err, reserved.as_str(), OP_ROLLBACK);
+
+        let collection_rollback_err = h
+            .rollback_collection(RollbackCollectionRequest {
+                collection: reserved.clone(),
+                timestamp_ns: 0,
+                actor: Some("operator".into()),
+                dry_run: true,
+            })
+            .expect_err("reserved collection rollback preview must be rejected before lookup");
+        assert_reserved_namespace_guard_error(
+            collection_rollback_err,
+            reserved.as_str(),
+            OP_ROLLBACK,
+        );
+
+        let audit_id_rollback_err = h
+            .revert_entity_to_audit_entry(RevertEntityRequest {
+                audit_entry_id: hidden_audit_id,
+                actor: Some("operator".into()),
+                force: true,
+                attribution: None,
+            })
+            .expect_err("reserved audit-id rollback path must not reveal the collection");
+        assert!(
+            matches!(audit_id_rollback_err, AxonError::NotFound(_)),
+            "hidden audit-id rollback should look absent, got: {audit_id_rollback_err}"
+        );
+
+        let tx_rollback = h.rollback_transaction(RollbackTransactionRequest {
+            transaction_id: "tx-hidden".into(),
+            actor: Some("operator".into()),
+            dry_run: true,
+        });
+        assert!(
+            matches!(tx_rollback, Err(AxonError::NotFound(_))),
+            "reserved-only transaction rollback repair plan must not reveal hidden entries"
+        );
+    }
+
+    #[test]
+    fn reserved_namespace_no_leak_filters_audit_history_and_cursor_gap_metadata() {
+        let mut h = handler();
+        let public = CollectionId::new("public_audit_items");
+        let first_visible = h
+            .create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: EntityId::new("visible-001"),
+                data: json!({"name": "one"}),
+                actor: Some("visible-user".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("visible create should succeed")
+            .audit_id
+            .expect("visible create should return audit id");
+
+        let (reserved, reserved_id) = seed_reserved_physical_collection(&mut h);
+        let hidden_id =
+            append_reserved_audit_entry(&mut h, &reserved, &reserved_id, "hidden-system", None);
+
+        let second_visible = h
+            .create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: EntityId::new("visible-002"),
+                data: json!({"name": "two"}),
+                actor: Some("visible-user".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("second visible create should succeed")
+            .audit_id
+            .expect("second visible create should return audit id");
+
+        let all = h
+            .query_audit(QueryAuditRequest {
+                limit: Some(10),
+                ..QueryAuditRequest::default()
+            })
+            .expect("generic audit query should succeed");
+        assert_eq!(
+            all.entries.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            vec![first_visible, second_visible],
+            "generic audit/history rows must exclude reserved entries"
+        );
+        assert_eq!(all.next_cursor, None);
+
+        let hidden_actor = h
+            .query_audit(QueryAuditRequest {
+                actor: Some("hidden-system".into()),
+                limit: Some(1),
+                ..QueryAuditRequest::default()
+            })
+            .expect("hidden actor audit query should look empty");
+        assert!(hidden_actor.entries.is_empty());
+        assert_eq!(hidden_actor.next_cursor, None);
+
+        let hidden_history = h
+            .query_audit(QueryAuditRequest {
+                entity_id: Some(reserved_id.clone()),
+                limit: Some(10),
+                ..QueryAuditRequest::default()
+            })
+            .expect("generic history query should succeed");
+        assert!(
+            hidden_history.entries.is_empty(),
+            "history query without a reserved collection filter must not reveal reserved rows"
+        );
+
+        let explicit_reserved = h
+            .query_audit(QueryAuditRequest {
+                collection: Some(reserved.clone()),
+                limit: Some(1),
+                ..QueryAuditRequest::default()
+            })
+            .expect_err("explicit reserved audit query must be rejected before lookup");
+        assert_reserved_namespace_guard_error(explicit_reserved, reserved.as_str(), OP_AUDIT);
+
+        // cursor-gap: the next cursor is the last visible audit id, never the hidden id.
+        let page1 = h
+            .query_audit(QueryAuditRequest {
+                limit: Some(1),
+                ..QueryAuditRequest::default()
+            })
+            .expect("first audit page should succeed");
+        assert_eq!(page1.entries.len(), 1);
+        assert_eq!(page1.entries[0].id, first_visible);
+        assert_eq!(page1.next_cursor, Some(first_visible));
+        assert_ne!(page1.next_cursor, Some(hidden_id));
+
+        let page2 = h
+            .query_audit(QueryAuditRequest {
+                after_id: page1.next_cursor,
+                limit: Some(1),
+                ..QueryAuditRequest::default()
+            })
+            .expect("second audit page should skip hidden entries");
+        assert_eq!(page2.entries.len(), 1);
+        assert_eq!(page2.entries[0].id, second_visible);
+        assert_eq!(page2.next_cursor, None);
+    }
+
+    #[test]
+    fn reserved_namespace_no_leak_filters_snapshot_lists_and_total_secrecy() {
+        let mut h = handler();
+        let public = CollectionId::new("public_snapshot_items");
+        h.create_collection(CreateCollectionRequest {
+            name: public.clone(),
+            schema: CollectionSchema::new(public.clone()),
+            actor: Some("visible-user".into()),
+        })
+        .expect("public collection should be registered");
+        let visible_audit_id = h
+            .create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: EntityId::new("visible-001"),
+                data: json!({"name": "one"}),
+                actor: Some("visible-user".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("visible create should succeed")
+            .audit_id
+            .expect("visible create should return audit id");
+
+        let (reserved, reserved_id) = seed_reserved_physical_collection(&mut h);
+        let hidden_audit_id =
+            append_reserved_audit_entry(&mut h, &reserved, &reserved_id, "hidden-system", None);
+
+        let collections = h
+            .list_collections(ListCollectionsRequest {})
+            .expect("list collections should succeed");
+        assert_eq!(collections.collections.len(), 1);
+        assert_eq!(collections.collections[0].name, public.as_str());
+        assert_eq!(collections.collections[0].entity_count, 1);
+
+        let namespace_collections = h
+            .list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: DEFAULT_DATABASE.into(),
+                schema: axon_core::id::DEFAULT_SCHEMA.into(),
+            })
+            .expect("list namespace collections should succeed");
+        assert_eq!(namespace_collections.collections, vec![public.to_string()]);
+
+        // total secrecy: hidden physical collections do not affect totals or cursor metadata.
+        let snapshot = h
+            .snapshot_entities(SnapshotRequest {
+                collections: None,
+                limit: Some(10),
+                after_page_token: None,
+            })
+            .expect("snapshot should succeed");
+        assert_eq!(snapshot.entities.len(), 1);
+        assert_eq!(snapshot.entities[0].collection, public);
+        assert_eq!(snapshot.next_page_token, None);
+        assert_eq!(snapshot.audit_cursor, visible_audit_id);
+        assert_ne!(snapshot.audit_cursor, hidden_audit_id);
+
+        let described = h
+            .describe_collection(DescribeCollectionRequest {
+                name: reserved.clone(),
+            })
+            .expect_err("describe must not expose reserved physical collections");
+        assert_reserved_namespace_guard_error(described, reserved.as_str(), OP_QUERY);
     }
 
     fn policy_snapshot_schema(collection: &str) -> CollectionSchema {
@@ -10812,6 +13773,459 @@ mod tests {
                 }],
             }),
             write: None,
+        }
+    }
+
+    mod governed_handler_api {
+        use super::*;
+
+        fn service() -> crate::MutationIntentLifecycleService {
+            crate::MutationIntentLifecycleService::new(crate::MutationIntentTokenSigner::new(
+                b"governed-handler-api-test-secret".as_slice(),
+            ))
+        }
+
+        fn scope() -> crate::MutationIntentScopeBinding {
+            crate::MutationIntentScopeBinding {
+                tenant_id: DEFAULT_DATABASE.into(),
+                database_id: DEFAULT_DATABASE.into(),
+            }
+        }
+
+        fn subject(actor: &str) -> crate::MutationIntentSubjectBinding {
+            crate::MutationIntentSubjectBinding {
+                user_id: Some(actor.into()),
+                tenant_role: Some("write".into()),
+                credential_id: Some(format!("cred-{actor}")),
+                grant_version: Some(1),
+                ..Default::default()
+            }
+        }
+
+        fn intent_with_operation(
+            intent_id: &str,
+            operation: crate::CanonicalOperationMetadata,
+            subject: crate::MutationIntentSubjectBinding,
+        ) -> crate::MutationIntent {
+            crate::MutationIntent {
+                intent_id: intent_id.into(),
+                scope: scope(),
+                subject,
+                schema_version: 1,
+                policy_version: 1,
+                operation,
+                pre_images: Vec::new(),
+                decision: crate::MutationIntentDecision::Allow,
+                approval_state: crate::ApprovalState::None,
+                approval_route: None,
+                expires_at: 9_000_000_000_000_000_000,
+                review_summary: crate::MutationReviewSummary::default(),
+            }
+        }
+
+        fn create_intent(
+            intent_id: &str,
+            collection: CollectionId,
+            id: EntityId,
+            actor: &str,
+        ) -> crate::MutationIntent {
+            let request = CreateEntityRequest {
+                collection,
+                id,
+                data: json!({"owner_id": actor, "title": "previewed"}),
+                actor: Some(actor.into()),
+                audit_metadata: None,
+                attribution: None,
+            };
+            intent_with_operation(
+                intent_id,
+                crate::canonical_create_entity_operation(&request),
+                subject(actor),
+            )
+        }
+
+        fn commit_context(
+            intent: &crate::MutationIntent,
+        ) -> crate::MutationIntentCommitValidationContext {
+            crate::MutationIntentCommitValidationContext {
+                subject: intent.subject.clone(),
+                schema_version: intent.schema_version,
+                policy_version: intent.policy_version,
+                operation_hash: intent.operation.operation_hash.clone(),
+                caller_authorized: true,
+            }
+        }
+
+        #[test]
+        fn governed_handler_api_intent_preview_persists_audit_without_raw_storage() {
+            let mut h = handler();
+            let service = service();
+            let intent = create_intent(
+                "mint_governed_preview",
+                CollectionId::new("governed_preview_docs"),
+                EntityId::new("doc-1"),
+                "alice",
+            );
+
+            let response = h
+                .preview_mutation_intent(
+                    &service,
+                    PreviewMutationIntentRequest {
+                        intent: intent.clone(),
+                        origin: None,
+                    },
+                )
+                .expect("governed preview should persist");
+
+            assert_eq!(response.intent.intent_id, intent.intent_id);
+            assert!(response.intent_token.is_some());
+
+            let audit = h
+                .query_application_audit(QueryAuditRequest {
+                    operation: Some("intent.preview".into()),
+                    intent_id: Some(intent.intent_id.clone()),
+                    ..QueryAuditRequest::default()
+                })
+                .expect("application audit query should see intent preview lineage");
+            assert_eq!(audit.entries.len(), 1);
+            let entry = &audit.entries[0];
+            assert_eq!(entry.mutation, MutationType::IntentPreview);
+            assert_eq!(
+                entry
+                    .intent_lineage
+                    .as_ref()
+                    .expect("preview audit has lineage")
+                    .intent_id,
+                intent.intent_id
+            );
+        }
+
+        #[test]
+        fn governed_handler_api_intent_preview_rejects_reserved_namespace_before_storage() {
+            let mut h = AxonHandler::new(LookupCountingStorageAdapter::default());
+            let service = service();
+            let reserved = CollectionId::new(SystemCollection::beads().name());
+            let intent = create_intent(
+                "mint_governed_reserved_preview",
+                reserved.clone(),
+                EntityId::new("sys-1"),
+                "alice",
+            );
+
+            let err = h
+                .preview_mutation_intent(
+                    &service,
+                    PreviewMutationIntentRequest {
+                        intent,
+                        origin: None,
+                    },
+                )
+                .expect_err("reserved namespace preview must be rejected");
+
+            assert!(
+                err.to_string()
+                    .contains(crate::response::RESERVED_NAMESPACE_CODE),
+                "unexpected error: {err}"
+            );
+            assert_eq!(
+                h.storage_ref().storage_calls(),
+                0,
+                "namespace guard must run before intent preview touches storage"
+            );
+        }
+
+        #[test]
+        fn governed_handler_api_transaction_execution_enforces_policy_and_audit() {
+            let mut h = handler();
+            let collection = CollectionId::new("governed_tx_docs");
+            h.put_schema(policy_test_schema(
+                collection.as_str(),
+                AccessControlPolicy {
+                    create: Some(allow_all_policy()),
+                    fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+                    ..Default::default()
+                },
+            ))
+            .expect("policy schema");
+
+            let mut denied = crate::Transaction::new();
+            denied
+                .create(Entity::new(
+                    collection.clone(),
+                    EntityId::new("blocked"),
+                    json!({"owner_id": "blocked", "title": "blocked", "secret": "classified"}),
+                ))
+                .expect("stage denied create");
+            let audit_before = h.audit_log().len();
+
+            let denial = expect_policy_denial(
+                h.execute_transaction(ExecuteTransactionRequest {
+                    transaction: denied,
+                    actor: Some("blocked".into()),
+                    attribution: None,
+                })
+                .expect_err("governed transaction should enforce policy"),
+            );
+            assert_eq!(denial.reason, "field_write_denied");
+            assert_eq!(denial.operation_index, Some(0));
+            assert_eq!(h.audit_log().len(), audit_before);
+
+            let mut allowed = crate::Transaction::new();
+            allowed
+                .create(Entity::new(
+                    collection.clone(),
+                    EntityId::new("allowed"),
+                    json!({"owner_id": "alice", "title": "allowed"}),
+                ))
+                .expect("stage allowed create");
+            let response = h
+                .execute_transaction(ExecuteTransactionRequest {
+                    transaction: allowed,
+                    actor: Some("alice".into()),
+                    attribution: None,
+                })
+                .expect("allowed governed transaction should commit");
+
+            assert_eq!(response.written.len(), 1);
+            let audit = h
+                .query_application_audit(QueryAuditRequest {
+                    operation: Some("entity.create".into()),
+                    collection: Some(collection),
+                    ..QueryAuditRequest::default()
+                })
+                .expect("application audit should expose committed transaction");
+            assert_eq!(audit.entries.len(), 1);
+            assert_eq!(
+                audit.entries[0].transaction_id.as_deref(),
+                Some(response.transaction_id.as_str())
+            );
+        }
+
+        #[test]
+        fn governed_handler_api_intent_commit_revalidates_policy_and_audits_success() {
+            let mut h = handler();
+            let service = service();
+            let collection = CollectionId::new("governed_intent_commit_docs");
+            h.put_schema(policy_test_schema(
+                collection.as_str(),
+                AccessControlPolicy {
+                    create: Some(allow_all_policy()),
+                    fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+                    ..Default::default()
+                },
+            ))
+            .expect("policy schema");
+
+            let mut denied_tx = crate::Transaction::new();
+            denied_tx
+                .create(Entity::new(
+                    collection.clone(),
+                    EntityId::new("denied"),
+                    json!({"owner_id": "blocked", "title": "denied", "secret": "classified"}),
+                ))
+                .expect("stage denied intent transaction");
+            let denied_operation = crate::canonical_staged_transaction_operation(&denied_tx);
+            let denied_intent = intent_with_operation(
+                "mint_governed_commit_denied",
+                denied_operation.clone(),
+                subject("blocked"),
+            );
+            let denied_token = h
+                .preview_mutation_intent(
+                    &service,
+                    PreviewMutationIntentRequest {
+                        intent: denied_intent.clone(),
+                        origin: None,
+                    },
+                )
+                .expect("denied fixture preview should persist")
+                .intent_token
+                .expect("allow intent gets token");
+            let err = h
+                .commit_mutation_intent_transaction(
+                    &service,
+                    crate::MutationIntentTransactionCommitRequest {
+                        scope: scope(),
+                        token: denied_token,
+                        transaction: denied_tx,
+                        canonical_operation: Some(denied_operation),
+                        current: commit_context(&denied_intent),
+                        now_ns: 1,
+                        actor: Some("blocked".into()),
+                        attribution: None,
+                    },
+                )
+                .expect_err("governed intent commit should revalidate transaction policy");
+            assert_eq!(err.error_code(), "intent_commit_failed");
+            assert!(
+                err.to_string().contains("field_write_denied"),
+                "unexpected error: {err}"
+            );
+            assert!(
+                h.get_entity(GetEntityRequest {
+                    collection: collection.clone(),
+                    id: EntityId::new("denied"),
+                })
+                .is_err(),
+                "policy-denied intent commit must not write the entity"
+            );
+
+            let mut allowed_tx = crate::Transaction::new();
+            allowed_tx
+                .create(Entity::new(
+                    collection.clone(),
+                    EntityId::new("allowed"),
+                    json!({"owner_id": "alice", "title": "allowed"}),
+                ))
+                .expect("stage allowed intent transaction");
+            let allowed_operation = crate::canonical_staged_transaction_operation(&allowed_tx);
+            let allowed_intent = intent_with_operation(
+                "mint_governed_commit_allowed",
+                allowed_operation.clone(),
+                subject("alice"),
+            );
+            let allowed_token = h
+                .preview_mutation_intent(
+                    &service,
+                    PreviewMutationIntentRequest {
+                        intent: allowed_intent.clone(),
+                        origin: None,
+                    },
+                )
+                .expect("allowed preview should persist")
+                .intent_token
+                .expect("allow intent gets token");
+            let committed = h
+                .commit_mutation_intent_transaction(
+                    &service,
+                    crate::MutationIntentTransactionCommitRequest {
+                        scope: scope(),
+                        token: allowed_token,
+                        transaction: allowed_tx,
+                        canonical_operation: Some(allowed_operation),
+                        current: commit_context(&allowed_intent),
+                        now_ns: 2,
+                        actor: Some("alice".into()),
+                        attribution: None,
+                    },
+                )
+                .expect("allowed governed intent commit should succeed");
+
+            assert_eq!(
+                committed.intent.approval_state,
+                crate::ApprovalState::Committed
+            );
+            assert_eq!(committed.written.len(), 1);
+            let audit = h
+                .query_application_audit(QueryAuditRequest {
+                    intent_id: Some(allowed_intent.intent_id.clone()),
+                    ..QueryAuditRequest::default()
+                })
+                .expect("application audit should query committed intent lineage");
+            assert!(audit
+                .entries
+                .iter()
+                .any(|entry| entry.mutation == MutationType::IntentPreview));
+            let entity_entry = audit
+                .entries
+                .iter()
+                .find(|entry| entry.mutation == MutationType::EntityCreate)
+                .expect("committed transaction entry has intent lineage");
+            assert_eq!(
+                entity_entry.transaction_id.as_deref(),
+                Some(committed.transaction_id.as_str())
+            );
+            assert_eq!(
+                entity_entry
+                    .intent_lineage
+                    .as_ref()
+                    .expect("entity audit has intent lineage")
+                    .intent_id,
+                allowed_intent.intent_id
+            );
+        }
+
+        #[test]
+        fn governed_handler_api_audit_queries_split_application_and_system_scope() {
+            let mut h = handler();
+            let service = service();
+            let public = CollectionId::new("governed_audit_docs");
+            h.create_collection(CreateCollectionRequest {
+                name: public.clone(),
+                schema: CollectionSchema::new(public.clone()),
+                actor: Some("admin".into()),
+            })
+            .expect("public collection should be registered");
+            h.create_entity(CreateEntityRequest {
+                collection: public.clone(),
+                id: EntityId::new("doc-1"),
+                data: json!({"title": "application"}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("public entity should create application audit");
+
+            let intent = create_intent(
+                "mint_governed_system_audit",
+                CollectionId::new("governed_audit_intent_docs"),
+                EntityId::new("doc-2"),
+                "alice",
+            );
+            h.preview_mutation_intent(
+                &service,
+                PreviewMutationIntentRequest {
+                    intent,
+                    origin: None,
+                },
+            )
+            .expect("system intent preview should persist");
+
+            let app_audit = h
+                .query_application_audit(QueryAuditRequest {
+                    collection: Some(public),
+                    ..QueryAuditRequest::default()
+                })
+                .expect("application audit query should succeed for public collection");
+            assert!(app_audit
+                .entries
+                .iter()
+                .any(|entry| entry.mutation == MutationType::EntityCreate));
+
+            let system_collection = CollectionId::new(SystemCollection::mutation_intents().name());
+            let app_err = h
+                .query_application_audit(QueryAuditRequest {
+                    collection: Some(system_collection.clone()),
+                    ..QueryAuditRequest::default()
+                })
+                .expect_err("application audit must reject direct system collection filters");
+            assert_reserved_namespace_guard_error(app_err, system_collection.as_str(), OP_AUDIT);
+
+            let admin = administrative_audit_caller(
+                DEFAULT_DATABASE,
+                Some(TenantRole::Admin),
+                audit_grants(DEFAULT_DATABASE, vec![Op::Read, Op::Admin]),
+                false,
+            );
+            let system_audit = h
+                .query_governed_system_audit(
+                    QuerySystemAuditRequest {
+                        tenant_id: DEFAULT_DATABASE.into(),
+                        database: DEFAULT_DATABASE.into(),
+                        query: QueryAuditRequest {
+                            collection: Some(system_collection),
+                            operation: Some("intent.preview".into()),
+                            ..QueryAuditRequest::default()
+                        },
+                    },
+                    Some(&admin),
+                )
+                .expect("governed system audit should expose authorized system rows");
+            assert_eq!(system_audit.entries.len(), 1);
+            assert_eq!(
+                system_audit.entries[0].mutation,
+                MutationType::IntentPreview
+            );
         }
     }
 
@@ -12194,6 +15608,72 @@ mod tests {
             .expect("storage read")
             .expect("row should remain");
         assert_eq!(stored.data["secret"], "classified");
+        assert_eq!(stored.version, 1);
+    }
+
+    #[test]
+    fn transaction_patch_scope_must_match_staged_entity_data() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_patch_scope");
+        h.put_schema(policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                create: Some(allow_all_policy()),
+                read: Some(allow_all_policy()),
+                update: Some(allow_all_policy()),
+                ..Default::default()
+            },
+        ))
+        .expect("policy schema");
+        h.create_entity(CreateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new("doc-1"),
+            data: json!({"title": "seed", "secret": "classified"}),
+            actor: Some("admin".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed row");
+        let audit_before = h.audit_log().entries().len();
+
+        let mut tx = crate::Transaction::new();
+        tx.patch_update(
+            Entity::new(
+                collection.clone(),
+                EntityId::new("doc-1"),
+                json!({"title": "changed", "secret": "redacted"}),
+            ),
+            1,
+            Some(json!({"title": "seed", "secret": "classified"})),
+            json!({"title": "changed"}),
+        )
+        .expect("stage mismatched patch update");
+
+        let err = h
+            .execute_transaction(ExecuteTransactionRequest {
+                transaction: tx,
+                actor: Some("admin".into()),
+                attribution: None,
+            })
+            .expect_err("mismatched patch scope should fail before commit");
+
+        assert!(
+            err.to_string()
+                .contains("patch transaction write scope does not match staged entity data"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(h.audit_log().entries().len(), audit_before);
+        let stored = h
+            .get_entity(GetEntityRequest {
+                collection,
+                id: EntityId::new("doc-1"),
+            })
+            .expect("stored row")
+            .entity;
+        assert_eq!(
+            stored.data,
+            json!({"title": "seed", "secret": "classified"})
+        );
         assert_eq!(stored.version, 1);
     }
 

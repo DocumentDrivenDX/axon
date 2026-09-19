@@ -371,22 +371,17 @@ async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
         ),
     )
     .await;
-    assert_no_graphql_errors(&graphql_preview_audit, "GraphQL auditLog after MCP preview");
-    let graphql_preview_entry = &graphql_preview_audit["data"]["auditLog"]["edges"][0]["node"];
-    assert_eq!(graphql_preview_audit["data"]["auditLog"]["totalCount"], 1);
     assert_eq!(
-        graphql_preview_entry["operation"],
-        "mutation_intent.preview"
+        graphql_preview_audit["errors"][0]["extensions"]["code"],
+        "INVALID_ARGUMENT"
     );
-    assert_eq!(graphql_preview_entry["actor"], "finance-agent");
-    assert_eq!(graphql_preview_entry["collection"], "__mutation_intents");
-    assert_eq!(graphql_preview_entry["entityId"], allowed_intent_id);
-    assert!(graphql_preview_entry["dataBefore"].is_null());
-    assert_eq!(graphql_preview_entry["metadata"]["decision"], "allow");
-    assert_eq!(
-        graphql_preview_entry["dataAfter"]["diff"]["amount_cents"]["after"],
-        6000
-    );
+    let message = graphql_preview_audit["errors"][0]["message"]
+        .as_str()
+        .unwrap();
+    assert!(message.contains("\"code\":\"reserved_namespace\""));
+    assert!(message.contains("\"reason\":\"generic_access_forbidden\""));
+    assert!(message.contains("\"name\":\"__mutation_intents\""));
+    assert!(message.contains("\"operation\":\"audit\""));
     let before_commit = get_task(&server).await;
     assert_eq!(before_commit["data"]["amount_cents"], 5000);
     assert_eq!(before_commit["version"], 1);

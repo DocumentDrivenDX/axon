@@ -7,13 +7,13 @@ ddx:
     - helix.architecture
     - helix.concerns
   review:
-    self_hash: c4f8d7506a25f115dd0acf1e289fccc108ea3c8f33843e9abe08d062baeee15e
+    self_hash: 97c2ce5f7577ee459d798f049ec8b826cb50ad1dac9a765947bd485eb3b12ff7
     deps:
-      helix.architecture: 8a39d93af466d83f02851986a0a935ddb0b8b12d1552ee3bc7e7af3c91fb145a
+      helix.architecture: 2b8f67b0d5bde000a0bd4d9e59b40a5df06c5e685e5b3954bfcca9939bd1fc0d
       helix.concerns: d22f8007944e442262ef2de1021079482f0c6ded29af8fed6f460cb6540055f3
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-      helix.product-vision: 60bf8c5d6260533c125c3b69308b4dcac72d317437ba60d1b1c6e4ea34105298
-    reviewed_at: "2026-06-15T00:50:24Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+      helix.product-vision: 55456fd63c59b72cf433d259ce5d0015b3c6b8f1890e7e66ccc001b0b5187e53
+    reviewed_at: "2026-07-11T04:22:35Z"
 kind: design
 ---
 
@@ -21,7 +21,7 @@ kind: design
 
 **System**: Axon website, documentation, sample projects, demo reels, and
 future admin/operator surfaces
-**Status**: Accepted baseline for the 0.7.1 documentation and microsite pass
+**Status**: Accepted baseline aligned to the 0.4.x pilot documentation and microsite direction
 **Date**: 2026-06-15
 
 ## Purpose
@@ -195,7 +195,7 @@ seconds:
 1. Axon is governed state for agents that write business records.
 2. The product path is schema -> policy -> mutation intent -> approval or
    commit -> audit.
-3. The documentation has complete HELIX coverage with examples and demo reels.
+3. The documentation makes HELIX coverage, examples, and demo reels easy to find without implying coverage completeness unless generated counts prove it.
 
 The hero should use a product-like command/control surface rather than a
 generic illustration. The visual should show a request path, state checks, and
@@ -225,8 +225,8 @@ requirements. Each page should highlight:
 
 ## Design Tokens
 
-These tokens are implemented in `website/assets/css/custom.css` and should be
-mirrored by future app surfaces.
+These tokens are the source values for `website/assets/css/custom.css` and
+future app surfaces.
 
 ### Color
 

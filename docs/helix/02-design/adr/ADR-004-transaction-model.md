@@ -6,12 +6,12 @@ ddx:
     - ADR-003
     - FEAT-008
   review:
-    self_hash: 4c8ee66b80980bed2298d511d223f7faaace03864610faf8333af8659c4ce570
+    self_hash: a58eda0c55e1ac9c4e8cd6fc69d213455354b62286d62be2579de9add3ad01d2
     deps:
-      ADR-003: 10f82ff7aa93119d55bed2201b864cd3d78364691948228a7ae04c6a1b370885
-      FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      ADR-003: 056f2f887152bb12c36cfae79ee6ced4c33a6b6de4d73c2500cd087fd7fd1025
+      FEAT-008: 398492902a4c9d62e5fe6f2d8629ba67cb6175878128036f77f33e40e00d5f6a
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:33Z"
 ---
 # ADR-004: Transaction Model — Optimistic Concurrency Control
 
@@ -94,8 +94,8 @@ default:
 - Dirty reads and non-repeatable reads are prevented; phantom reads are
   prevented for entity lookups by version
 - The commit phase runs under a storage-level transaction (SQLite `BEGIN
-  IMMEDIATE`, PostgreSQL `SERIALIZABLE`), preventing concurrent commits from
-  racing at the storage layer
+  IMMEDIATE`, PostgreSQL `SERIALIZABLE`; `REPEATABLE READ` is not the contract),
+  preventing concurrent commits from racing at the storage layer
 
 **Opt-in Serializable for key-addressed read sets (B-104).** A transaction may
 be constructed at `IsolationLevel::Serializable`. Callers record the entity
@@ -150,10 +150,12 @@ approach is a deliberate trade-off:
 | Crash-safety window | If the process dies between `commit_tx()` and the last `audit.append()`, committed mutations have no audit trail until recovery |
 
 The crash-safety window is acceptable for V1 (in-memory) because both entity state
-and audit log are volatile; a crash loses both equally. For durable backends
-(SQLite, PostgreSQL), the audit log should be integrated into the same backing
-store transaction so that both entity and audit writes commit atomically. This
-is a P1 follow-on tracked by the durable storage adapter implementation tasks.
+and audit log are process-lifetime only; restart-durable claims do not apply to
+that backend. For durable backends (SQLite, PostgreSQL), audit writes are
+restart-durable because the entity and audit writes commit atomically in the
+same backing-store transaction for entity mutations. Remaining follow-up: the
+non-entity audit writes and in-memory query rehydration paths still need the
+same level of restart durability.
 
 **Recovery invariant**: Any implementation targeting durable storage must ensure
 INV-003 holds after restart — either by writing audit entries inside the same

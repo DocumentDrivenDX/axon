@@ -4,7 +4,10 @@ ddx:
   depends_on:
     - TP-001
   review:
-    reviewed_at: "2026-07-03T00:00:00Z"
+    reviewed_at: "2026-07-11T05:09:15Z"
+    self_hash: 3b1b4f86cb390e1d8a1ffa086346646423e534550de4498411fe1e7c59d3b5a9
+    deps:
+      TP-001: 058932393e672c4c5c89acf600d9d45b3f712fe114e7caa139f0e5ac11dc7967
 ---
 
 # Consumer Workload Gate

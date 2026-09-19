@@ -4,10 +4,10 @@ ddx:
   depends_on:
     - helix.prd
   review:
-    self_hash: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
+    self_hash: 84f680ec396f34b25b2a91172d8cab7a8e9204817430b9e3aa8f9ec1ee3afd03
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:03:36Z"
 ---
 # Feature Specification: FEAT-002 — Schema Engine
 
@@ -55,7 +55,7 @@ A developer defines a collection schema in minutes using a portable, familiar fo
 - **SCH-03**. Fields MUST be markable as required or optional, with declared defaults for optional fields.
 - **SCH-04**. Schemas MUST support nested object structures to arbitrary depth.
 - **SCH-05**. Schemas MUST support flexible zones: designated subtrees that accept undeclared properties while the top level remains typed, accommodating agent metadata without sacrificing structure. Declaration surface per CONTRACT-010.
-- **SCH-06**. A schema that fails to parse or contains internal contradictions MUST be rejected at submission time with specific errors.
+- **SCH-06**. A schema that fails to parse or contains internal contradictions MUST be rejected at submission time with specific typed errors. The internal contract is fail-closed for governed collections: `entity_schema` is required and there is no schemaless mode.
 
 #### Write Validation
 
@@ -68,6 +68,8 @@ A developer defines a collection schema in minutes using a portable, familiar fo
 
 - **SCH-11**. Schemas MUST be stored within Axon alongside collection metadata, and schema definitions MUST be versioned: each accepted schema change increments the version (ADR-007).
 - **SCH-12**. The schema for any collection MUST be retrievable via the API and CLI in its portable format, including field descriptions when provided — surface per CONTRACT-001/CONTRACT-008.
+- **SCH-13**. Axon MUST compute a whole-catalog structural hash for the active schema set. The hash is `AXON-SCHEMA-CATALOG-HASH-1`, a `sha256:` digest of the canonical `AXON-CJSON-1` bytes for `StructuralSchemaV1`. The preimage includes `format_version`, `tenant_id`, `database_id`, the active schema version, and the normalized `collections` array; policy blocks, history, descriptions, and timestamps are excluded.
+- **SCH-14**. Structural normalization MUST sort collections and link declarations by qualified name, and MUST materialize explicit defaults for omitted structural fields before hashing. Normalized link entries preserve `target_collection`, `cardinality`, `required`, and `metadata_schema` semantics while remaining byte-stable across equivalent source documents.
 
 ### Non-Functional Requirements
 
@@ -103,7 +105,7 @@ A developer defines a collection schema in minutes using a portable, familiar fo
 ### Constraints
 - JSON Schema draft 2020-12 is the base format — do not invent a new schema language.
 - No silent type coercion — strict typing.
-- A schema is required for every collection — no schemaless mode.
+- A schema is required for every collection — no schemaless mode; writes fail closed without `entity_schema`.
 
 ### Assumptions
 - Most collection schemas have 10-50 fields.

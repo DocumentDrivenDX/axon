@@ -14,6 +14,8 @@ export enum AxonErrorCode {
   AlreadyExists = "already_exists",
   /** Invalid argument or request format. */
   InvalidArgument = "invalid_argument",
+  /** Generic access to an Axon-owned namespace is forbidden. */
+  ReservedNamespace = "reserved_namespace",
   /** Internal server or storage error. */
   Internal = "internal",
   /** Unknown or unclassified error. */
@@ -22,14 +24,21 @@ export enum AxonErrorCode {
 
 /** Structured error from the Axon server. */
 export class AxonError extends Error {
-  public readonly code: AxonErrorCode;
+  public readonly code: AxonErrorCode | string;
   public readonly detail: Record<string, unknown>;
+  public readonly reason?: string;
 
-  constructor(code: AxonErrorCode, message: string, detail: Record<string, unknown> = {}) {
+  constructor(
+    code: AxonErrorCode | string,
+    message: string,
+    detail: Record<string, unknown> = {},
+    reason?: string,
+  ) {
     super(message);
     this.name = "AxonError";
     this.code = code;
     this.detail = detail;
+    this.reason = reason;
   }
 
   /** Parse a gRPC status message into a typed AxonError. */
@@ -41,34 +50,45 @@ export class AxonError extends Error {
 
     // Try to parse structured JSON from the message.
     let detail: Record<string, unknown> = {};
-    let code = AxonErrorCode.Unknown;
+    let code: AxonErrorCode | string = AxonErrorCode.Unknown;
+    let reason: string | undefined;
 
     try {
-      const parsed = JSON.parse(message);
-      if (typeof parsed === "object" && parsed !== null) {
-        detail = parsed;
+      const parsed = asRecord(JSON.parse(message));
+      if (parsed) {
         if (typeof parsed.code === "string") {
           code = mapErrorCode(parsed.code);
         }
+        if (typeof parsed.reason === "string") {
+          reason = parsed.reason;
+        }
+        detail = asRecord(parsed.detail) ?? parsed;
       }
     } catch {
       // Message is not JSON — classify by gRPC status code.
       code = mapGrpcCode(grpcErr.code);
     }
 
-    return new AxonError(code, message, detail);
+    return new AxonError(code, message, detail, reason);
   }
 }
 
-function mapErrorCode(code: string): AxonErrorCode {
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function mapErrorCode(code: string): AxonErrorCode | string {
   switch (code) {
     case "not_found": return AxonErrorCode.NotFound;
     case "version_conflict": return AxonErrorCode.VersionConflict;
     case "schema_validation": return AxonErrorCode.SchemaValidation;
     case "already_exists": return AxonErrorCode.AlreadyExists;
     case "invalid_argument": return AxonErrorCode.InvalidArgument;
+    case "reserved_namespace": return AxonErrorCode.ReservedNamespace;
     case "storage_error": return AxonErrorCode.Internal;
-    default: return AxonErrorCode.Unknown;
+    default: return code;
   }
 }
 

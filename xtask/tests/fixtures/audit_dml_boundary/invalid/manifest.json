@@ -1,0 +1,13 @@
+{
+  "rust_sources": ["src/dynamic.rs", "src/unparseable.rs"],
+  "sql_sources": [
+    {
+      "path": "data/seed.sql",
+      "enclosing_function": "<data-only>",
+      "kind": "data-only"
+    }
+  ],
+  "governed_tables": ["entities", "data_seed"],
+  "governed_routines": [],
+  "records": []
+}

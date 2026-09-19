@@ -8,14 +8,14 @@ ddx:
     - FEAT-008
     - FEAT-003
   review:
-    self_hash: 34d6ebc4525acb6bb446844abe815d33def8121d058a618c52ace6d3d8fcce01
+    self_hash: 09e9ac90a197227dcfa8153ec930b7f9f9f47216d3716f45899bb28973ac0ede
     deps:
       ADR-001: 926aafe1f5bdedd6dd2a49f3343bfaaae3c100fd01333a424c22401596b21041
       FEAT-003: 15881e4941cec74cf6e0be6d023da0a34cb4f1f4efb5efbb6a9b8246e037010f
       FEAT-007: 730a71d71ea4d398f55a2a62b9bf812fc10290809796f4fab4e8ba1b50d53849
-      FEAT-008: de4e47fda5c2045ef2c4765371cac1caf29353ec4b5c78dbffb651d02b6eab82
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      FEAT-008: 398492902a4c9d62e5fe6f2d8629ba67cb6175878128036f77f33e40e00d5f6a
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:32Z"
 ---
 # SPIKE-001: Backing Store Evaluation
 
@@ -646,9 +646,10 @@ The spike is complete when:
 **FINDING 1**: ADR-003 (Backing Store Architecture) was accepted on the
 literature-analysis evidence in sections 3-5 of this spike, not on benchmark
 data.
-- **Evidence**: ADR-003 is Accepted and implemented (SQLite/libSQL embedded,
-  PostgreSQL server mode, storage abstraction trait in `axon-storage`); the
-  candidate analysis and comparison matrix above were its inputs.
+- **Evidence**: ADR-003 is Accepted; the repository carries the storage
+  abstraction trait and SQLite/PostgreSQL adapter implementations in
+  `crates/axon-storage`; the candidate analysis and comparison matrix above
+  were ADR-003 inputs.
 - **Implications**: the spike's analysis phase delivered its value; the
   measurement phase did not run.
 
@@ -656,9 +657,8 @@ data.
 decision matrix) was specified but never executed.
 - **Evidence**: the section 7 decision matrix remains unscored; no
   `axon-spike-001` benchmark crate or results artifacts exist in the repo.
-- **Implications**: the V1 backend choices are validated by production
-  literature and subsequent implementation experience, not by the planned
-  measurements.
+- **Implications**: the V1 backend choices are supported by literature and
+  current adapter evidence, not by the planned measurements.
 
 ### Measurements
 
@@ -669,10 +669,10 @@ section 7 is retained above as the record of what would have been scored.
 
 **Hypothesis**: PARTIALLY CONFIRMED
 **Rationale**: The literature analysis was sufficient to confirm
-SQLite/libSQL (embedded) and PostgreSQL (server) as V1 defaults — ADR-003
-accepted on that basis and implementation has not surfaced contradicting
-evidence. The FDB/Fjall portions of the hypothesis (structured-layer cost,
-LSM audit-log advantage) remain unmeasured.
+SQLite/libSQL (embedded) and PostgreSQL 16 (server, 0.4.x pilot-qualified) as
+V1 defaults — ADR-003 accepted on that basis and the Phase 1 freeze carries
+that qualification forward. The FDB/Fjall portions of the hypothesis
+(structured-layer cost, LSM audit-log advantage) remain unmeasured.
 
 ### Risks
 
@@ -684,7 +684,7 @@ LSM audit-log advantage) remain unmeasured.
 
 **Primary Conclusion**: Closed as overtaken. ADR-003 settled the backing
 store architecture on literature-analysis evidence; running the full
-benchmark suite now would not change an accepted, implemented decision.
+benchmark suite now would not change the accepted Phase 1 storage direction.
 **Confidence**: Medium (analysis-grade, not measurement-grade)
 **Limitations**: No empirical latency/throughput data was gathered; FDB
 structured-layer cost and Fjall maturity were never measured; the section 9
@@ -693,9 +693,10 @@ success criteria were not met as written.
 ## Recommendations
 
 **RECOMMENDATION**: Keep ADR-003's choices (SQLite/libSQL embedded,
-PostgreSQL server mode) and do not reopen this spike.
-- **Rationale**: The accepted decision is implemented and bearing load; the
-  open uncertainty (FDB/Fjall measurement) is not blocking any current work.
+PostgreSQL 16 server mode for the 0.4.x pilot) and do not reopen this spike.
+- **Rationale**: The accepted decision remains the current Phase 1 storage
+  direction; the open uncertainty (FDB/Fjall measurement) is not blocking any
+  current work.
 - **Next Steps**: Record the remaining open risk — empirical FDB/Fjall
   evaluation (structured-layer cost, LSM audit-log throughput) — as a
   candidate improvement-backlog item, to be picked up only if a production

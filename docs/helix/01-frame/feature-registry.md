@@ -6,8 +6,8 @@ ddx:
   review:
     self_hash: f8c97e4076e20b2f8bfe5d7706689fbad61c1ae22b38cec9920562c974a7412e
     deps:
-      helix.prd: b11053b18982ec8f95158d284546dc20773f504bca99ec6c1970d71628f703ad
-    reviewed_at: "2026-07-07T08:49:58Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:03:37Z"
 ---
 
 # Feature Registry

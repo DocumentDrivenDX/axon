@@ -3,12 +3,68 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use axon_audit::entry::{AuditEntry, FieldDiff};
+use axon_core::auth::{CredentialMetadata, Grants, Op};
+use axon_core::error::AxonError;
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::GateResult;
 use axon_schema::rules::RuleViolation;
 use axon_schema::schema::CollectionSchema;
 
+use crate::intent::{
+    MutationIntent, MutationIntentCommitResult, MutationIntentPreviewRecord, MutationIntentToken,
+};
 use crate::policy::PolicyRequestSnapshot;
+
+pub const RESERVED_NAMESPACE_CODE: &str = "reserved_namespace";
+pub const RESERVED_NAMESPACE_REASON: &str = "generic_access_forbidden";
+
+/// Stable error response for generic collection access to Axon-owned namespaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReservedNamespaceError {
+    pub code: String,
+    pub reason: String,
+    pub detail: ReservedNamespaceDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReservedNamespaceDetail {
+    pub name: String,
+    pub operation: String,
+}
+
+impl ReservedNamespaceError {
+    pub fn new(name: impl Into<String>, operation: impl Into<String>) -> Self {
+        Self {
+            code: RESERVED_NAMESPACE_CODE.into(),
+            reason: RESERVED_NAMESPACE_REASON.into(),
+            detail: ReservedNamespaceDetail {
+                name: name.into(),
+                operation: operation.into(),
+            },
+        }
+    }
+
+    pub fn into_axon_error(self) -> AxonError {
+        match serde_json::to_string(&self) {
+            Ok(payload) => AxonError::InvalidArgument(payload),
+            Err(err) => AxonError::InvalidArgument(format!(
+                "{RESERVED_NAMESPACE_CODE}: failed to encode error detail: {err}"
+            )),
+        }
+    }
+
+    pub fn from_axon_error(error: &AxonError) -> Option<Self> {
+        let AxonError::InvalidArgument(payload) = error else {
+            return None;
+        };
+        let parsed: Self = serde_json::from_str(payload).ok()?;
+        (parsed.code == RESERVED_NAMESPACE_CODE
+            && parsed.reason == RESERVED_NAMESPACE_REASON
+            && !parsed.detail.name.is_empty()
+            && !parsed.detail.operation.is_empty())
+        .then_some(parsed)
+    }
+}
 
 /// Response containing a retrieved entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +371,143 @@ pub struct QueryAuditResponse {
     pub entries: Vec<AuditEntry>,
     /// Cursor for the next page. `None` when no further results exist.
     pub next_cursor: Option<u64>,
+}
+
+/// Redacted credential grant metadata exposed by auth-audit queries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthAuditGrantRedactionV1 {
+    pub database: String,
+    pub ops: Vec<String>,
+}
+
+/// Redacted auth audit metadata exposed by the typed administrative API.
+///
+/// This view intentionally excludes raw credential material, hashes, salts,
+/// provider secrets, session state, and storage bytes. Stored grants JSON is
+/// parsed into an allow-listed shape instead of being passed through.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthAuditRedactionV1 {
+    pub jti: String,
+    pub user_id: String,
+    pub tenant_id: String,
+    pub issued_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub revoked: bool,
+    pub grants: Vec<AuthAuditGrantRedactionV1>,
+}
+
+/// Response from a typed auth audit query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryAuthAuditResponse {
+    pub entries: Vec<AuthAuditRedactionV1>,
+}
+
+/// Response after persisting a governed mutation-intent preview.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreviewMutationIntentResponse {
+    /// Server-side intent record persisted for lookup, approval, and commit.
+    pub intent: MutationIntent,
+    /// Executable token issued for `allow` or `needs_approval` intents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_token: Option<MutationIntentToken>,
+}
+
+impl From<MutationIntentPreviewRecord> for PreviewMutationIntentResponse {
+    fn from(record: MutationIntentPreviewRecord) -> Self {
+        Self {
+            intent: record.intent,
+            intent_token: record.intent_token,
+        }
+    }
+}
+
+/// Response containing an optional governed mutation-intent record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetMutationIntentResponse {
+    /// Intent visible through the governed handler API, when found.
+    pub intent: Option<MutationIntent>,
+}
+
+/// Response containing governed mutation-intent records.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListMutationIntentsResponse {
+    /// Intents visible through the governed handler API.
+    pub intents: Vec<MutationIntent>,
+}
+
+/// Response after approving or rejecting a governed mutation intent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewMutationIntentResponse {
+    /// Intent after the review lifecycle transition.
+    pub intent: MutationIntent,
+}
+
+/// Response after executing a staged transaction through the governed handler API.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecuteTransactionResponse {
+    /// Transaction ID shared by the written audit entries.
+    pub transaction_id: String,
+    /// Entity/link records written by the transaction commit path.
+    pub written: Vec<Entity>,
+}
+
+/// Response after consuming a mutation intent by committing its bound transaction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommitMutationIntentTransactionResponse {
+    /// Intent after it has been marked committed.
+    pub intent: MutationIntent,
+    /// Entity/link records written by the transaction commit path.
+    pub written: Vec<Entity>,
+    /// Transaction ID shared by the written audit entries.
+    pub transaction_id: String,
+}
+
+impl From<MutationIntentCommitResult> for CommitMutationIntentTransactionResponse {
+    fn from(result: MutationIntentCommitResult) -> Self {
+        Self {
+            intent: result.intent,
+            written: result.written,
+            transaction_id: result.transaction_id,
+        }
+    }
+}
+
+impl From<CredentialMetadata> for AuthAuditRedactionV1 {
+    fn from(value: CredentialMetadata) -> Self {
+        Self {
+            jti: value.jti,
+            user_id: value.user_id.0,
+            tenant_id: value.tenant_id.0,
+            issued_at_ms: value.issued_at_ms,
+            expires_at_ms: value.expires_at_ms,
+            revoked: value.revoked,
+            grants: redact_auth_audit_grants(&value.grants_json),
+        }
+    }
+}
+
+fn redact_auth_audit_grants(grants_json: &str) -> Vec<AuthAuditGrantRedactionV1> {
+    let Ok(grants) = serde_json::from_str::<Grants>(grants_json) else {
+        return Vec::new();
+    };
+
+    grants
+        .databases
+        .into_iter()
+        .map(|grant| AuthAuditGrantRedactionV1 {
+            database: grant.name,
+            ops: grant.ops.into_iter().map(redact_auth_audit_op).collect(),
+        })
+        .collect()
+}
+
+fn redact_auth_audit_op(op: Op) -> String {
+    match op {
+        Op::Read => "read",
+        Op::Write => "write",
+        Op::Admin => "admin",
+    }
+    .to_string()
 }
 
 /// Response after reverting an entity to a previous state.

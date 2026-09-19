@@ -48,6 +48,25 @@ describe("AxonError", () => {
       expect(err.detail.expected).toBe(1);
     });
 
+    it("preserves reserved namespace reason and detail from structured JSON", () => {
+      const grpcErr = {
+        code: 3,
+        message: JSON.stringify({
+          code: "reserved_namespace",
+          reason: "generic_access_forbidden",
+          detail: {
+            name: "__axon_links",
+            operation: "entity",
+          },
+        }),
+      };
+      const err = AxonError.fromGrpcError(grpcErr);
+      expect(err.code).toBe(AxonErrorCode.ReservedNamespace);
+      expect(err.reason).toBe("generic_access_forbidden");
+      expect(err.detail.name).toBe("__axon_links");
+      expect(err.detail.operation).toBe("entity");
+    });
+
     it("falls back to gRPC code mapping for plain messages", () => {
       const grpcErr = { code: 5, message: "tasks/t-001" };
       const err = AxonError.fromGrpcError(grpcErr);
@@ -75,6 +94,7 @@ describe("AxonErrorCode", () => {
     expect(AxonErrorCode.SchemaValidation).toBe("schema_validation");
     expect(AxonErrorCode.AlreadyExists).toBe("already_exists");
     expect(AxonErrorCode.InvalidArgument).toBe("invalid_argument");
+    expect(AxonErrorCode.ReservedNamespace).toBe("reserved_namespace");
     expect(AxonErrorCode.Internal).toBe("internal");
     expect(AxonErrorCode.Unknown).toBe("unknown");
   });

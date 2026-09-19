@@ -1,0 +1,12 @@
+{
+  "sql_sources": [
+    {
+      "path": "data/direct_entity_write.sql",
+      "enclosing_function": "<data-only>",
+      "kind": "data-only"
+    }
+  ],
+  "governed_tables": ["entities"],
+  "governed_routines": [],
+  "records": []
+}

@@ -172,7 +172,7 @@ fn check_no_dangling_links(
 ) -> bool {
     let links_col = Link::links_collection();
     let link_entities = match handler
-        .storage_mut()
+        .storage_ref()
         .range_scan(&links_col, None, None, None)
     {
         Ok(v) => v,

@@ -1,0 +1,23 @@
+{
+  "created_at": "2026-07-10T23:01:13.730090+00:00",
+  "entry_count": 29166,
+  "excluded": [],
+  "format": "axon-phase0-park-v1",
+  "head_sha": "64d2bf60e00dd2e23b831c07df43dc744910be8b",
+  "ignored_entry_count": 29093,
+  "index_sha256": "aff36c328a5ab610154eb9100238951252fc77e0031a894f9930123701c6cf6d",
+  "manifest_sha256": "bc380b557674694ee0554d429baf49d6d1c392b6785a605ff3e5484213892367",
+  "origin_master_sha": "ede4ade306ccd7ac0070d0cc959551dc91659d02",
+  "origin_url": "https://github.com/DocumentDrivenDX/axon",
+  "payload_bytes": 27135863068,
+  "payload_tar_bytes": 26368000000,
+  "payload_tar_sha256": "72dc8b9c35745941ce1d8c2397e7876710f242cbb039d807e2ea79b6a36de44e",
+  "root": "/home/erik/Projects/axon",
+  "verification": {
+    "git_objects": "pass",
+    "ignored_inventory_replay": "byte-identical",
+    "porcelain_v2_replay": "byte-identical",
+    "replay_hash_type_mode": "pass",
+    "source_hash_type_mode": "pass"
+  }
+}

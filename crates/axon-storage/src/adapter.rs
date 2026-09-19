@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
@@ -10,7 +10,7 @@ use axon_core::auth::{
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE};
 use axon_core::intent::{ApprovalState, MutationIntent};
-use axon_core::types::{Entity, Link};
+use axon_core::types::{Entity, Link, LinkKey};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use uuid::Uuid;
 
@@ -439,6 +439,221 @@ pub fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
+fn legacy_forward_id(link: &Link) -> EntityId {
+    EntityId::new(
+        [
+            link.source_collection.as_str(),
+            link.source_id.as_str(),
+            link.link_type.as_str(),
+            link.target_collection.as_str(),
+            link.target_id.as_str(),
+        ]
+        .join("/"),
+    )
+}
+
+fn legacy_reverse_id(link: &Link) -> EntityId {
+    EntityId::new(
+        [
+            link.target_collection.as_str(),
+            link.target_id.as_str(),
+            link.source_collection.as_str(),
+            link.source_id.as_str(),
+            link.link_type.as_str(),
+        ]
+        .join("/"),
+    )
+}
+
+/// Atomically replace legacy slash-delimited link rows with typed LinkKey rows.
+///
+/// Legacy identities are never parsed. Every typed component is reconstructed
+/// from the forward row payload; reverse rows are checked against identities
+/// recomputed from those payloads and then rebuilt. The complete preflight runs
+/// inside the same storage transaction as the rewrite, so malformed, colliding,
+/// duplicate, or orphan state leaves the database unchanged and a retry after
+/// correction is safe.
+pub fn migrate_legacy_link_keys<S: StorageAdapter + ?Sized>(
+    storage: &mut S,
+) -> Result<(), AxonError> {
+    migrate_legacy_link_keys_inner(storage, false)
+}
+
+#[cfg(test)]
+pub(crate) fn migrate_legacy_link_keys_with_crash<S: StorageAdapter + ?Sized>(
+    storage: &mut S,
+) -> Result<(), AxonError> {
+    migrate_legacy_link_keys_inner(storage, true)
+}
+
+fn migrate_legacy_link_keys_inner<S: StorageAdapter + ?Sized>(
+    storage: &mut S,
+    inject_crash_after_forward_rewrite: bool,
+) -> Result<(), AxonError> {
+    storage.begin_tx()?;
+    let result = (|| {
+        storage.lock_link_key_migration()?;
+        let forward_rows = storage.range_scan(&Link::links_collection(), None, None, None)?;
+        let reverse_rows = storage.range_scan(&Link::links_rev_collection(), None, None, None)?;
+
+        let mut forwards = BTreeMap::<EntityId, (Entity, Link, bool)>::new();
+        for row in forward_rows {
+            let link = Link::from_entity(&row).ok_or_else(|| {
+                AxonError::Storage(format!(
+                    "legacy LinkKey migration: malformed forward payload at {}",
+                    row.id
+                ))
+            })?;
+            let typed_id = LinkKey::forward(&link).entity_id();
+            let legacy_id = legacy_forward_id(&link);
+            let is_legacy = if row.id == typed_id {
+                false
+            } else if row.id == legacy_id {
+                true
+            } else {
+                return Err(AxonError::Storage(format!(
+                    "legacy LinkKey migration: forward key/payload mismatch at {}",
+                    row.id
+                )));
+            };
+            if forwards
+                .insert(typed_id.clone(), (row, link, is_legacy))
+                .is_some()
+            {
+                return Err(AxonError::Storage(format!(
+                    "legacy LinkKey migration: duplicate logical link {typed_id}"
+                )));
+            }
+        }
+
+        let mut expected_typed_reverse = BTreeMap::<EntityId, EntityId>::new();
+        let mut expected_legacy_reverse = BTreeMap::<EntityId, EntityId>::new();
+        for (forward_id, (_, link, is_legacy)) in &forwards {
+            let typed_reverse_id = LinkKey::reverse(link).entity_id();
+            if expected_typed_reverse
+                .insert(typed_reverse_id, forward_id.clone())
+                .is_some()
+            {
+                return Err(AxonError::Storage(
+                    "legacy LinkKey migration: colliding typed reverse identities".into(),
+                ));
+            }
+            if *is_legacy {
+                let legacy_reverse_id = legacy_reverse_id(link);
+                if expected_legacy_reverse
+                    .insert(legacy_reverse_id, forward_id.clone())
+                    .is_some()
+                {
+                    return Err(AxonError::Storage(
+                        "legacy LinkKey migration: colliding legacy reverse identities".into(),
+                    ));
+                }
+            }
+        }
+
+        let mut typed_reverse = BTreeMap::<EntityId, Entity>::new();
+        let mut legacy_reverse = BTreeMap::<EntityId, EntityId>::new();
+        for row in reverse_rows {
+            if let Some(forward_id) = expected_typed_reverse.get(&row.id) {
+                let link = Link::from_entity(&row).ok_or_else(|| {
+                    AxonError::Storage(format!(
+                        "legacy LinkKey migration: malformed reverse payload at {}",
+                        row.id
+                    ))
+                })?;
+                let (_, forward, _) = forwards.get(forward_id).ok_or_else(|| {
+                    AxonError::Storage(format!(
+                        "legacy LinkKey migration: orphan reverse row {}",
+                        row.id
+                    ))
+                })?;
+                if forward != &link {
+                    return Err(AxonError::Storage(format!(
+                        "legacy LinkKey migration: reverse payload disagrees with forward {}",
+                        row.id
+                    )));
+                }
+                if typed_reverse.insert(forward_id.clone(), row).is_some() {
+                    return Err(AxonError::Storage(
+                        "legacy LinkKey migration: duplicate typed reverse row".into(),
+                    ));
+                }
+            } else if let Some(forward_id) = expected_legacy_reverse.get(&row.id) {
+                if legacy_reverse
+                    .insert(forward_id.clone(), row.id.clone())
+                    .is_some()
+                {
+                    return Err(AxonError::Storage(format!(
+                        "legacy LinkKey migration: duplicate legacy reverse row {}",
+                        row.id
+                    )));
+                }
+            } else {
+                return Err(AxonError::Storage(format!(
+                    "legacy LinkKey migration: orphan reverse row {}",
+                    row.id
+                )));
+            }
+        }
+
+        for (forward_id, (_, _, is_legacy)) in &forwards {
+            let has_typed_reverse = typed_reverse.contains_key(forward_id);
+            let has_legacy_reverse = legacy_reverse.contains_key(forward_id);
+            if has_typed_reverse && has_legacy_reverse {
+                return Err(AxonError::Storage(
+                    "legacy LinkKey migration: old and typed reverse rows coexist".into(),
+                ));
+            }
+            if *is_legacy != has_legacy_reverse || *is_legacy == has_typed_reverse {
+                return Err(AxonError::Storage(
+                    "legacy LinkKey migration: forward and reverse row formats disagree".into(),
+                ));
+            }
+        }
+
+        for (typed_id, (row, _, is_legacy)) in &forwards {
+            if *is_legacy {
+                let legacy_id = row.id.clone();
+                storage.delete(&Link::links_collection(), &legacy_id)?;
+                let mut row = row.clone();
+                row.id = typed_id.clone();
+                storage.put(row)?;
+            }
+        }
+        if inject_crash_after_forward_rewrite
+            && forwards.values().any(|(_, _, is_legacy)| *is_legacy)
+        {
+            return Err(AxonError::Storage(
+                "injected crash after forward LinkKey rewrite".into(),
+            ));
+        }
+        for legacy_id in legacy_reverse.values() {
+            storage.delete(&Link::links_rev_collection(), legacy_id)?;
+        }
+        for (forward_row, link, is_legacy) in forwards.values() {
+            if *is_legacy {
+                let mut reverse_row = forward_row.clone();
+                reverse_row.collection = Link::links_rev_collection();
+                reverse_row.id = LinkKey::reverse(link).entity_id();
+                storage.put(reverse_row)?;
+            }
+        }
+        // Audit rows are immutable history and deliberately retain their
+        // original subject ID. Their before/after payload remains sufficient
+        // to correlate the event with the migrated logical link; rewriting an
+        // audit subject would falsify the append-only record.
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => storage.commit_tx(),
+        Err(error) => {
+            let _ = storage.abort_tx();
+            Err(error)
+        }
+    }
+}
+
 /// Navigate a dotted field path in a JSON value.
 ///
 /// E.g., `"address.city"` resolves `{"address": {"city": "NY"}}` to `"NY"`.
@@ -661,6 +876,14 @@ pub trait StorageAdapter: Send + Sync {
     /// mutation methods are already atomic or whose concurrency model does
     /// not require explicit transactions).
     fn begin_tx(&mut self) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Exclude concurrent link-row writers while the LinkKey migration scans
+    /// and rewrites storage. Durable multi-process adapters should override
+    /// this with a transaction-scoped lock; single-process adapters can rely
+    /// on their existing exclusive mutable access.
+    fn lock_link_key_migration(&mut self) -> Result<(), AxonError> {
         Ok(())
     }
 
@@ -1374,20 +1597,29 @@ pub trait StorageAdapter: Send + Sync {
         source_id: &EntityId,
         link_type: Option<&str>,
     ) -> Result<Vec<Link>, AxonError> {
-        let prefix = match link_type {
-            Some(lt) => format!("{source_collection}/{source_id}/{lt}/"),
-            None => format!("{source_collection}/{source_id}/"),
-        };
+        let prefix = LinkKey::forward_prefix(source_collection, source_id, link_type);
         let start = EntityId::new(&prefix);
-        // Compute an exclusive upper bound by incrementing last byte.
         let mut end_str = prefix.clone();
-        // Replace trailing '/' with '0' (ASCII after '/') as upper bound.
         end_str.pop();
-        end_str.push('0');
+        end_str.push('}');
         let end = EntityId::new(&end_str);
         let entities =
             self.range_scan(&Link::links_collection(), Some(&start), Some(&end), None)?;
-        Ok(entities.iter().filter_map(Link::from_entity).collect())
+        entities
+            .iter()
+            .map(|entity| {
+                let link = Link::from_entity(entity).ok_or_else(|| {
+                    AxonError::Storage(format!("malformed forward link row {}", entity.id))
+                })?;
+                if entity.id != LinkKey::forward(&link).entity_id() {
+                    return Err(AxonError::Storage(format!(
+                        "forward link key/payload mismatch for {}",
+                        entity.id
+                    )));
+                }
+                Ok(link)
+            })
+            .collect()
     }
 
     /// List inbound links to a given entity.
@@ -1399,12 +1631,11 @@ pub trait StorageAdapter: Send + Sync {
         target_id: &EntityId,
         link_type: Option<&str>,
     ) -> Result<Vec<Link>, AxonError> {
-        // Scan the reverse index to find link keys, then resolve forward entries.
-        let prefix = format!("{target_collection}/{target_id}/");
+        let prefix = LinkKey::reverse_prefix(target_collection, target_id);
         let start = EntityId::new(&prefix);
         let mut end_str = prefix.clone();
         end_str.pop();
-        end_str.push('0');
+        end_str.push('}');
         let end = EntityId::new(&end_str);
         let rev_entries = self.range_scan(
             &Link::links_rev_collection(),
@@ -1415,25 +1646,44 @@ pub trait StorageAdapter: Send + Sync {
 
         let mut links = Vec::new();
         for rev_ent in &rev_entries {
-            // Parse reverse ID: target_col/target_id/source_col/source_id/link_type
-            let parts: Vec<&str> = rev_ent.id.as_str().splitn(5, '/').collect();
-            if parts.len() < 5 {
-                continue;
+            let link = Link::from_entity(rev_ent).ok_or_else(|| {
+                AxonError::Storage(format!("malformed reverse link row {}", rev_ent.id))
+            })?;
+            if rev_ent.id != LinkKey::reverse(&link).entity_id()
+                || link.target_collection != *target_collection
+                || link.target_id != *target_id
+            {
+                return Err(AxonError::Storage(format!(
+                    "reverse link key/payload mismatch for {}",
+                    rev_ent.id
+                )));
             }
-            let (src_col, src_id, lt) = (parts[2], parts[3], parts[4]);
             if let Some(filter_lt) = link_type {
-                if lt != filter_lt {
+                if link.link_type != filter_lt {
                     continue;
                 }
             }
-            if let Some(link) = self.get_link(
-                &CollectionId::new(src_col),
-                &EntityId::new(src_id),
-                lt,
+            let forward = self.get_link(
+                &link.source_collection,
+                &link.source_id,
+                &link.link_type,
                 target_collection,
                 target_id,
-            )? {
-                links.push(link);
+            )?;
+            match forward {
+                Some(forward) if forward == link => links.push(link),
+                Some(_) => {
+                    return Err(AxonError::Storage(format!(
+                        "reverse link payload disagrees with forward row {}",
+                        rev_ent.id
+                    )))
+                }
+                None => {
+                    return Err(AxonError::Storage(format!(
+                        "orphan reverse link row {}",
+                        rev_ent.id
+                    )))
+                }
             }
         }
         Ok(links)
@@ -1811,6 +2061,9 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
     }
     fn begin_tx(&mut self) -> Result<(), AxonError> {
         (**self).begin_tx()
+    }
+    fn lock_link_key_migration(&mut self) -> Result<(), AxonError> {
+        (**self).lock_link_key_migration()
     }
     fn commit_tx(&mut self) -> Result<(), AxonError> {
         (**self).commit_tx()

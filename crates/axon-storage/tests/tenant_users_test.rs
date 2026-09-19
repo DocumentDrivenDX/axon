@@ -17,8 +17,8 @@ use std::sync::OnceLock;
 
 use axon_core::auth::{TenantId, TenantRole, UserId};
 use axon_storage::{
-    provision_postgres_database, tenant_dsn, MemoryStorageAdapter, PostgresStorageAdapter,
-    SqliteStorageAdapter, StorageAdapter,
+    deprovision_postgres_database, provision_postgres_database, tenant_dsn, MemoryStorageAdapter,
+    PostgresStorageAdapter, SqliteStorageAdapter, StorageAdapter,
 };
 use testcontainers_modules::{postgres, testcontainers::runners::SyncRunner};
 
@@ -26,6 +26,15 @@ use testcontainers_modules::{postgres, testcontainers::runners::SyncRunner};
 
 struct TestPg {
     pub dsn: String,
+    cleanup: Option<(String, String)>,
+}
+
+impl Drop for TestPg {
+    fn drop(&mut self) {
+        if let Some((superadmin_dsn, database_name)) = self.cleanup.take() {
+            let _ = deprovision_postgres_database(&superadmin_dsn, &database_name);
+        }
+    }
 }
 
 /// Resolve the shared, process-wide superadmin DSN, starting a single
@@ -92,6 +101,7 @@ fn cluster_or_skip(test_name: &str) -> Option<TestPg> {
 
     Some(TestPg {
         dsn: tenant_dsn(&dsn, &db_name),
+        cleanup: Some((dsn, db_name)),
     })
 }
 

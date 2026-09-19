@@ -6,12 +6,12 @@ ddx:
     - helix.principles
     - helix.technical-requirements
   review:
-    self_hash: b2fd65f5c9fee74cac32a456a2eb53e5f492374e51469bbfdfce158ade121821
+    self_hash: 058932393e672c4c5c89acf600d9d45b3f712fe114e7caa139f0e5ac11dc7967
     deps:
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-      helix.principles: 68d05c2f025124f224f952adb2e7b93671c8f099011975fcbb3619e18fde38dd
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+      helix.principles: aaf83801ad6408940c25991544463178c86c1ce3a308fc25b9d4a7a18cd331e8
       helix.technical-requirements: b50c3f03df0814348846c9a6e6eb9bebbc4b7be7dcb3783fdd6d9b4104a56fca
-    reviewed_at: "2026-06-15T00:35:16Z"
+    reviewed_at: "2026-07-11T05:09:10Z"
 ---
 # Axon Test Plan
 
@@ -125,6 +125,21 @@ FEAT-009): `docs/helix/03-test/test-plans/STP-{023..025,046,047,070..077,101..10
 Each STP owns its story's AC↔test matrix with honest per-AC statuses. STPs for
 the remaining features are deferred backlog.
 
+### Frozen FEAT-032 coverage
+
+FEAT-032 is frozen at the FR-32 read-replica boundary. The measurable AC
+envelope is:
+
+| Frozen AC | Measurable check | Existing evidence |
+|---|---|---|
+| FR-32 bootstrap | `snapshot` returns `op: "r"` bootstrap events, then live tailing continues with no gap | `crates/axon-server/tests/snapshot_test.rs`, `sdk/typescript/test/local-replica.test.ts` |
+| FR-32 opaque resume | cursor tokens round-trip; incompatible schema, policy, or auth epoch changes purge the token and require rebootstrap | `crates/axon-audit/src/cursor_token.rs` |
+| FR-32 local projection | `LocalReplica` applies tombstones and keeps search/sort/filter client-side | `sdk/typescript/test/local-replica.test.ts` |
+| FR-32 restart durability | `StorageCursorStore` survives reopen; memory-only cursor state is explicitly not restart-durable | `crates/axon-storage/src/cursor_store.rs` |
+
+This is the frozen coverage set for the eventual story decomposition; FR-33
+writeback remains parked.
+
 ---
 
 ## 4. Coverage Requirements
@@ -134,7 +149,7 @@ current measurements; the STPs hold the honest current state.
 
 | Metric | Target | Minimum | Enforcement |
 |--------|--------|---------|-------------|
-| P0 acceptance criteria of guardrail-slice stories covered by **citing** tests | 100% *(target; current citation rate is 0%)* | 100% before a story closes | `ui/`: `bun run check:story-coverage`; Rust: planned `@covers` scan in CI |
+| P0 acceptance criteria of guardrail-slice stories covered by **citing** tests | 100% *(target; current citation coverage is command-derived, not hard-coded here)* | 100% before a story closes | `python3 scripts/check_covers_traceability.py --format text`; `ui/`: `bun run check:story-coverage` |
 | Line coverage on `axon-core` + `axon-api` | ≥90% *(target)* | 80% | CI ratchet file (can only increase) |
 | Workspace line coverage (L1–L4 tests) | ≥80% *(target)* | 70% | CI ratchet file |
 | Policy decision parity across GraphQL/MCP/handler/CLI/SDK | 100% identical decisions on the shared policy-fixture suite | 100% | L6 parity suite blocks merge (PRD success metric) |
@@ -178,10 +193,14 @@ These are the properties that must hold under all circumstances, including concu
 **Statement**: Under opt-in Serializable isolation, write skew over a
 **key-addressed** read set (entities recorded via `record_read`) is prevented;
 under the default Snapshot isolation it is allowed. Verified by the axon-sim
-`write_skew` workload and the PROP-004 `serializable_prevents_write_skew_that_snapshot_allows`
-property test (B-104). Predicate/phantom write skew (invariants over query,
-scan, traversal, or aggregation results) remains out of scope (SSI/predicate
-locking, future).
+`write_skew` workload and the PROP-004
+`serializable_prevents_write_skew_that_snapshot_allows` property test (B-104).
+ADR-026 extends this from key reads to recorded scan/predicate reads with a
+collection-membership phantom guard (`record_scan_read` +
+`StorageAdapter::structural_version`) on every storage backend. The default
+Serializable tier catches insert/delete phantoms; opt-in `SerializableStrict`
+uses `content_version` to catch update-driven predicate skew at collection
+granularity. Precise, minimal-abort SSI remains future per ADR-027.
 
 ### INV-003: Audit Completeness
 
@@ -747,7 +766,7 @@ Representative rows:
 
 ### PROP-004: Transaction Serializability (key-addressed)
 
-**Property**: Two parts. (1) Snapshot default — overlapping multi-entity transactions never lose updates; the first committer wins and the loser aborts retryably (`transactions_are_serializable_under_sequential_simulation`). (2) Opt-in Serializable — write skew over a **key-addressed** read set is allowed under Snapshot but prevented under Serializable (`serializable_prevents_write_skew_that_snapshot_allows`). Full predicate/phantom serializability (consistency with some serial ordering for invariants over query/scan/traversal results) is NOT claimed and requires SSI/predicate locking (future). See FEAT-008 TXN-05 / ADR-004.
+**Property**: Three parts. (1) Snapshot default — overlapping multi-entity transactions never lose updates; the first committer wins and the loser aborts retryably (`transactions_are_serializable_under_sequential_simulation`). (2) Opt-in Serializable — write skew over a **key-addressed** read set is allowed under Snapshot but prevented under Serializable (`serializable_prevents_write_skew_that_snapshot_allows`). (3) ADR-026 scan-read validation — insert/delete phantoms over recorded query/scan/traversal reads are prevented by the collection-membership signature (`phantom_write_skew_prevented_under_serializable`, `crates/axon-api/tests/serializable_autocapture.rs`). Full precise/minimal-abort SSI is NOT claimed; the current guarantee is key-addressed reads plus collection-granular predicate/phantom reads, with `SerializableStrict` available for collection-granular update-driven predicate skew. See FEAT-008 TXN-05, ADR-004, ADR-026, and ADR-027.
 
 ### PROP-005: Link Graph Consistency
 
@@ -789,6 +808,8 @@ Every StorageAdapter implementation must pass the **identical** test suite. Test
 
 If a backend cannot pass any invariant, it is not shipped.
 
+- Schema catalog golden vectors (`docs/helix/03-test/schema-catalog-golden-vectors.md`) pin the whole-catalog structural hash (`AXON-SCHEMA-CATALOG-HASH-1`), run on memory, SQLite, and PostgreSQL backends, and exercise the schema activation surface so OCC rotation and `policy_projection_mismatch` are verified before merge.
+
 ---
 
 ## 9. L5: Performance Benchmarks
@@ -809,6 +830,26 @@ From technical requirements. All benchmarks use `criterion` and are ratcheted.
 | BM-010: Audit query (single entity) | < 100 ms | Retrieve all audit entries for one entity (100 mutations) |
 | BM-011: Link candidates (10K targets, indexed predicate) | < 50 ms | 10K target collection with indexed filter and existing links |
 | BM-012: Neighbors (99 links, mixed directions) | < 20 ms | Single-hop neighbor listing over inbound and outbound links |
+
+### L5 Benchmark Qualification Contract
+
+The release-blocking graph benchmark is the `ready_beads` / `blocked_beads`
+gate from `STP-074`. It is the only benchmark claim in this plan that may
+block `TARGET_RELEASE`, and only the dedicated reference host/runner may move
+it from `release.block` to pass. GitHub-hosted functional runs can verify the
+code path, but they are not authoritative for release verdicts.
+
+| Field | Frozen value |
+|-------|--------------|
+| Dataset | Synthetic DDX bead graphs at `1,000` and `10,000` beads; the 10-bead/15-link smoke fixture is correctness-only |
+| Hardware class | Dedicated reference host, not a GitHub-hosted functional runner |
+| Backend / configuration | `cargo bench -p axon-cypher` on the `ddx_ready_blocked_queue_benchmark` path, using the in-memory named-query fixture |
+| Warmup | `10` warmup iterations before measurement |
+| Sample count | `101` measured samples |
+| Percentile method | nearest-rank `p99` |
+| Pass threshold | `ready_beads` and `blocked_beads` must both stay below `100 ms` at `1,000` beads and below `500 ms` at `10,000` beads |
+| Artifact / metadata | Each release run records `commit`, `environment`, `artifact_paths`, `metadata`, `p99_ms`, `threshold_ms`, `runner_class`, and `backend_configuration` in the execution bundle |
+| Hold rule | Any GitHub-hosted functional run is informational only; only the dedicated reference host may clear `release.block` for `TARGET_RELEASE` |
 
 ---
 

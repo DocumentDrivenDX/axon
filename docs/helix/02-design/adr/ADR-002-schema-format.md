@@ -8,10 +8,10 @@ ddx:
   review:
     self_hash: 914b8c8b1a9829504c826ae36b8d8b48a6118b0268c6c8c562fc446ee01b9a77
     deps:
-      FEAT-002: 0e2c69a223cadb6a5d1421cf36a9f91ce49880b66edb0680fd0c229cf1445533
+      FEAT-002: 84f680ec396f34b25b2a91172d8cab7a8e9204817430b9e3aa8f9ec1ee3afd03
       FEAT-007: 730a71d71ea4d398f55a2a62b9bf812fc10290809796f4fab4e8ba1b50d53849
-      helix.prd: dff98156a6cc934f406611b78b513892d85cee1bd7b4c011f045146fcdfd23e1
-    reviewed_at: "2026-06-15T00:35:16Z"
+      helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
+    reviewed_at: "2026-07-11T04:22:32Z"
 ---
 # ADR-002: Schema Format — JSON Schema + Link-Type Definitions
 
