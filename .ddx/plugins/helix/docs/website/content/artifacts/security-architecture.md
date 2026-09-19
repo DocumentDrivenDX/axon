@@ -1,7 +1,7 @@
 ---
 title: "Security Architecture — DDx Agent Execution Surface"
 slug: security-architecture
-weight: 770
+weight: 390
 activity: "Design"
 source: "02-design/security-architecture.md"
 generated: true
@@ -14,6 +14,8 @@ generated: true
 ```yaml
 ddx:
   id: security-architecture
+  authoring:
+    home: repo
   depends_on:
     - helix.architecture
   review:

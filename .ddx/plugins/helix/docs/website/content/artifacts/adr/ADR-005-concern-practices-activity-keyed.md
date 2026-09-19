@@ -1,7 +1,7 @@
 ---
 title: "ADR-005: Concern practices.md is HELIX-activity-keyed"
 slug: ADR-005-concern-practices-activity-keyed
-weight: 200
+weight: 220
 activity: "Design"
 source: "02-design/adr/ADR-005-concern-practices-activity-keyed.md"
 generated: true
@@ -15,6 +15,8 @@ collection: adr
 ```yaml
 ddx:
   id: ADR-005
+  authoring:
+    home: repo
   depends_on:
     - helix.prd
 ```

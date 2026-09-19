@@ -1,7 +1,7 @@
 ---
 title: "TP-014 Appendix A: Real-World Intent Patterns From Session Logs"
 slug: TP-014-appendix-real-world-patterns
-weight: 880
+weight: 450
 activity: "Test"
 source: "03-test/test-plans/TP-014-appendix-real-world-patterns.md"
 generated: true
@@ -15,6 +15,8 @@ collection: test-plans
 ```yaml
 ddx:
   id: TP-014-A
+  authoring:
+    home: repo
   depends_on:
     - TP-014
     - FEAT-013

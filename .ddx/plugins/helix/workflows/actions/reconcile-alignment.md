@@ -40,6 +40,15 @@ Rules:
 - Source code reflects current state but does not redefine the plan.
 - If a higher layer is missing or contradictory, do not infer intent from lower layers.
 - Prefer aligning code to plan. Propose plan changes only when strongly justified.
+- **Desired-state:** specs describe the desired future. Do not shrink requirements
+  to match incomplete code without operator intent. Code ahead of docs is
+  plan-to-code honesty (`STALE_PLAN`); evolving specs to match code requires
+  explicit operator intent or an approved handoff — never auto-bless impl as plan.
+- **Four-field handoff** for every non-ALIGNED gap: destination artifact type,
+  deliverable shape, suggested next workflow mode, evidence path:line.
+- **Evidence-gated implement work:** before filing build items, verify residual
+  against code/tests; prefer story/AC floor items when only docs lag; close or
+  re-scope only when residual is already green with recorded evidence.
 
 ## Tracker Rules
 
@@ -401,9 +410,10 @@ IMPLEMENTATION_PLAN / DESIGN_SYSTEM / TEST_PLAN) and verify each named artifact 
 
 One check, one output contract — the same `Concern→Artifact Realization` check runs at design-exit
 and inside the evolve-until-converged loop. The model performs it by reading each selected concern's
-`## Artifact Impact` and the artifacts it names. A deterministic floor (which selected concerns name
-which artifacts, and whether those artifacts exist) is a planned `scripts/helix_align_check.py`
-addition to pre-compute the structural part; until then the model performs the full check.
+`## Artifact Impact` and the artifacts it names. `scripts/helix_align_check.py` exists and computes
+the coverage-matrix denominators and structural findings, but it does not yet inspect concern
+practices (its output says so under the `Concern practice` dimension); the model performs the
+full check.
 
 ### NFR Target Verification
 
@@ -877,7 +887,7 @@ upstream state. Stale digests are an alignment finding.
 ### STEP 0.5 — Work-item acquisition
 
 Acquire the governing work item before modifying files, per
-`workflows/references/bead-first.md`: find an open planning item labelled
+`workflows/references/work-item-first.md`: find an open planning item labelled
 `kind:planning,action:align` (claim it if found) or create one with labels
 `helix,kind:review,kind:planning,action:align`, `spec-id` set to the governing
 artifact if known, a `<context-digest>` description naming the scope of the

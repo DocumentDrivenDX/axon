@@ -31,6 +31,14 @@ nodes:
   type: library:competitive-analysis
   activity: 00-discover
   cardinality: many
+- id: data-flow-analysis
+  type: library:data-flow-analysis
+  activity: 00-discover
+  cardinality: many
+- id: market-analysis
+  type: library:market-analysis
+  activity: 00-discover
+  cardinality: many
 - id: opportunity-canvas
   type: library:opportunity-canvas
   activity: 00-discover
@@ -85,6 +93,10 @@ nodes:
   cardinality: many
 - id: risk-register
   type: library:risk-register
+  activity: 01-frame
+  cardinality: many
+- id: roadmap
+  type: library:roadmap
   activity: 01-frame
   cardinality: many
 - id: security-requirements
@@ -195,8 +207,16 @@ nodes:
   type: library:runbook
   activity: 05-deploy
   cardinality: many
+- id: deliverable
+  type: library:deliverable
+  activity: 06-iterate
+  cardinality: many
 - id: improvement-backlog
   type: library:improvement-backlog
+  activity: 06-iterate
+  cardinality: many
+- id: iteration-plan
+  type: library:iteration-plan
   activity: 06-iterate
   cardinality: many
 - id: metric-definition
@@ -209,6 +229,10 @@ nodes:
   cardinality: many
 - id: security-metrics
   type: library:security-metrics
+  activity: 06-iterate
+  cardinality: many
+- id: status-report
+  type: library:status-report
   activity: 06-iterate
   cardinality: many
 edges:
@@ -234,6 +258,30 @@ edges:
   required: false
 - from: competitive-analysis
   to: prd
+  kind: informs
+  required: false
+- from: data-flow-analysis
+  to: data-design
+  kind: informs
+  required: false
+- from: data-flow-analysis
+  to: feasibility-study
+  kind: informs
+  required: false
+- from: data-flow-analysis
+  to: prd
+  kind: informs
+  required: false
+- from: market-analysis
+  to: competitive-analysis
+  kind: informs
+  required: false
+- from: market-analysis
+  to: business-case
+  kind: informs
+  required: false
+- from: market-analysis
+  to: opportunity-canvas
   kind: informs
   required: false
 - from: opportunity-canvas
@@ -352,6 +400,10 @@ edges:
   to: feature-registry
   kind: informs
   required: false
+- from: prd
+  to: roadmap
+  kind: informs
+  required: false
 - from: research-plan
   to: prd
   kind: informs
@@ -370,6 +422,10 @@ edges:
   required: false
 - from: research-plan
   to: risk-register
+  kind: informs
+  required: false
+- from: roadmap
+  to: iteration-plan
   kind: informs
   required: false
 - from: security-requirements
@@ -608,6 +664,18 @@ edges:
   to: monitoring-setup
   kind: informs
   required: false
+- from: improvement-backlog
+  to: iteration-plan
+  kind: informs
+  required: false
+- from: improvement-backlog
+  to: roadmap
+  kind: informs
+  required: false
+- from: iteration-plan
+  to: status-report
+  kind: informs
+  required: false
 - from: metric-definition
   to: metrics-dashboard
   kind: informs
@@ -620,7 +688,15 @@ edges:
   to: improvement-backlog
   kind: informs
   required: false
+- from: metrics-dashboard
+  to: status-report
+  kind: informs
+  required: false
 - from: security-metrics
+  to: improvement-backlog
+  kind: informs
+  required: false
+- from: status-report
   to: improvement-backlog
   kind: informs
   required: false

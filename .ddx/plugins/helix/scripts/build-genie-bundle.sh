@@ -3,7 +3,7 @@
 #
 # Outputs:
 #   dist/genie-bundle/helix/SKILL.md
-#   dist/genie-bundle/helix/references/activities/<NN>-<activity>/...
+#   dist/genie-bundle/helix/references/{activities,concerns,modes,graph.yml,voice.yml,stop-triggers.yml,...}
 #
 # The parent directory name `helix` must match the `name:` field in
 # SKILL.md frontmatter (agentskills.io spec invariant).
@@ -24,24 +24,13 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 SRC_SKILL="skills/helix/SKILL.md"
-SRC_CATALOG="workflows/activities"
-SRC_VOICE="workflows/voice.yml"
-SRC_LIBRARY="library"
 
 if [[ ! -f "$SRC_SKILL" ]]; then
   echo "error: $SRC_SKILL not found" >&2
   exit 3
 fi
-if [[ ! -d "$SRC_CATALOG" ]]; then
-  echo "error: $SRC_CATALOG not found" >&2
-  exit 3
-fi
-if [[ ! -f "$SRC_VOICE" ]]; then
-  echo "error: $SRC_VOICE not found" >&2
-  exit 3
-fi
-if [[ ! -d "$SRC_LIBRARY" ]]; then
-  echo "error: $SRC_LIBRARY not found (SKILL.md references library/skill-prompts/...)" >&2
+if [[ ! -f scripts/sync_references.py ]]; then
+  echo "error: scripts/sync_references.py not found" >&2
   exit 3
 fi
 
@@ -85,38 +74,18 @@ echo "✓ SKILL.md frontmatter OK (name=helix)"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/references"
 
-cp "$SRC_SKILL" "$OUT_DIR/SKILL.md"
+cp -f "$SRC_SKILL" "$OUT_DIR/SKILL.md"
 echo "✓ copied SKILL.md → $OUT_DIR/SKILL.md"
+cp -Rf skills/helix/scripts "$OUT_DIR/scripts"
+echo "✓ copied skill scripts → $OUT_DIR/scripts/"
 
-cp -r "$SRC_CATALOG" "$OUT_DIR/references/activities"
-echo "✓ copied $SRC_CATALOG → $OUT_DIR/references/activities/"
-
-cp "$SRC_VOICE" "$OUT_DIR/references/voice.yml"
-echo "✓ copied $SRC_VOICE → $OUT_DIR/references/voice.yml"
-
-cp -r "$SRC_LIBRARY" "$OUT_DIR/library"
-echo "✓ copied $SRC_LIBRARY → $OUT_DIR/library/"
-
-# Also vendor workflows/concerns so slots.yml + per-concern practices.md resolve,
-# and workflows/graph.yml so §"Consult The Graph Before Authoring" resolves.
-mkdir -p "$OUT_DIR/workflows"
-if [[ -d workflows/concerns ]]; then
-  cp -r workflows/concerns "$OUT_DIR/workflows/concerns"
-  echo "✓ copied workflows/concerns → $OUT_DIR/workflows/concerns/"
-fi
-if [[ -f workflows/graph.yml ]]; then
-  cp workflows/graph.yml "$OUT_DIR/workflows/graph.yml"
-  echo "✓ copied workflows/graph.yml → $OUT_DIR/workflows/graph.yml"
-fi
-if [[ -f "$SRC_VOICE" ]]; then
-  cp "$SRC_VOICE" "$OUT_DIR/workflows/voice.yml"
-  echo "✓ copied $SRC_VOICE → $OUT_DIR/workflows/voice.yml"
-fi
+python3 scripts/sync_references.py "$OUT_DIR/references" >/dev/null
+echo "✓ generated workflows catalog → $OUT_DIR/references/"
 
 # Report what we built.
-SKILL_BYTES=$(stat -c%s "$OUT_DIR/SKILL.md")
+SKILL_BYTES=$(wc -c < "$OUT_DIR/SKILL.md" | tr -d " ")
 ACTIVITY_COUNT=$(find "$OUT_DIR/references/activities" -mindepth 1 -maxdepth 1 -type d | wc -l)
-LIBRARY_FILES=$(find "$OUT_DIR/library" -type f | wc -l)
+CONCERN_COUNT=$(find "$OUT_DIR/references/concerns" -mindepth 1 -maxdepth 1 -type d | wc -l)
 FILE_COUNT=$(find "$OUT_DIR" -type f | wc -l)
 
 echo
@@ -124,7 +93,7 @@ echo "Genie bundle built:"
 echo "  path:        $OUT_DIR"
 echo "  SKILL.md:    $SKILL_BYTES bytes"
 echo "  activities:  $ACTIVITY_COUNT"
-echo "  library:     $LIBRARY_FILES files"
+echo "  concerns:    $CONCERN_COUNT"
 echo "  total files: $FILE_COUNT"
 echo
 echo "Next: python scripts/install-genie.py --bundle $OUT_DIR"

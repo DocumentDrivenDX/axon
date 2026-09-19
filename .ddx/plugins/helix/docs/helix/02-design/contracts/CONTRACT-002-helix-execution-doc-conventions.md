@@ -1,6 +1,8 @@
 ---
 ddx:
   id: CONTRACT-002
+  authoring:
+    home: repo
   review:
     self_hash: d4de625233449d6d880fdad497c72871454f6e4b97a966a53dba03ab84bffaa6
     deps:
@@ -206,7 +208,7 @@ execution:
   required: true
 metric:
   name: principles-injection-alignment
-  definition: docs/helix/06-iterate/metrics/principles-injection-alignment.yaml
+  definition: docs/archive/helix/06-iterate/metrics/principles-injection-alignment.yaml
 ```
 
 ### Ratchet-backed executions

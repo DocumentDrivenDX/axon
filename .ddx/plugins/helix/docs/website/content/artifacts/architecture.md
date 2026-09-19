@@ -1,7 +1,7 @@
 ---
 title: "Architecture"
 slug: architecture
-weight: 300
+weight: 320
 activity: "Design"
 source: "02-design/architecture.md"
 generated: true
@@ -14,6 +14,8 @@ generated: true
 ```yaml
 ddx:
   id: helix.architecture
+  authoring:
+    home: repo
   depends_on:
     - helix.prd
     - CONTRACT-003

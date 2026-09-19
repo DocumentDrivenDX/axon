@@ -1,7 +1,7 @@
 ---
 title: "Technical Design: TD-012 — Artifact Types Navigation"
 slug: TD-012-artifact-types-navigation
-weight: 810
+weight: 420
 activity: "Design"
 source: "02-design/technical-designs/TD-012-artifact-types-navigation.md"
 generated: true
@@ -15,6 +15,8 @@ collection: technical-designs
 ```yaml
 ddx:
   id: TD-012
+  authoring:
+    home: repo
   depends_on:
     - FEAT-012
     - FEAT-007

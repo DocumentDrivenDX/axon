@@ -15,6 +15,8 @@ collection: features
 ```yaml
 ddx:
   id: FEAT-004
+  authoring:
+    home: repo
   depends_on:
     - helix.prd
     - FEAT-002
@@ -81,7 +83,6 @@ helix/                              # plugin root
 │       └── SKILL.md
 ├── workflows/                      # shared resource library
 │   ├── actions/
-│   ├── EXECUTION.md
 │   ├── ratchets.md
 │   └── ...
 ├── bin/                            # added to Bash PATH by plugin loader

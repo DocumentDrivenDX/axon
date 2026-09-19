@@ -70,9 +70,10 @@ graph TD
 
 ## Metric Four-Way Slice
 
-Four iterate artifacts form one slice of the metric loop. Each owns a distinct
-job; together they carry an iteration from "what we measure" to "what we do
-next":
+Four iterate artifacts form one slice of the metric loop (the human cadence
+pair — iteration-plan and status-report — has its own section below). Each
+owns a distinct job; together they carry an iteration from "what we measure"
+to "what we do next":
 
 - **Metric Definition** is the contract. It fixes the name, unit, direction,
   command, and tolerance for one measurement. Every other artifact in the
@@ -91,6 +92,35 @@ Flow: definitions feed dashboards; the security dashboard is the
 security-shaped slice of the same data; backlog consumes dashboard signal.
 Each artifact prompt cross-references this section instead of restating the
 relationship.
+
+## Human cadence pair
+
+Two further iterate artifacts — `iteration-plan` and `status-report` — form
+the human cadence pair. They document a team's time-boxed loop, not the
+metric loop, and the ownership boundary is:
+
+- **Iteration Plan** owns the commitment: the falsifiable goal, one
+  Good/Better/Best outcome per participating workstream, trade rules, and
+  the task tables work items derive from. It consumes the improvement
+  backlog's next-iteration selection and the roadmap's current slot.
+- **Status Report** owns commitment accounting: point-in-time outcome status
+  against the plan's IDs, trades, blockers, and decisions needed. It
+  *consumes* dashboard signal as evidence; it never interprets measurements.
+- **Metrics Dashboard** keeps measurement interpretation: current readings
+  against baseline or ratchet floor, and the iteration-level
+  improved/regressed/noise decision. A status report citing a metric cites
+  the dashboard's reading; it does not re-derive it.
+
+The status report is not a resurrection of the retired
+`story-iteration-report`: that artifact was story-scoped, and its
+responsibilities stay where the section below assigns them. The status
+report's scope is the human iteration as committed in the iteration plan.
+
+**Lifecycle note**: this activity's entry gate (deployed, monitored system)
+gates the metric loop only. The human cadence pair is exempt — the first
+iteration plan of a project is authored before anything is deployed, and
+both artifacts follow their own skip tests (see the routing skill's
+`iterate` contract) rather than the gate.
 
 ## Work Items
 
@@ -205,15 +235,15 @@ Cross-activity reconciliation review:
 - writes a consolidated alignment report for the review run
 - emits follow-up execution issues only where explicit gaps exist
 
-#### Cross-Activity Action: Queue Check
-**Action Location**: `../../actions/check.md`
+#### Cross-Activity Mode: Check And Next
+**Contract Location**: the routing skill's Check And Next contract
 **Output Location**: terminal response only
 
-Bounded execution-state review:
-- inspects ready, in-progress, and blocked HELIX work
-- checks whether the current scope should implement, align, backfill, wait, ask for guidance, or stop
-- returns a deterministic `NEXT_ACTION` code and the exact next command
-- should be used when the implementation queue drains instead of looping blindly
+Read-only state review:
+- inspects governed work and artifact state for the scope
+- decides whether the next safe HELIX action is frame, design, align, backfill, polish, wait, or ask for guidance
+- names the next mode and the evidence behind the recommendation
+- should be used when the runtime's work queue drains instead of looping blindly
 
 #### Cross-Activity Action: Documentation Backfill
 **Action Location**: `../../actions/backfill-helix-docs.md`
@@ -407,9 +437,6 @@ Under the DDx reference runtime, iterate work is dispatched through:
 - `/helix review [scope]` — fresh-eyes post-implementation review
 - `/helix experiment [scope]` — metric-driven optimization iteration
 - `/helix backfill <scope>` — reconstruct missing canonical docs
-
-See [../../EXECUTION.md](../../EXECUTION.md) for the full DDx execution
-contract.
 
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: "Project Principles"
 slug: principles
-weight: 160
+weight: 180
 activity: "Frame"
 source: "01-frame/principles.md"
 generated: true
@@ -14,6 +14,8 @@ generated: true
 ```yaml
 ddx:
   id: helix.principles
+  authoring:
+    home: repo
   depends_on:
     - helix.prd
     - helix.product-vision
@@ -66,6 +68,23 @@ sense that they steer judgment about how to extend HELIX itself.
 7. **Discipline over improvisation.** AI agents improvise well; the value of
    HELIX is the discipline that makes improvisation reviewable.
 
+8. **Deliverable Over Machinery.** Ship the unit (for HELIX: the template,
+   skill, or prompt that changes behavior); freeze process redesign mid-delivery.
+   Do not skip real defect checks to "go faster."
+
+### Layers Are the Control
+
+HELIX's own artifacts are governed the way HELIX governs any project: the
+vision governs this PRD, the PRD governs its features, features govern
+designs and decisions, and the routing skill enforces what each layer
+authorizes. See `workflows/principles.md` for the methodology statement.
+
+### Humans Decide, Agents Draft
+
+Maintainers hold intent, judgment, and approval for HELIX's artifacts;
+agents draft, check, and surface. Autonomy level, stop triggers, and
+approval are the governed hand-off points. See `workflows/principles.md`.
+
 ## Tension Resolution
 
 | When these pull against each other | Resolve by |
@@ -73,6 +92,7 @@ sense that they steer judgment about how to extend HELIX itself.
 | **Less is more** vs. methodology depth | Trim. If a methodology detail can live in `workflows/` or a glossary page rather than a flagship artifact, move it there. |
 | **HELIX doesn't run anything** vs. operator convenience | Move the convenience to the runtime adapter, not HELIX. Wrappers that shorten DDx invocations are DDx's job. |
 | **Documents are the contract** vs. ship-it pressure | Capture the decision as a document update before merging; otherwise the change exists only in code and the artifact graph diverges. |
+| **Deliverable Over Machinery** vs. completeness theater | Ship the unit; file deferred rigor as a tracker item, not a redesign tranche. |
 
 ## Size Guidance
 

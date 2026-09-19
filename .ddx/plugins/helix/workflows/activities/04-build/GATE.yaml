@@ -1,3 +1,7 @@
+# Checks name what must be true, not the toolchain that proves it. The
+# adopting project supplies the concrete command for each automated check
+# (its test runner, coverage, audit, and lint commands); HELIX imposes no
+# technology choice.
 activity: build
 number: "04"
 
@@ -15,7 +19,6 @@ entry_requirements:
       description: "Test suites from Test activity must exist"
 
     - check: tests_failing
-      command: "npm test || go test ./... || pytest"
       description: "Tests must be failing (Red activity ready for implementation)"
 
     - check: file_exists
@@ -33,24 +36,20 @@ exit_requirements:
   automated:
     # All tests passing
     - check: tests_passing
-      command: "npm test || go test ./... || pytest"
       description: "All tests must pass"
 
     # Coverage thresholds
     - check: coverage_threshold
       threshold: 80
-      command: "npm run coverage || go test -cover ./... || pytest --cov"
       description: "Code coverage must be at least 80%"
 
     # Security scan
     - check: security_scan_clean
-      command: "npm audit --audit-level=high || gosec ./... || bandit -r ."
       severity: high
       description: "No high or critical security vulnerabilities"
 
     # Linting passes
     - check: lint_clean
-      command: "npm run lint || golangci-lint run || flake8"
       description: "No linting errors"
 
     # Build artifacts
@@ -85,6 +84,17 @@ exit_requirements:
         - pkg/**/*
       description: "No debug statements in production code"
 
+    # Scope discipline — no hollow stubs on shipped code (the scope-discipline
+    # concern is the authority; TODO/FIXME judgement is the manual item below).
+    - check: grep_absent
+      pattern: "unimplemented!\\(|todo!\\(|panic!\\(\"[Nn]ot implemented|NotImplementedError|raise NotImplemented|throw new Error\\(\"[Nn]ot implemented"
+      path: src/**/*
+      fallback_paths:
+        - lib/**/*
+        - pkg/**/*
+        - internal/**/*
+      description: "No incompleteness stubs (unimplemented!/todo!/not-implemented) in production code — a path an acceptance criterion claims to satisfy must run real code, not a placeholder (per the scope-discipline concern; a deliberately phased stub carries a recorded exception and no satisfied AC)"
+
     # Verification evidence — running-system, including each AC's guard/negative
     # branch (the verification concern is the authority for the record's contents).
     - check: file_exists
@@ -94,6 +104,8 @@ exit_requirements:
   manual:
     - "Code review completed and approved"
     - "Performance benchmarks validated"
-    - "Verification evidence reviewed (adversarial): every governing AC's guard/negative branch was driven on the RUNNING system via the interface-appropriate harness (web→Playwright, HTTP API→request client, CLI→shell, TUI→tmux, backend→integration). Happy-path-green is not done; an un-waived untested guard branch is not done."
+    - "Verification evidence reviewed (adversarial): every governing AC's guard/negative branch was driven on the RUNNING system via the interface-appropriate harness (web→Playwright, HTTP API→request client, MCP/agent surface→real client handshake, auth/SSO→real login flow, real-network/remote surface→exercised on the real address not localhost-stub, CLI→shell, TUI→tmux, backend→integration). Happy-path-green is not done; an un-waived untested guard branch is not done."
+    - "Downstream-consumer evidence reviewed (adversarial): when a change has a named downstream consumer in another repo, done requires evidence that the consumer pulled the change and exercised its integration; local gate-green alone is not enough."
+    - "Scope discipline reviewed (per the scope-discipline concern): the change builds exactly what the acceptance criteria asked for — no unrequested features/abstractions/config (gold-plating), no pre-release legacy-compat shim without a released consumer, no requested capability silently narrowed (e.g. shipped read-only) without a recorded tradeoff, and the diff is contained to the work item's stated scope. Any phased placeholder is recorded and covered by no satisfied AC."
 
 next_activity: deploy

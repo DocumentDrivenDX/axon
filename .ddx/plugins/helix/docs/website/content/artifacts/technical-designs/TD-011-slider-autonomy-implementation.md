@@ -1,7 +1,7 @@
 ---
 title: "TD-011: Slider Autonomy Implementation"
 slug: TD-011-slider-autonomy-implementation
-weight: 800
+weight: 410
 activity: "Design"
 source: "02-design/technical-designs/TD-011-slider-autonomy-implementation.md"
 generated: true
@@ -15,6 +15,8 @@ collection: technical-designs
 ```yaml
 ddx:
   id: TD-011
+  authoring:
+    home: repo
   depends_on:
     - FEAT-011
     - ADR-003

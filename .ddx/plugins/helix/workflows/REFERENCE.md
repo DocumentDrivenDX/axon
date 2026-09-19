@@ -1,6 +1,8 @@
 ---
 ddx:
   id: helix.workflow.reference
+  authoring:
+    home: repo
   depends_on:
     - helix.workflow
   review:
@@ -21,6 +23,8 @@ guide; for DDx-specific commands, see [docs/install/ddx.md](../docs/install/ddx.
   runtime boundary, and alignment methodology
 - `activities/*/artifacts/`: canonical artifact-type catalog, prompts, templates,
   metadata, and examples
+- `modes/*.md`: one contract per workflow mode the `helix` skill routes to
+  (`modes/_authoring.md` and `modes/_report.md` are shared contracts)
 - [reconcile-alignment.md](actions/reconcile-alignment.md): top-down review
 - [backfill-helix-docs.md](actions/backfill-helix-docs.md): conservative
   reconstruction
@@ -29,7 +33,17 @@ guide; for DDx-specific commands, see [docs/install/ddx.md](../docs/install/ddx.
   implementation
 - [fresh-eyes-review.md](actions/fresh-eyes-review.md): post-implementation
   review
+- [converge.md](actions/converge.md): adversarial-review-until-clean loop with an
+  explicit stop rule (the enforced "review until it converges")
 - [experiment.md](actions/experiment.md): metric-driven optimization iteration
+- [genesis.md](actions/genesis.md): cold-start bootstrap of a new project
+  (name → research → vision → scaffold)
+- [project-audit.md](actions/project-audit.md): orientation entry-point composing
+  check + reconcile-alignment into one state report
+- [decompose-module.md](actions/decompose-module.md): iterative oversized-module
+  decomposition behind a per-iteration verify gate
+- [e2e-ladder.md](actions/e2e-ladder.md): build up end-to-end coverage as a ladder
+  of increasingly complex real-client scenarios
 - [metric-definition.yaml](templates/metric-definition.yaml): shared metric
   definitions
 

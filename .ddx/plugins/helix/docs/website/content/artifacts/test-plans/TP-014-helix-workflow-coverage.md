@@ -1,7 +1,7 @@
 ---
 title: "Workflow Test Plan: HELIX Across Five Runtimes"
 slug: TP-014-helix-workflow-coverage
-weight: 890
+weight: 460
 activity: "Test"
 source: "03-test/test-plans/TP-014-helix-workflow-coverage.md"
 generated: true
@@ -15,6 +15,8 @@ collection: test-plans
 ```yaml
 ddx:
   id: TP-014
+  authoring:
+    home: repo
   depends_on:
     - FEAT-013
     - TD-013

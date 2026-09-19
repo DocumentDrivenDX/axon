@@ -1,7 +1,7 @@
 ---
 title: "Technical Design: TD-013 — Multi-Runtime Install"
 slug: TD-013-multi-runtime-install
-weight: 820
+weight: 430
 activity: "Design"
 source: "02-design/technical-designs/TD-013-multi-runtime-install.md"
 generated: true
@@ -15,6 +15,8 @@ collection: technical-designs
 ```yaml
 ddx:
   id: TD-013
+  authoring:
+    home: repo
   depends_on:
     - FEAT-013
     - helix.prd
