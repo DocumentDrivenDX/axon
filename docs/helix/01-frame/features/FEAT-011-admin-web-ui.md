@@ -4,6 +4,7 @@ ddx:
   depends_on:
     - helix.prd
   review:
+    # TODO: refresh review stamp (structured link/lifecycle/rule authoring added, 2026-09-19)
     self_hash: fbed5035703274fa3f9b134202782fa14426ccb8d77fbdd637b096a2f5bfb1a5
     deps:
       helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
@@ -68,7 +69,7 @@ from the same workspace they use to inspect data.
 | Tenant, user, and credential administration | Who can access this deployment, and with what authority? | Tenant, database, user, member, and credential management screens |
 | Collection management | What collections exist and how are they configured? | Collection list, create, describe, drop |
 | Entity browsing and editing | What is in this collection right now? | Paginated entity tables, detail views, CRUD, query filters |
-| Schema workspace | What shape must this data have? | Schema list, structured/raw views, preview-before-save editing |
+| Schema workspace | What shape must this data have? | Schema list, structured/raw views, preview-before-save editing, structured link-type/lifecycle/validation-rule authoring |
 | Audit and recovery | What changed, who changed it, and how do I undo it? | Audit browsing/filtering, entry detail, history, rollback dry-run and apply |
 | Advanced database tools | How do I exercise higher-level Axon features in context? | GraphQL console, links, lifecycle transitions, markdown templates |
 | Navigation and chrome | Where am I, and what scope am I operating in? | Tenant/database-scoped routing, sidebar context, not-found states |
@@ -127,6 +128,20 @@ from the same workspace they use to inspect data.
   structured view and a raw JSON view.
 - **UI-18**. The UI must support schema editing with a preview step before
   saving and inline display of validation errors.
+- **UI-33**. The UI must provide a structured link-type editor: create, edit,
+  and remove `link_types` declarations (target collection, cardinality,
+  required/optional, metadata schema) through form-based inputs, with the
+  same preview-before-save and inline validation as UI-18, without requiring
+  the developer to hand-edit raw JSON/YAML.
+- **UI-34**. The UI must provide a structured lifecycle editor: define a
+  lifecycle field's states and transitions, including gate-guarded
+  transitions, through a form-based or diagram-based structured view, without
+  requiring the developer to hand-edit the `transitions` grammar directly.
+- **UI-35**. The UI must provide a structured validation-rule and gate
+  editor: create, edit, and remove `validation_rules` entries (condition,
+  requirement, message, fix) and `gates` declarations (including `includes`
+  composition) through form-based inputs, with the same compile/validation
+  feedback as UI-18.
 
 #### Audit and Recovery
 
@@ -197,6 +212,7 @@ from the same workspace they use to inspect data.
 - [US-041 — Administer Users, Members, and Credentials](../user-stories/US-041-administer-users-members-and-credentials.md)
 - [US-042 — Manage Collections and Entities](../user-stories/US-042-manage-collections-and-entities.md)
 - [US-121 — Manage Schemas Visually](../user-stories/US-121-manage-schemas-visually.md)
+- [US-147 — Author Links, Lifecycles, and Rules Visually](../user-stories/US-147-author-links-lifecycles-and-rules-visually.md)
 - [US-122 — Inspect Audit and Recover Entity State](../user-stories/US-122-inspect-audit-and-recover-entity-state.md)
 - [US-045 — Use Advanced Database Tools](../user-stories/US-045-use-advanced-database-tools.md)
 
@@ -238,9 +254,13 @@ from the same workspace they use to inspect data.
 ## Dependencies
 
 - **Other features**: FEAT-001 (Collections), FEAT-002 (Schema Engine),
-  FEAT-004 (Entity Operations), FEAT-005 (API Surface), FEAT-012
-  (Authentication/Authorization — the UI inherits server-enforced auth),
-  FEAT-015 (GraphQL Query Layer — the UI is its canonical consumer).
+  FEAT-004 (Entity Operations), FEAT-005 (API Surface), FEAT-007
+  (Entity-Graph Data Model — `link_types` grammar rendered by UI-33),
+  FEAT-010 (Entity State Machines — lifecycle grammar rendered by UI-34),
+  FEAT-019 (Validation Rules — `validation_rules`/`gates` grammar rendered by
+  UI-35), FEAT-012 (Authentication/Authorization — the UI inherits
+  server-enforced auth), FEAT-015 (GraphQL Query Layer — the UI is its
+  canonical consumer).
 - **External services**: None at runtime. Wire surface defined in
   CONTRACT-001 (HTTP) and CONTRACT-002 (GraphQL); credential model per
   ADR-018; UI stack per ADR-006.
@@ -250,6 +270,11 @@ from the same workspace they use to inspect data.
 
 - Policy and mutation-intent operator workflows (policy explanation, dry-run,
   approval inbox, intent detail, MCP envelope visibility) — owned by FEAT-031.
+- A drag-and-drop or novel visual modeling canvas (an Ontology-Manager-style
+  object/relationship designer). UI-33 through UI-35 are structured
+  form-based editors over the existing ESF grammar (CONTRACT-010), not a new
+  modeling language or notation — matching FEAT-031's existing exclusion of a
+  drag-and-drop policy builder.
 - Graph visualization (force-directed layout of the entity-link graph).
 - Bead lifecycle management UI.
 - Real-time updates (WebSocket/SSE push); refresh-based consistency is

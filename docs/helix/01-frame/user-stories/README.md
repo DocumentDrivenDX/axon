@@ -326,8 +326,11 @@ Only rows that change. "In file" is the spec heading carrying the retired pairin
 
 ## Reserved Ranges and Next Free ID
 
-- **Next free ID for future allocation: `US-147`.** Allocate sequentially upward only.
+- **Next free ID for future allocation: `US-149`.** Allocate sequentially upward only.
 - `US-120`..`US-146` are consumed by this remediation (renumber targets above).
+- `US-147` (FEAT-011, "Author Links, Lifecycles, and Rules Visually") and
+  `US-148` (FEAT-007, "Declare an External Reference for Provenance") are
+  freshly authored stories, not renumber targets — allocated 2026-09-19.
 - Historical gaps `US-029`, `US-030`, `US-082`..`US-086` are RETIRED — never allocate
   them; reuse risks colliding with stale references in alignment reviews, tracker
   beads, or commit history.

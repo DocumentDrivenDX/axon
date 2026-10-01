@@ -4,6 +4,7 @@ ddx:
   depends_on:
     - helix.prd
   review:
+    # TODO: refresh review stamp (external-reference fields added, 2026-09-19)
     self_hash: 730a71d71ea4d398f55a2a62b9bf812fc10290809796f4fab4e8ba1b50d53849
     deps:
       helix.prd: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
@@ -16,7 +17,7 @@ ddx:
 **Priority**: P0
 **Owner**: Core Team
 **Covered PRD Subsystem(s)**: Entity-Graph Data Model
-**Covered PRD Requirements**: FR-2; FR-1 (entity model shape — the operation surface is owned by FEAT-004)
+**Covered PRD Requirements**: FR-2; FR-1 (entity model shape — the operation surface is owned by FEAT-004); FR-34 (external-reference fields)
 **Cross-Subsystem Rationale**: None — single subsystem.
 **Requirement Prefix**: GRF
 
@@ -45,6 +46,7 @@ A developer models business objects and relationships once — invoices, vendors
 | Entity model | "What shape can a record take?" | Nested structure, identity, versioning, schema binding |
 | Link model | "How do records relate?" | Typed, directional, metadata-bearing first-class links |
 | Link lifecycle | "Create and remove relationships safely" | Referentially-checked, schema-validated, audited link mutations |
+| External references | "Where did this record come from, and how do I avoid creating it twice?" | Schema-declared pointer to a record in another system, for provenance and traceability, distinct from internal links |
 
 ## Requirements
 
@@ -71,6 +73,12 @@ A developer models business objects and relationships once — invoices, vendors
 - **GRF-11**. Deleting a link must produce an audit record capturing the deleted link.
 - **GRF-12**. Entity deletion must honor the dangling-link policy: deletion is rejected while inbound links exist, with an explicit force option that cascade-deletes the links (all audited).
 
+#### External References
+
+- **GRF-13**. A collection's schema may declare external-reference fields: a structured pointer from an entity to a record in another system, carrying at minimum a system identifier and an external ID, with an optional external URL and last-synced timestamp. An external-reference field is ordinary schema-validated entity data (CONTRACT-010), not a link: it carries no referential-integrity check against the referenced system, is not traversable by the graph query model (FEAT-009), and Axon never dereferences, imports, or reconciles the referenced record.
+- **GRF-14**. The (system, external ID) pair of an external-reference field must be usable with the existing secondary-index mechanism (FEAT-013), including the uniqueness option, so a developer can look up or prevent duplicate entities for the same external record without Axon performing identity resolution itself.
+- **GRF-15**. Schema introspection and generated GraphQL/MCP surfaces must be able to identify a field as an external reference, distinct from ordinary business data, so agent tools and the admin UI can render it as provenance/traceability metadata.
+
 ### Non-Functional Requirements
 
 - **Performance**: Entity writes with 5+ levels of nesting validate and commit within the FEAT-004 p99 < 10 ms single-entity budget; link create/delete meets the same p99 < 10 ms budget.
@@ -84,6 +92,7 @@ A developer models business objects and relationships once — invoices, vendors
 | US-017 | Model Entities with Nested Structure | [US-017](../user-stories/US-017-model-entities-with-nested-structure.md) |
 | US-018 | Create and Traverse Links | [US-018](../user-stories/US-018-create-and-traverse-links.md) |
 | US-019 | Query Across Entity-Link Graph | [US-019](../user-stories/US-019-query-across-entity-link-graph.md) |
+| US-148 | Declare an External Reference for Provenance | [US-148](../user-stories/US-148-declare-an-external-reference-for-provenance.md) |
 
 US-018 and US-019 exercise this feature's link model through the read paths
 owned by FEAT-009; their traversal/query semantics are governed by FEAT-009
@@ -96,6 +105,8 @@ and [CONTRACT-007 — Cypher Query Surface](../../02-design/contracts/CONTRACT-0
 - **Cross-collection link integrity**: Link creation validates that both source and target exist at creation time; later deletions are handled by the dangling-link policy.
 - **Link type not declared**: Creating a link with an undeclared link type fails with a validation error naming the type.
 - **Metadata schema violation**: Link metadata that does not validate against the link type's metadata schema is rejected with field-level errors.
+- **External reference missing required parts**: An external-reference field missing its declared system identifier or external ID fails ordinary schema validation, the same as any other required field.
+- **Duplicate external reference without a uniqueness constraint**: Two entities sharing the same (system, external ID) pair are permitted unless the developer declares a unique index on that pair (FEAT-013); Axon does not implicitly deduplicate.
 
 ## Success Metrics
 
@@ -118,9 +129,9 @@ and [CONTRACT-007 — Cypher Query Surface](../../02-design/contracts/CONTRACT-0
 
 ## Dependencies
 
-- **Other features**: FEAT-002 (Schema Engine — entity and link-type schema declarations), FEAT-003 (Audit Log — entity and link mutations audited), FEAT-004 (Entity Operations — operation surface and system-metadata envelope), FEAT-009 (Unified Graph Query — all read paths over this model).
-- **External services**: None. Normative surfaces: [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md) (link operations, envelope), [CONTRACT-010 — ESF Schema Format](../../02-design/contracts/CONTRACT-010-esf-schema-format.md) (`link_types` declaration grammar).
-- **PRD requirements**: FR-2 (P0); FR-1 model shape (P0).
+- **Other features**: FEAT-002 (Schema Engine — entity and link-type schema declarations), FEAT-003 (Audit Log — entity and link mutations audited), FEAT-004 (Entity Operations — operation surface and system-metadata envelope), FEAT-009 (Unified Graph Query — all read paths over this model), FEAT-013 (Secondary Indexes — uniqueness enforcement for external-reference fields).
+- **External services**: None. Normative surfaces: [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md) (link operations, envelope), [CONTRACT-010 — ESF Schema Format](../../02-design/contracts/CONTRACT-010-esf-schema-format.md) (`link_types` declaration grammar; external-reference field grammar to be added there when implemented).
+- **PRD requirements**: FR-2 (P0); FR-1 model shape (P0); FR-34 (P2, external-reference fields).
 
 ## Out of Scope
 
@@ -129,6 +140,8 @@ and [CONTRACT-007 — Cypher Query Surface](../../02-design/contracts/CONTRACT-0
 - Graph visualization.
 - Link inference / reasoning (OWL-style).
 - Weighted shortest-path and other graph algorithms.
+- External system reconciliation, ingestion, transformation, deduplication, or identity resolution — an external-reference field records a pointer; it is never a pipeline or integration engine.
+- Automatic refresh of an external-reference field's `last_synced_at` or its target data — keeping the pointer current is the integrating system's responsibility.
 
 ## Review Checklist
 

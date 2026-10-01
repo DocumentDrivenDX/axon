@@ -5,6 +5,7 @@ ddx:
     - helix.product-vision
   review:
     # TODO: refresh review stamp (FR-32 re-scope + FR-33 added, 2026-06-27)
+    # TODO: refresh review stamp (FR-34 external-reference fields added, 2026-09-19)
     self_hash: 6703170c71275bba7d108c4f9c329d32e4104f9c965278db888ad43cdc3ca367
     deps:
       helix.product-vision: 55456fd63c59b72cf433d259ce5d0015b3c6b8f1890e7e66ccc001b0b5187e53
@@ -182,6 +183,15 @@ modes:
   this release (FR-33, deferred 2026-06-27). The committed local-first
   capability is a read-only replica (FR-32) fed by FR-31 resumable change
   streams; offline-write convergence is parked pending objective demand.
+- **External system integration, reconciliation, and identity resolution**:
+  Axon is not an ETL/pipeline platform or an enterprise data-virtualization
+  layer. External-reference fields (FR-34) let a schema record a pointer to a
+  record in another system for provenance; Axon never ingests, transforms,
+  deduplicates, or reconciles the referenced system's data, and does not
+  perform cross-system identity resolution. Added 2026-09-19 to bound
+  FR-34 against scope creep, following a comparison against Palantir
+  Foundry's Ontology/OSv2, whose breadth (federated query across pipelines,
+  enterprise-wide identity resolution) is deliberately not a target for Axon.
 
 Deferred items are tracked in `docs/helix/parking-lot.md`.
 
@@ -302,6 +312,10 @@ feature specs without embedding implementation design.
    search once the governed core is proven.
 3. **Distributed placement and migration**: route databases across nodes and
    migrate placement after single-deployment semantics are stable.
+4. **External-reference fields**: let a schema declare a pointer from an
+   entity to a record in another system (ERP, spreadsheet, SaaS tool) for
+   provenance and traceability, without Axon ingesting, reconciling, or
+   resolving identity across that external data.
 
 ## Functional Requirements
 
@@ -318,6 +332,13 @@ feature specs without embedding implementation design.
 - **FR-4 (P1)**: Axon SHOULD maintain portable secondary indexes for declared
   fields and compound query patterns without exposing backend-specific query
   operators.
+- **FR-34 (P2)**: Axon SHOULD let a schema declare external-reference
+  fields — a structured pointer (system identifier, external ID, and
+  optionally an external URL or last-synced timestamp) from an entity to a
+  record in another system — for provenance and traceability, distinct from
+  typed links (FR-2), enforcing no referential integrity against the
+  external system and performing no reconciliation, ingestion, or identity
+  resolution on its own.
 
 ### Subsystem: Guardrailed Transactions and Mutation Intents
 

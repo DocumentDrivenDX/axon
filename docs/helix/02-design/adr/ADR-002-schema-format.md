@@ -6,6 +6,7 @@ ddx:
     - FEAT-002
     - FEAT-007
   review:
+    # TODO: refresh review stamp (portability-principle note added, 2026-09-19)
     self_hash: 914b8c8b1a9829504c826ae36b8d8b48a6118b0268c6c8c562fc446ee01b9a77
     deps:
       FEAT-002: 84f680ec396f34b25b2a91172d8cab7a8e9204817430b9e3aa8f9ec1ee3afd03
@@ -135,6 +136,25 @@ link_types:
 | Expression language for guards/rules | When simple field predicates prove insufficient | Complexity pressure from real use cases |
 | Schema bridges (ESF → SQL DDL, Protobuf, TypeScript) | P2 | When client SDK generation is needed |
 | Schema bridge to UMF (tablespec) | P2 | When data pipeline integration is needed |
+
+## Schema Portability as a Design Property
+
+Added 2026-09-19 as a non-disruptive note, prompted by a comparison against
+Palantir Foundry's Ontology/OSv2. ESF's deferred bridges — ESF → SQL DDL,
+Protobuf, TypeScript (above), ESF → UMF/tablespec (above), and ESF → SHACL
+(ADR-020's open questions) — are not an incidental feature backlog. Keeping
+ESF translatable outward to other schema/type systems is a deliberate
+property of the format, worth re-affirming whenever a new export target is
+proposed, so future readers evaluate it against "does this keep ESF an open
+hub" rather than treating each bridge as a one-off request.
+
+This is not a plan to target Palantir's Ontology object-type format
+specifically. Palantir's ontology definitions are authored through a
+proprietary internal metadata model (Ontology Manager and their SDKs) with
+no published, versioned, portable interchange format — unlike JSON Schema,
+SHACL, or Protobuf, there is nothing stable on that side to bridge to.
+Recorded here so the absence of an "ESF → Ontology" bridge reads as a
+documented non-target rather than a gap.
 
 ## Implementation Impact
 
