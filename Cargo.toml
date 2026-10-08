@@ -24,7 +24,7 @@ version = "0.4.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/DocumentDrivenDX/axon"
-rust-version = "1.75"
+rust-version = "1.99.0"
 
 [workspace.lints.clippy]
 # Treat all warnings as errors.

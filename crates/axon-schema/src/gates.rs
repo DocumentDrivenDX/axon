@@ -248,7 +248,7 @@ mod tests {
 
         let eval = evaluate_gates(&rules, &gates, &data);
         assert!(eval.save_passes());
-        assert!(eval.save_violations.is_empty());
+        assert_eq!(eval.save_violations.len(), 0);
     }
 
     // ── Custom gate allows save, reports failure ───────────────────────
@@ -307,7 +307,7 @@ mod tests {
             .get("complete")
             .expect("complete gate result should be present");
         assert!(complete.pass);
-        assert!(complete.failures.is_empty());
+        assert_eq!(complete.failures.len(), 0);
     }
 
     // ── Advisory rules never block ─────────────────────────────────────
@@ -324,7 +324,7 @@ mod tests {
 
         let eval = evaluate_gates(&rules, &gates, &data);
         assert!(eval.save_passes());
-        assert!(eval.gate_results.is_empty());
+        assert_eq!(eval.gate_results.len(), 0);
         assert_eq!(eval.advisories.len(), 1);
         assert_eq!(eval.advisories[0].rule, "recommend-desc");
         assert!(eval.advisories[0].advisory);
@@ -337,7 +337,7 @@ mod tests {
         let data = json!({"description": "Present"});
 
         let eval = evaluate_gates(&rules, &gates, &data);
-        assert!(eval.advisories.is_empty());
+        assert_eq!(eval.advisories.len(), 0);
     }
 
     // ── Gate inclusion (review includes complete) ──────────────────────
@@ -598,7 +598,7 @@ mod tests {
     fn empty_rules_all_pass() {
         let eval = evaluate_gates(&[], &HashMap::new(), &json!({}));
         assert!(eval.save_passes());
-        assert!(eval.gate_results.is_empty());
-        assert!(eval.advisories.is_empty());
+        assert_eq!(eval.gate_results.len(), 0);
+        assert_eq!(eval.advisories.len(), 0);
     }
 }

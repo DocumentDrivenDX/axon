@@ -2448,7 +2448,7 @@ access_control:
         assert!(diag.message.contains("unknown target_collection"));
         assert_eq!(diag.path.as_deref(), Some("operations.Read.allow[0].where"));
         assert_eq!(diag.collection.as_deref(), Some("contracts"));
-        assert!(report.warnings.is_empty());
-        assert!(report.required_link_indexes.is_empty());
+        assert_eq!(report.warnings.len(), 0);
+        assert_eq!(report.required_link_indexes.len(), 0);
     }
 }

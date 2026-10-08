@@ -27,7 +27,7 @@ RUN cd ui && bun install --frozen-lockfile && bun run build
 
 # ── Stage 3: Rust dependency planner ──────────────────────────────────────────
 
-FROM rust:1.94-bookworm AS rust-base
+FROM rust:1.99.0-bookworm AS rust-base
 
 # protobuf-compiler is required by tonic-build for gRPC code generation.
 RUN apt-get update && apt-get install -y --no-install-recommends \

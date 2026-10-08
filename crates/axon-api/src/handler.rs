@@ -5636,7 +5636,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // filter predicates or gate filters that need post-filtering).
         let mut matched = Vec::new();
         for entity in all {
-            let request_matches = req.filter.as_ref().map_or(true, |filter| {
+            let request_matches = req.filter.as_ref().is_none_or(|filter| {
                 if needs_gates {
                     if let Some(ref schema) = schema {
                         let eval =
@@ -5869,11 +5869,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // Apply filter (post-filter for remaining predicates).
         let matched: Vec<&Entity> = all
             .iter()
-            .filter(|e| {
-                req.filter
-                    .as_ref()
-                    .map_or(true, |f| apply_filter(f, &e.data))
-            })
+            .filter(|e| req.filter.as_ref().is_none_or(|f| apply_filter(f, &e.data)))
             .collect();
 
         let total_count = matched.len();
@@ -5941,11 +5937,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // Apply filter (post-filter for remaining predicates).
         let matched: Vec<&Entity> = all
             .iter()
-            .filter(|e| {
-                req.filter
-                    .as_ref()
-                    .map_or(true, |f| apply_filter(f, &e.data))
-            })
+            .filter(|e| req.filter.as_ref().is_none_or(|f| apply_filter(f, &e.data)))
             .collect();
 
         if let Some(ref group_by) = req.group_by {
@@ -7722,7 +7714,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 .storage
                 .get_schema(&name)?
                 .as_ref()
-                .map_or(true, |existing| existing.version < schema.version);
+                .is_none_or(|existing| existing.version < schema.version);
             if should_update_schema {
                 self.handle_put_schema_in_system_collection(
                     capability,
@@ -8987,10 +8979,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     .filter(|l| {
                         l.target_collection == col
                             && l.target_id == id
-                            && req
-                                .link_type
-                                .as_deref()
-                                .map_or(true, |lt| l.link_type == lt)
+                            && req.link_type.as_deref().is_none_or(|lt| l.link_type == lt)
                     })
                     .collect()
             } else {
@@ -8999,10 +8988,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     .filter(|l| {
                         l.source_collection == col
                             && l.source_id == id
-                            && req
-                                .link_type
-                                .as_deref()
-                                .map_or(true, |lt| l.link_type == lt)
+                            && req.link_type.as_deref().is_none_or(|lt| l.link_type == lt)
                     })
                     .collect()
             };
@@ -9179,10 +9165,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     .filter(|l| {
                         l.target_collection == col
                             && l.target_id == id
-                            && req
-                                .link_type
-                                .as_deref()
-                                .map_or(true, |lt| l.link_type == lt)
+                            && req.link_type.as_deref().is_none_or(|lt| l.link_type == lt)
                     })
                     .collect()
             } else {
@@ -9191,10 +9174,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     .filter(|l| {
                         l.source_collection == col
                             && l.source_id == id
-                            && req
-                                .link_type
-                                .as_deref()
-                                .map_or(true, |lt| l.link_type == lt)
+                            && req.link_type.as_deref().is_none_or(|lt| l.link_type == lt)
                     })
                     .collect()
             };
@@ -9356,7 +9336,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             if !req
                 .filter
                 .as_ref()
-                .map_or(true, |filter| apply_filter(filter, &entity.data))
+                .is_none_or(|filter| apply_filter(filter, &entity.data))
             {
                 continue;
             }
@@ -9446,17 +9426,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let include_outbound = req
             .direction
             .as_ref()
-            .map_or(true, |d| *d == TraverseDirection::Forward);
+            .is_none_or(|d| *d == TraverseDirection::Forward);
         let include_inbound = req
             .direction
             .as_ref()
-            .map_or(true, |d| *d == TraverseDirection::Reverse);
+            .is_none_or(|d| *d == TraverseDirection::Reverse);
 
         for link in &all_links {
             let type_filter_ok = req
                 .link_type
                 .as_deref()
-                .map_or(true, |lt| link.link_type == lt);
+                .is_none_or(|lt| link.link_type == lt);
             if !type_filter_ok {
                 continue;
             }
@@ -11404,7 +11384,7 @@ mod tests {
                 .filter(|credential| {
                     user_filter
                         .as_ref()
-                        .map_or(true, |user_id| &credential.user_id == user_id)
+                        .is_none_or(|user_id| &credential.user_id == user_id)
                 })
                 .cloned()
                 .collect())
@@ -12232,9 +12212,9 @@ mod tests {
                 hop_filter: None,
             })
             .expect("generic forward traversal should succeed");
-        assert!(forward.entities.is_empty());
-        assert!(forward.links.is_empty());
-        assert!(forward.paths.is_empty());
+        assert_eq!(forward.entities.len(), 0);
+        assert_eq!(forward.links.len(), 0);
+        assert_eq!(forward.paths.len(), 0);
 
         let reverse = h
             .traverse(TraverseRequest {
@@ -12246,9 +12226,9 @@ mod tests {
                 hop_filter: None,
             })
             .expect("generic reverse traversal should succeed");
-        assert!(reverse.entities.is_empty());
-        assert!(reverse.links.is_empty());
-        assert!(reverse.paths.is_empty());
+        assert_eq!(reverse.entities.len(), 0);
+        assert_eq!(reverse.links.len(), 0);
+        assert_eq!(reverse.paths.len(), 0);
 
         let reachable = h
             .reachable(ReachableRequest {
@@ -12272,7 +12252,7 @@ mod tests {
             })
             .expect("generic link enumeration should succeed");
         assert_eq!(neighbors.total_count, 0);
-        assert!(neighbors.groups.is_empty());
+        assert_eq!(neighbors.groups.len(), 0);
 
         let typed_bead_query = h
             .query_entities_in_system_collection(
@@ -13342,7 +13322,7 @@ mod tests {
                 ..QueryAuditRequest::default()
             })
             .expect("hidden actor audit query should look empty");
-        assert!(hidden_actor.entries.is_empty());
+        assert_eq!(hidden_actor.entries.len(), 0);
         assert_eq!(hidden_actor.next_cursor, None);
 
         let hidden_history = h
@@ -17497,7 +17477,7 @@ entity_schema:
             })
             .unwrap();
 
-        assert!(!resp.entries.is_empty());
+        assert_ne!(resp.entries.len(), 0);
         assert!(resp.entries.iter().all(|entry| entry.collection == prod));
     }
 
@@ -19084,7 +19064,7 @@ entity_schema:
     fn list_collections_empty_when_none_created() {
         let h = handler();
         let resp = h.list_collections(ListCollectionsRequest {}).unwrap();
-        assert!(resp.collections.is_empty());
+        assert_eq!(resp.collections.len(), 0);
     }
 
     #[test]
@@ -20201,7 +20181,7 @@ link_types:
             .unwrap();
 
         assert_eq!(resp.total_count, 2);
-        assert!(resp.entities.is_empty());
+        assert_eq!(resp.entities.len(), 0);
     }
 
     #[test]
@@ -20773,7 +20753,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
         let explanations = resp
             .dry_run_explanations
             .expect("explanations should be Some(vec![]) when no policy");
-        assert!(explanations.is_empty());
+        assert_eq!(explanations.len(), 0);
     }
 
     #[test]
@@ -22554,7 +22534,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
             assert!(gate.pass, "gate {} should pass", gate.gate);
         }
         // No advisories.
-        assert!(resp.advisories.is_empty());
+        assert_eq!(resp.advisories.len(), 0);
     }
 
     #[test]
@@ -22729,7 +22709,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
             complete_after.pass,
             "complete gate should pass after patch supplies description and priority"
         );
-        assert!(complete_after.failures.is_empty());
+        assert_eq!(complete_after.failures.len(), 0);
     }
 
     // ── Aggregation tests (US-062) ──────────────────────────────────────
@@ -22778,7 +22758,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
             })
             .unwrap();
         assert_eq!(resp.total_count, 6);
-        assert!(resp.groups.is_empty());
+        assert_eq!(resp.groups.len(), 0);
     }
 
     #[test]
@@ -22794,7 +22774,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
         assert_eq!(resp.total_count, 6);
 
         // Should have groups for draft, pending, done, and null (missing status).
-        assert!(!resp.groups.is_empty());
+        assert_ne!(resp.groups.len(), 0);
 
         let draft_count = resp
             .groups
@@ -22889,7 +22869,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
             })
             .unwrap();
         assert_eq!(resp.total_count, 0);
-        assert!(resp.groups.is_empty());
+        assert_eq!(resp.groups.len(), 0);
     }
 
     // ── Namespace management tests (US-036) ───────────────────────────────
@@ -22953,7 +22933,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
                 schema: "billing".into(),
             })
             .unwrap();
-        assert!(resp.collections.is_empty());
+        assert_eq!(resp.collections.len(), 0);
     }
 
     #[test]
@@ -23650,7 +23630,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
         let resp = h.revalidate(RevalidateRequest { collection: col }).unwrap();
         assert_eq!(resp.total_scanned, 1);
         assert_eq!(resp.valid_count, 1);
-        assert!(resp.invalid.is_empty());
+        assert_eq!(resp.invalid.len(), 0);
     }
 
     #[test]
@@ -23722,7 +23702,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
         assert_eq!(resp.valid_count, 1);
         assert_eq!(resp.invalid.len(), 1);
         assert_eq!(resp.invalid[0].id, "rv-3");
-        assert!(!resp.invalid[0].errors.is_empty());
+        assert_ne!(resp.invalid[0].errors.len(), 0);
     }
 
     #[test]
@@ -23754,7 +23734,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
         let resp = h.revalidate(RevalidateRequest { collection: col }).unwrap();
         assert_eq!(resp.total_scanned, 0);
         assert_eq!(resp.valid_count, 0);
-        assert!(resp.invalid.is_empty());
+        assert_eq!(resp.invalid.len(), 0);
     }
 
     #[test]
@@ -23838,7 +23818,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
         assert_eq!(read.entity.schema_version, Some(1));
         assert_eq!(read.entity.data["status"], json!("ready"));
         assert!(read.entity.data["priority"].is_null());
-        assert!(read.warnings.is_empty());
+        assert_eq!(read.warnings.len(), 0);
 
         let stored = h
             .storage_ref()
@@ -23868,7 +23848,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
             .unwrap();
         assert_eq!(newer_read.entity.data["status"], json!("blocked"));
         assert!(newer_read.entity.data.get("priority").is_none());
-        assert!(newer_read.warnings.is_empty());
+        assert_eq!(newer_read.warnings.len(), 0);
     }
 
     #[test]
@@ -24066,7 +24046,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
             .unwrap();
         assert_eq!(response.total_count, 1);
         assert_eq!(response.entities[0].data["status"], json!("ready"));
-        assert!(response.read_warnings.is_empty());
+        assert_eq!(response.read_warnings.len(), 0);
     }
 
     // ── Gate filter tests (US-074b) ───────────────────────────────────────
@@ -24923,11 +24903,13 @@ ORDER BY b.priority DESC, b.updated_at DESC
                 .unwrap(),
             vec![entity_id.clone()]
         );
-        assert!(h
-            .storage_mut()
-            .index_lookup(&billing, "status", &IndexValue::String("pending".into()))
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            h.storage_mut()
+                .index_lookup(&billing, "status", &IndexValue::String("pending".into()))
+                .unwrap()
+                .len(),
+            0
+        );
         assert_eq!(
             h.storage_mut()
                 .index_lookup(
@@ -25590,7 +25572,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
             .iter()
             .map(|c| c.entity.id.as_str())
             .collect();
-        resp_ids.sort();
+        resp_ids.sort_unstable();
         assert_eq!(resp_ids, vec!["t-002", "t-003"]);
 
         // Contrast: the same filter shape against a collection with no
@@ -26363,7 +26345,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
                 ..Default::default()
             })
             .unwrap();
-        assert!(audit.entries[0].metadata.is_empty());
+        assert_eq!(audit.entries[0].metadata.len(), 0);
     }
 
     // ── Drop collection confirmation (US-003) ───────────────────────────────
@@ -26412,7 +26394,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
         .unwrap();
 
         // Collection is gone.
-        assert!(h.storage.list_collections().unwrap().is_empty());
+        assert_eq!(h.storage.list_collections().unwrap().len(), 0);
     }
 
     #[test]
@@ -26837,7 +26819,7 @@ ORDER BY b.priority DESC, b.updated_at DESC
     fn snapshot_empty_handler_returns_zero_cursor() {
         let h = handler();
         let resp = h.snapshot_entities(SnapshotRequest::default()).unwrap();
-        assert!(resp.entities.is_empty());
+        assert_eq!(resp.entities.len(), 0);
         assert_eq!(resp.audit_cursor, 0);
         assert!(resp.next_page_token.is_none());
     }
@@ -27915,13 +27897,12 @@ ORDER BY b.priority DESC, b.updated_at DESC
                 "email",
                 &axon_storage::adapter::IndexValue::String("a@x.io".into()),
             );
-            match idx {
-                Ok(ids) => assert!(
+            // An Err here means the index simply has no entry to return.
+            if let Ok(ids) = idx {
+                assert!(
                     ids.is_empty(),
                     "the secondary-index entry must be rolled back, found: {ids:?}"
-                ),
-                // An Err here means the index simply has no entry to return.
-                Err(_) => {}
+                );
             }
         }
 

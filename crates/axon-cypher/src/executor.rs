@@ -518,7 +518,7 @@ fn bound_entity<'a>(row: &'a BindingRow, alias: &str) -> Option<&'a QueryEntity>
 }
 
 fn target_label_matches(entity: &QueryEntity, label: Option<&str>) -> bool {
-    label.map_or(true, |label| entity.has_label(label))
+    label.is_none_or(|label| entity.has_label(label))
 }
 
 fn other_entity_id(link: &QueryLink, direction: Direction) -> &str {

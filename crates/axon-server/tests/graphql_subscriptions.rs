@@ -107,7 +107,7 @@ async fn graphql_transport_ws_subscription_receives_entity_change() {
             "id": "sub-1",
             "type": "subscribe",
             "payload": {
-                "query": r#"
+                "query": r"
                     subscription {
                         tasksChanged {
                             auditId
@@ -118,7 +118,7 @@ async fn graphql_transport_ws_subscription_receives_entity_change() {
                             actor
                         }
                     }
-                "#
+                "
             }
         }))
         .await;
@@ -173,7 +173,7 @@ async fn graphql_ws_subscription_is_scoped_to_tenant_database_path() {
             "id": "tenant-sub",
             "type": "subscribe",
             "payload": {
-                "query": r#"
+                "query": r"
                     subscription {
                         tasksChanged {
                             entityId
@@ -181,7 +181,7 @@ async fn graphql_ws_subscription_is_scoped_to_tenant_database_path() {
                             actor
                         }
                     }
-                "#
+                "
             }
         }))
         .await;

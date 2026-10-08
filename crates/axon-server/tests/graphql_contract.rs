@@ -708,14 +708,13 @@ async fn graphql_relationship_fields_follow_declared_links() {
             "relationship field should expose {expected} arg: {introspection}"
         );
     }
-    let task_fields: Vec<&str> = introspection["data"]["taskType"]["fields"]
+    let mut task_fields = introspection["data"]["taskType"]["fields"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|field| field["name"].as_str())
-        .collect();
+        .filter_map(|field| field["name"].as_str());
     assert!(
-        task_fields.contains(&"assignedToInbound"),
+        task_fields.any(|name| name == "assignedToInbound"),
         "Task should expose reverse assignedToInbound relationship: {introspection}"
     );
     let edge_fields: Vec<&str> = introspection["data"]["edgeType"]["fields"]
@@ -1409,11 +1408,11 @@ async fn graphql_per_collection_aggregate_queries() {
 
     let invalid = gql(
         &server,
-        r#"{
+        r"{
             itemAggregate(aggregations: [{ function: SUM, field: label }]) {
                 totalCount
             }
-        }"#,
+        }",
     )
     .await;
     assert!(
@@ -1437,12 +1436,12 @@ async fn graphql_aggregate_empty_collection_returns_zero_count() {
 
     let body = gql(
         &server,
-        r#"{
+        r"{
             itemAggregate(aggregations: [{ function: COUNT }]) {
                 totalCount
                 groups { count }
             }
-        }"#,
+        }",
     )
     .await;
     assert!(
@@ -1956,13 +1955,13 @@ async fn graphql_typed_connection_returns_typed_nodes() {
 
     let body = gql(
         &server,
-        r#"{
+        r"{
             itemsConnection {
                 totalCount
                 edges { cursor node { id version label } }
                 pageInfo { hasNextPage }
             }
-        }"#,
+        }",
     )
     .await;
 
@@ -2153,9 +2152,11 @@ async fn graphql_rejects_excessive_depth_and_complexity() {
         "depth-limited query should be rejected: {deep}"
     );
 
+    use std::fmt::Write as _;
     let mut complex_query = String::from("{");
     for i in 0..300 {
-        complex_query.push_str(&format!(" c{i}: collections {{ name }}"));
+        write!(complex_query, " c{i}: collections {{ name }}")
+            .expect("writing to String is infallible");
     }
     complex_query.push('}');
     let complex = gql(&server, &complex_query).await;

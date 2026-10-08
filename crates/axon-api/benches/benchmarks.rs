@@ -61,7 +61,7 @@ fn measure_p99<T>(mut op: impl FnMut() -> T) -> Duration {
         samples.push(started.elapsed());
     }
     samples.sort_unstable();
-    let p99_index = ((samples.len() as f64 * 0.99).ceil() as usize).saturating_sub(1);
+    let p99_index = (samples.len() * 99).div_ceil(100).saturating_sub(1);
     samples[p99_index]
 }
 

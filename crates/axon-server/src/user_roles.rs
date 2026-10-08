@@ -227,7 +227,7 @@ fn epoch_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
 }
 
 fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 #[cfg(test)]
@@ -348,7 +348,7 @@ mod tests {
             .await
             .unwrap();
         assert!(db_remove(&pool, "erik@example.com").await.unwrap());
-        assert!(db_list(&pool).await.unwrap().is_empty());
+        assert_eq!(db_list(&pool).await.unwrap().len(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

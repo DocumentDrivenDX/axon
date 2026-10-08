@@ -1557,7 +1557,7 @@ fn us_095_rollback_dry_run_returns_diff_without_mutating() {
             target,
             diff,
         } => (current, target, diff),
-        _ => panic!("expected DryRun response"),
+        RollbackEntityResponse::Applied { .. } => panic!("expected DryRun response"),
     };
 
     // Diff shows the fields that would be restored (US-095-AC1).
@@ -1680,7 +1680,7 @@ fn us_096_rollback_commit_restores_state_and_audits_lineage() {
             entity,
             audit_entry,
         } => (entity, audit_entry),
-        _ => panic!("expected Applied response"),
+        RollbackEntityResponse::DryRun { .. } => panic!("expected Applied response"),
     };
 
     // US-096-AC1: entity state equals v1 content; version advances.

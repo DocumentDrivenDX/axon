@@ -159,7 +159,7 @@ const DEFAULT_MAX_GRAPHQL_COMPLEXITY: usize = 256;
 const MAX_DEPTH_ENV: &str = "AXON_GRAPHQL_MAX_DEPTH";
 const MAX_COMPLEXITY_ENV: &str = "AXON_GRAPHQL_MAX_COMPLEXITY";
 const AXON_QUERY_CARDINALITY_BUDGET_ENV: &str = "AXON_GRAPHQL_AXON_QUERY_CARDINALITY_BUDGET";
-const IDEMPOTENCY_TTL: Duration = Duration::from_secs(5 * 60);
+const IDEMPOTENCY_TTL: Duration = Duration::from_mins(5);
 
 static GRAPHQL_IDEMPOTENCY_CACHE: OnceLock<StdMutex<HashMap<(String, String), IdempotencyEntry>>> =
     OnceLock::new();
@@ -10975,7 +10975,7 @@ fn pascal_case(s: &str) -> String {
     if name
         .chars()
         .next()
-        .map_or(true, |first| !first.is_ascii_alphabetic() && first != '_')
+        .is_none_or(|first| !first.is_ascii_alphabetic() && first != '_')
     {
         name = format!("Collection{name}");
     }
@@ -11002,7 +11002,7 @@ fn collection_field_name(collection: &str) -> String {
     if name
         .chars()
         .next()
-        .map_or(true, |first| !first.is_ascii_alphabetic() && first != '_')
+        .is_none_or(|first| !first.is_ascii_alphabetic() && first != '_')
     {
         name = format!("collection{name}");
     }
@@ -11214,7 +11214,7 @@ mod tests {
             "ready_beads".into(),
             NamedQueryDef {
                 description: "Open beads with no open dependencies".into(),
-                cypher: r#"
+                cypher: r"
                     MATCH (b:DdxBead {status: 'open'})
                     WHERE NOT EXISTS {
                         MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
@@ -11222,7 +11222,7 @@ mod tests {
                     }
                     RETURN b
                     ORDER BY b.priority DESC
-                "#
+                "
                 .into(),
                 parameters: Vec::new(),
             },
@@ -12719,7 +12719,7 @@ mod tests {
                 .expect("filtered subscription receives a matching event")
                 .expect("subscription stream yields a response")
         };
-        let (response, _) = tokio::join!(receive, publish);
+        let (response, ()) = tokio::join!(receive, publish);
         let data = response_data(response);
         let event = &data["tasksChanged"];
 
@@ -12750,9 +12750,9 @@ mod tests {
             }"#,
         ));
         let mut collection_stream = schema.schema.execute_stream(async_graphql::Request::new(
-            r#"subscription {
+            r"subscription {
                 tasksChanged { entityId collection auditId }
-            }"#,
+            }",
         ));
 
         let publish = async {
@@ -12772,7 +12772,7 @@ mod tests {
                 .expect("collection stream yields a response")
         };
 
-        let (generic_response, collection_response, _) =
+        let (generic_response, collection_response, ()) =
             tokio::join!(receive_generic, receive_collection, publish);
         let generic = response_data(generic_response);
         let collection = response_data(collection_response);
@@ -12850,9 +12850,9 @@ mod tests {
                 .expect("schema with broker should build");
 
         let mut stream = schema.schema.execute_stream(async_graphql::Request::new(
-            r#"subscription {
+            r"subscription {
                 tasksChanged { entityId auditId }
-            }"#,
+            }",
         ));
 
         let publish = async {
@@ -13572,7 +13572,7 @@ mod tests {
         let schema =
             build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
         let request = async_graphql::Request::new(
-            r#"{
+            r"{
                 ready_beads(first: 10) {
                     totalCount
                     pageInfo { hasNextPage hasPreviousPage }
@@ -13581,7 +13581,7 @@ mod tests {
                         node { id title status owner priority secret }
                     }
                 }
-            }"#,
+            }",
         )
         .data(CallerIdentity::new(
             "consultant",
@@ -13669,13 +13669,13 @@ mod tests {
         assert!(minimal_calls > 0, "query should touch storage at all");
 
         calls.store(0, Ordering::SeqCst);
-        run(r#"{
+        run(r"{
             ready_beads(first: 10) {
                 totalCount
                 pageInfo { hasNextPage hasPreviousPage }
                 edges { cursor node { id title status owner priority secret } }
             }
-        }"#)
+        }")
         .await;
         let maximal_calls = calls.load(Ordering::SeqCst);
 
@@ -13728,13 +13728,13 @@ mod tests {
 
         async fn page(schema: &async_graphql::dynamic::Schema, args: &str) -> serde_json::Value {
             let query = format!(
-                r#"{{
+                r"{{
                     ready_beads({args}) {{
                         totalCount
                         pageInfo {{ hasNextPage hasPreviousPage startCursor endCursor }}
                         edges {{ node {{ id }} }}
                     }}
-                }}"#
+                }}"
             );
             let request = async_graphql::Request::new(query).data(CallerIdentity::new(
                 "consultant",
@@ -13960,7 +13960,7 @@ mod tests {
             ),
         ] {
             let request = async_graphql::Request::new(format!(
-                r#"{{ axonQuery(cypher: {cypher:?}) {{ rows }} }}"#
+                r"{{ axonQuery(cypher: {cypher:?}) {{ rows }} }}"
             ))
             .data(CallerIdentity::new(
                 "consultant",
@@ -14194,7 +14194,7 @@ mod tests {
 
         // Verify the entity is gone.
         let get_result = schema.schema.execute(r#"{ tasks(id: "t1") { id } }"#).await;
-        assert!(get_result.errors.is_empty());
+        assert_eq!(get_result.errors, [] as [async_graphql::ServerError; 0]);
         let get_data = get_result.data.into_json().expect("json");
         assert!(get_data["tasks"].is_null());
     }
@@ -14314,7 +14314,7 @@ mod tests {
 
         let mut stream = schema.schema.execute_stream(
             async_graphql::Request::new(
-                r#"subscription { ready_beads(first: 10) { totalCount edges { node { id status } } } }"#,
+                r"subscription { ready_beads(first: 10) { totalCount edges { node { id status } } } }",
             )
             .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
         );
@@ -14348,7 +14348,7 @@ mod tests {
 
         let mut stream = schema.schema.execute_stream(
             async_graphql::Request::new(
-                r#"subscription { ready_beads(first: 10) { totalCount edges { node { id } } } }"#,
+                r"subscription { ready_beads(first: 10) { totalCount edges { node { id } } } }",
             )
             .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
         );
@@ -14432,7 +14432,7 @@ mod tests {
         .expect("schema should build");
 
         let mut stream = schema.schema.execute_stream(
-            async_graphql::Request::new(r#"subscription { open_tasks(first: 10) { totalCount } }"#)
+            async_graphql::Request::new(r"subscription { open_tasks(first: 10) { totalCount } }")
                 .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
         );
         // Consume initial snapshot: 1 open task.
@@ -14516,7 +14516,7 @@ mod tests {
 
         let mut stream = schema.schema.execute_stream(
             async_graphql::Request::new(
-                r#"subscription { ready_beads(first: 10) { totalCount edges { node { id } } } }"#,
+                r"subscription { ready_beads(first: 10) { totalCount edges { node { id } } } }",
             )
             .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
         );
@@ -14605,7 +14605,7 @@ mod tests {
         // Subscribe as "alice" — should only see her own bead.
         let mut stream = schema.schema.execute_stream(
             async_graphql::Request::new(
-                r#"subscription { ready_beads(first: 10) { totalCount edges { node { id owner } } } }"#,
+                r"subscription { ready_beads(first: 10) { totalCount edges { node { id owner } } } }",
             )
             .data(CallerIdentity::new("alice", axon_core::auth::Role::Read)),
         );
@@ -14637,7 +14637,7 @@ mod tests {
         {
             let mut stream = schema.schema.execute_stream(
                 async_graphql::Request::new(
-                    r#"subscription { ready_beads(first: 10) { totalCount } }"#,
+                    r"subscription { ready_beads(first: 10) { totalCount } }",
                 )
                 .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
             );
@@ -14727,13 +14727,15 @@ mod tests {
             .await;
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let body = result.data.into_json().expect("json");
-        let fields: Vec<&str> = body["__type"]["inputFields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|f| f["name"].as_str())
-            .collect();
-        assert!(fields.contains(&"isolation"), "isolation field missing");
+        assert!(
+            body["__type"]["inputFields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|f| f["name"].as_str())
+                .any(|name| name == "isolation"),
+            "isolation field missing"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

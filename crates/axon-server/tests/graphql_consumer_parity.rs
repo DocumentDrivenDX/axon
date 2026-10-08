@@ -178,7 +178,7 @@ async fn graphql_consumer_canary_crud_query_relationship_subscription_delete() {
             "id": "consumer-sub",
             "type": "subscribe",
             "payload": {
-                "query": r#"subscription {
+                "query": r"subscription {
                     taskChanged {
                         auditId
                         collection
@@ -187,7 +187,7 @@ async fn graphql_consumer_canary_crud_query_relationship_subscription_delete() {
                         actor
                         data
                     }
-                }"#
+                }"
             }
         }))
         .await;
@@ -379,10 +379,12 @@ async fn graphql_consumer_canary_crud_query_relationship_subscription_delete() {
         next["payload"]["data"]["taskChanged"]["actor"],
         "subscription-probe"
     );
-    assert!(!next["payload"]["data"]["taskChanged"]["auditId"]
-        .as_str()
-        .unwrap()
-        .is_empty());
+    assert_ne!(
+        next["payload"]["data"]["taskChanged"]["auditId"]
+            .as_str()
+            .unwrap(),
+        ""
+    );
 
     let delete = gql(
         &server,
@@ -477,7 +479,7 @@ async fn graphql_bulk_transaction_replay_preserves_postconditions() {
     let tx_id = bulk["data"]["commitTransaction"]["transactionId"]
         .as_str()
         .expect("transaction id");
-    assert!(!tx_id.is_empty());
+    assert_ne!(tx_id, "");
     assert_eq!(bulk["data"]["commitTransaction"]["replayHit"], false);
     assert_eq!(
         bulk["data"]["commitTransaction"]["results"]

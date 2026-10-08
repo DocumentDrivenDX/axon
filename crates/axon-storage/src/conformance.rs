@@ -799,7 +799,7 @@ macro_rules! storage_conformance_tests {
                     stored_schema.entity_schema.as_ref(),
                 );
                 assert_eq!(diff.compatibility, Compatibility::MetadataOnly);
-                assert!(diff.changes.is_empty());
+                assert_eq!(diff.changes.len(), 0);
             }
 
             #[test]
@@ -1084,7 +1084,7 @@ macro_rules! storage_conformance_tests {
                 let miss = s
                     .index_lookup(&tasks(), "tags[]", &$crate::IndexValue::String("yellow".into()))
                     .expect("index lookup should succeed");
-                assert!(miss.is_empty());
+                assert_eq!(miss.len(), 0);
             }
 
             #[test]

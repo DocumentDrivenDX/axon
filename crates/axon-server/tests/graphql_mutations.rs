@@ -171,7 +171,7 @@ async fn graphql_collection_admin_create_list_refresh_and_drop() {
     assert_eq!(create["data"]["createCollection"]["name"], "projects");
     assert_eq!(create["data"]["createCollection"]["schemaVersion"], 1);
 
-    let list = gql(&server, r#"{ collections { name schemaVersion schema } }"#).await;
+    let list = gql(&server, r"{ collections { name schemaVersion schema } }").await;
     assert!(list["errors"].is_null(), "unexpected errors: {list}");
     let collections = list["data"]["collections"].as_array().unwrap();
     assert!(
@@ -712,7 +712,7 @@ async fn graphql_commit_transaction_create_and_idempotent_replay() {
     let tx_id = body["data"]["commitTransaction"]["transactionId"]
         .as_str()
         .expect("transaction id");
-    assert!(!tx_id.is_empty());
+    assert_ne!(tx_id, "");
     assert_eq!(body["data"]["commitTransaction"]["replayHit"], false);
     assert_eq!(
         body["data"]["commitTransaction"]["results"][0]["entity"]["data"]["title"],

@@ -13,7 +13,7 @@ struct CompileFailCase {
 const CASES: &[CompileFailCase] = &[
     CompileFailCase {
         name: "handler_storage_mut",
-        code: r#"
+        code: r"
 use axon_api::handler::AxonHandler;
 use axon_storage::MemoryStorageAdapter;
 
@@ -21,12 +21,12 @@ fn main() {
     let mut handler = AxonHandler::new(MemoryStorageAdapter::default());
     let _storage = handler.storage_mut();
 }
-"#,
+",
         expected: &["no method named `storage_mut`"],
     },
     CompileFailCase {
         name: "handler_into_storage",
-        code: r#"
+        code: r"
 use axon_api::handler::AxonHandler;
 use axon_storage::MemoryStorageAdapter;
 
@@ -34,12 +34,12 @@ fn main() {
     let handler = AxonHandler::new(MemoryStorageAdapter::default());
     let _storage = handler.into_storage();
 }
-"#,
+",
         expected: &["no method named `into_storage`"],
     },
     CompileFailCase {
         name: "handler_audit_and_storage_accessors",
-        code: r#"
+        code: r"
 use axon_api::handler::AxonHandler;
 use axon_storage::MemoryStorageAdapter;
 
@@ -48,7 +48,7 @@ fn main() {
     let _audit = handler.audit_log_mut();
     let _combined = handler.storage_and_audit_mut();
 }
-"#,
+",
         expected: &[
             "no method named `audit_log_mut`",
             "no method named `storage_and_audit_mut`",
@@ -56,7 +56,7 @@ fn main() {
     },
     CompileFailCase {
         name: "cursor_store_raw_access",
-        code: r#"
+        code: r"
 use axon_storage::{cursor_store::StorageCursorStore, MemoryStorageAdapter};
 
 fn main() {
@@ -64,7 +64,7 @@ fn main() {
     let _storage = store.storage_mut();
     let _inner = store.into_inner();
 }
-"#,
+",
         expected: &[
             "no method named `storage_mut`",
             "no method named `into_inner`",
@@ -72,7 +72,7 @@ fn main() {
     },
     CompileFailCase {
         name: "concrete_adapter_raw_connections",
-        code: r#"
+        code: r"
 use axon_storage::{PostgresStorageAdapter, SqliteStorageAdapter};
 
 fn sqlite(adapter: SqliteStorageAdapter) {
@@ -86,7 +86,7 @@ fn postgres(adapter: PostgresStorageAdapter) {
 }
 
 fn main() {}
-"#,
+",
         expected: &[
             "field `pool` of struct `SqliteStorageAdapter` is private",
             "field `pool` of struct `PostgresStorageAdapter` is private",
@@ -94,7 +94,7 @@ fn main() {}
     },
     CompileFailCase {
         name: "capability_construction",
-        code: r#"
+        code: r"
 use axon_core::{CheckpointCapability, GovernedWriteTx, MigrationCapability};
 
 fn main() {
@@ -103,17 +103,18 @@ fn main() {
     let _checkpoint = CheckpointCapability::storage_checkpoint();
     let _forged = GovernedWriteTx {};
 }
-"#,
+",
         expected: &[
-            "no function or associated item named `storage_adapter`",
-            "no function or associated item named `storage_migration`",
-            "no function or associated item named `storage_checkpoint`",
+            "error[E0599]",
+            "no associated function or constant named `storage_adapter`",
+            "no associated function or constant named `storage_migration`",
+            "no associated function or constant named `storage_checkpoint`",
             "cannot construct `GovernedWriteTx` with struct literal syntax due to private fields",
         ],
     },
     CompileFailCase {
         name: "test_fixtures_no_unchecked_helpers",
-        code: r#"
+        code: r"
 use axon_api::test_fixtures;
 use axon_storage::MemoryStorageAdapter;
 
@@ -122,7 +123,7 @@ fn main() {
     let _drop = test_fixtures::drop_database_unchecked_fixture::<MemoryStorageAdapter>;
     let _intent = test_fixtures::create_mutation_intent_unchecked_fixture::<MemoryStorageAdapter>;
 }
-"#,
+",
         expected: &[
             "cannot find value `put_collection_view_unchecked_fixture` in module `test_fixtures`",
             "cannot find value `drop_database_unchecked_fixture` in module `test_fixtures`",

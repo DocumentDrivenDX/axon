@@ -1026,14 +1026,13 @@ async fn direct_write_intercepted_no_mutation_no_audit() {
 
     // Capture audit baseline: only the creation entry should exist.
     let before = audit_entity(&server).await;
-    let update_entries_before: Vec<_> = before["entries"]
+    let mut update_entries_before = before["entries"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["mutation"] == "entity.update")
-        .collect();
+        .filter(|e| e["mutation"] == "entity.update");
     assert!(
-        update_entries_before.is_empty(),
+        update_entries_before.next().is_none(),
         "no entity.update entries expected before direct write attempt"
     );
 
@@ -1062,14 +1061,13 @@ async fn direct_write_intercepted_no_mutation_no_audit() {
 
     // No entity.update audit entry was produced by the rejected write.
     let after = audit_entity(&server).await;
-    let update_entries_after: Vec<_> = after["entries"]
+    let mut update_entries_after = after["entries"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["mutation"] == "entity.update")
-        .collect();
+        .filter(|e| e["mutation"] == "entity.update");
     assert!(
-        update_entries_after.is_empty(),
+        update_entries_after.next().is_none(),
         "direct write intercepted by approval envelope must not produce an entity.update audit entry"
     );
 }
@@ -1225,7 +1223,7 @@ async fn multi_entity_intent_one_stale_entity_invalidates_whole_intent() {
     assert!(
         stale_dims.iter().any(|d| {
             d["dimension"] == "pre_image"
-                && d["path"].as_str().map_or(false, |p| p.contains("task-b"))
+                && d["path"].as_str().is_some_and(|p| p.contains("task-b"))
         }),
         "stale rejection must name the task-b pre_image dimension: {stale_dims:?}"
     );

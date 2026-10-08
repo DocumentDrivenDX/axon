@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn memory_cursor_store_len_tracks_distinct_keys() {
         let mut store = MemoryCursorStore::default();
-        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
         store.set("kafka", "tasks", 1);
         assert_eq!(store.len(), 1);
         store.set("kafka", "tasks", 2);

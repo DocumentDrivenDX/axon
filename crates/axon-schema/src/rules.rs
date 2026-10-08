@@ -163,7 +163,7 @@ fn evaluate_condition_op(op: &ConditionOp, value: Option<&Value>) -> bool {
             is_present == *flag
         }
         ConditionOp::IsNull(flag) => {
-            let is_null = value.is_none() || value.is_some_and(|v| v.is_null());
+            let is_null = value.is_none_or(Value::is_null);
             is_null == *flag
         }
         ConditionOp::Gt(expected) => {
@@ -230,7 +230,7 @@ fn evaluate_requirement(req: &RuleRequirement, data: &Value) -> bool {
             .map(|s| {
                 regex::Regex::new(pattern)
                     .ok()
-                    .map_or(true, |r| !r.is_match(s))
+                    .is_none_or(|r| !r.is_match(s))
             })
             .unwrap_or(true),
         RequirementOp::MinLength(min) => value
@@ -768,7 +768,7 @@ mod tests {
     fn evaluate_rules_empty_when_all_pass() {
         let rules = vec![rule_approved_needs_approver()];
         let data = json!({"status": "draft"});
-        assert!(evaluate_rules(&rules, &data).is_empty());
+        assert_eq!(evaluate_rules(&rules, &data).len(), 0);
     }
 
     // ── Fix interpolation ──────────────────────────────────────────────
@@ -1034,6 +1034,6 @@ mod tests {
         // When no entity schema is provided, field references are not checked.
         let rules = vec![simple_rule("check-anything", "any_field")];
         let errors = validate_rule_definitions(&rules, None);
-        assert!(errors.is_empty());
+        assert_eq!(errors.len(), 0);
     }
 }

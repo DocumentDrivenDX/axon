@@ -1011,7 +1011,6 @@ fn run_user_embedded(cmd: UserCmd, format: &OutputFormat) -> Result<()> {
                     }
                 }
             }
-            Ok(())
         }
         UserCmd::Grant { login, role } => {
             let role: Role = match role.as_str() {
@@ -1031,7 +1030,6 @@ fn run_user_embedded(cmd: UserCmd, format: &OutputFormat) -> Result<()> {
                     println!("Granted {} to {login}", role_str.trim_matches('"'));
                 }
             }
-            Ok(())
         }
         UserCmd::Revoke { login } => {
             let removed = db
@@ -1050,9 +1048,9 @@ fn run_user_embedded(cmd: UserCmd, format: &OutputFormat) -> Result<()> {
             } else {
                 anyhow::bail!("no explicit role assigned to '{login}'");
             }
-            Ok(())
         }
     }
+    Ok(())
 }
 
 /// Run `axon cors` commands against the control-plane SQLite database directly
@@ -1086,7 +1084,6 @@ fn run_cors_embedded(cmd: CorsCmd, format: &OutputFormat) -> Result<()> {
                     }
                 }
             }
-            Ok(())
         }
         CorsCmd::Add { origin } => {
             db.add_cors_origin(&origin)
@@ -1100,7 +1097,6 @@ fn run_cors_embedded(cmd: CorsCmd, format: &OutputFormat) -> Result<()> {
                 }
                 OutputFormat::Table => println!("Added CORS origin: {origin}"),
             }
-            Ok(())
         }
         CorsCmd::Remove { origin } => {
             let removed = db
@@ -1119,9 +1115,9 @@ fn run_cors_embedded(cmd: CorsCmd, format: &OutputFormat) -> Result<()> {
             } else {
                 anyhow::bail!("origin '{origin}' was not in the allow-list");
             }
-            Ok(())
         }
     }
+    Ok(())
 }
 
 #[cfg(feature = "serve")]
@@ -1194,7 +1190,6 @@ fn run_database(
                 OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
                 OutputFormat::Table => println!("{}", resp.name),
             }
-            Ok(())
         }
         DatabaseCmd::List => {
             let resp = handler.list_databases(ListDatabasesRequest {})?;
@@ -1206,7 +1201,6 @@ fn run_database(
                     }
                 }
             }
-            Ok(())
         }
         DatabaseCmd::Drop {
             name,
@@ -1222,9 +1216,9 @@ fn run_database(
                     resp.name, resp.collections_removed
                 ),
             }
-            Ok(())
         }
     }
+    Ok(())
 }
 
 fn run_namespace(
@@ -1239,7 +1233,6 @@ fn run_namespace(
                 OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
                 OutputFormat::Table => println!("{}.{}", resp.database, resp.schema),
             }
-            Ok(())
         }
         NamespaceCmd::List { database } => {
             let resp = handler.list_namespaces(ListNamespacesRequest { database })?;
@@ -1251,7 +1244,6 @@ fn run_namespace(
                     }
                 }
             }
-            Ok(())
         }
         NamespaceCmd::Collections { database, schema } => {
             let resp = handler
@@ -1264,7 +1256,6 @@ fn run_namespace(
                     }
                 }
             }
-            Ok(())
         }
         NamespaceCmd::Drop {
             database,
@@ -1285,9 +1276,9 @@ fn run_namespace(
                     resp.database, resp.schema, resp.collections_removed
                 ),
             }
-            Ok(())
         }
     }
+    Ok(())
 }
 
 fn run_collection(
@@ -3550,7 +3541,7 @@ mod tests {
             .audit_log()
             .query_by_entity(&CollectionId::new("tasks"), &EntityId::new("t-001"))
             .unwrap();
-        assert!(!entries.is_empty());
+        assert_ne!(entries, [] as [axon_audit::AuditEntry; 0]);
 
         let entry = handler.audit_log().find_by_id(entries[0].id).unwrap();
         assert!(entry.is_some());

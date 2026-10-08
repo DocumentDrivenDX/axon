@@ -547,7 +547,7 @@ mod tests {
         let schema = schema_v1();
         let diff = diff_schemas(Some(&schema), Some(&schema));
         assert_eq!(diff.compatibility, Compatibility::MetadataOnly);
-        assert!(diff.changes.is_empty());
+        assert_eq!(diff.changes.len(), 0);
     }
 
     #[test]
@@ -563,6 +563,6 @@ mod tests {
         let new = schema_v1();
         let diff = diff_schemas(None, Some(&new));
         assert_eq!(diff.compatibility, Compatibility::Compatible);
-        assert!(!diff.changes.is_empty());
+        assert_ne!(diff.changes.len(), 0);
     }
 }

@@ -13,51 +13,54 @@ struct CompileFailCase {
 const CASES: &[CompileFailCase] = &[
     CompileFailCase {
         name: "capability_struct_literal",
-        code: r#"
+        code: r"
 use axon_core::{BeadSystemCollection, GovernedSystemCapability};
 
 fn main() {
     let _forged = GovernedSystemCapability::<BeadSystemCollection> {};
 }
-"#,
+",
         expected: &["private fields"],
     },
     CompileFailCase {
         name: "capability_constructor",
-        code: r#"
+        code: r"
 use axon_core::{BeadSystemCollection, GovernedSystemCapability};
 
 fn main() {
     let _forged = GovernedSystemCapability::<BeadSystemCollection>::new();
 }
-"#,
-        expected: &["no function or associated item named `new`"],
+",
+        expected: &[
+            "error[E0599]",
+            "no associated function or constant named `new`",
+        ],
     },
     CompileFailCase {
         name: "capability_widen_to_raw_system_collection",
-        code: r#"
+        code: r"
 use axon_core::{GovernedSystemCapability, SystemCollection, BEAD_SYSTEM_CAPABILITY};
 
 fn main() {
     let _widened: GovernedSystemCapability<SystemCollection> = BEAD_SYSTEM_CAPABILITY;
 }
-"#,
+",
         expected: &["GovernedSystemCollection"],
     },
     CompileFailCase {
         name: "capability_retarget",
-        code: r#"
+        code: r"
 use axon_core::{SystemCollection, BEAD_SYSTEM_CAPABILITY};
 
 fn main() {
     let _retargeted = BEAD_SYSTEM_CAPABILITY.with_collection(SystemCollection::links());
 }
-"#,
+",
         expected: &["no method named `with_collection`"],
     },
     CompileFailCase {
         name: "capability_forge_module_marker",
-        code: r#"
+        code: r"
 use axon_core::{GovernedSystemCollection, SystemCollection};
 
 struct ForgedModule;
@@ -67,7 +70,7 @@ impl GovernedSystemCollection for ForgedModule {
 }
 
 fn main() {}
-"#,
+",
         expected: &["Sealed"],
     },
     CompileFailCase {

@@ -374,7 +374,7 @@ async fn grpc_delete_link() {
         .await
         .unwrap();
 
-    assert!(resp.into_inner().entities.is_empty());
+    assert_eq!(resp.into_inner().entities.len(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -696,7 +696,7 @@ async fn grpc_commit_transaction_atomic() {
         .unwrap();
 
     let inner = resp.into_inner();
-    assert!(!inner.transaction_id.is_empty());
+    assert_ne!(inner.transaction_id.len(), 0);
     assert_eq!(inner.entities.len(), 2);
 
     // Verify: new-one exists.
@@ -868,7 +868,7 @@ async fn grpc_put_and_get_schema() {
         .await
         .unwrap();
     let inner = resp.into_inner();
-    assert!(!inner.schema_json.is_empty());
+    assert_ne!(inner.schema_json.len(), 0);
     assert!(!inner.dry_run);
 
     let resp = client
@@ -967,7 +967,7 @@ async fn grpc_collection_lifecycle() {
     let inner = resp.into_inner();
     assert_eq!(inner.name, "books");
     assert_eq!(inner.entity_count, 1);
-    assert!(!inner.schema_json.is_empty());
+    assert_ne!(inner.schema_json.len(), 0);
 
     // List.
     let resp = client
@@ -1754,7 +1754,7 @@ async fn http_policy_denials_and_audit_redaction_are_end_to_end() {
         .await;
     row_audit.assert_status_ok();
     let row_audit: Value = row_audit.json();
-    assert!(row_audit["entries"].as_array().unwrap().is_empty());
+    assert_eq!(row_audit["entries"].as_array().unwrap().len(), 0);
 
     let tx_body = json!({
         "idempotency_key": "policy-denied-transaction-replay",
@@ -2413,7 +2413,7 @@ async fn http_transaction_publishes_typed_change_events_with_before_snapshots() 
     assert!(created.previous_data.is_none());
     assert_eq!(created.previous_version, None);
     assert_eq!(created.actor, "tx-agent");
-    assert!(!created.audit_id.is_empty());
+    assert_ne!(created.audit_id.len(), 0);
 
     let updated = &events[1];
     assert_eq!(updated.entity_id, "tx-update");
@@ -2426,7 +2426,7 @@ async fn http_transaction_publishes_typed_change_events_with_before_snapshots() 
     assert_eq!(updated.version, 2);
     assert_eq!(updated.previous_version, Some(1));
     assert_eq!(updated.actor, "tx-agent");
-    assert!(!updated.audit_id.is_empty());
+    assert_ne!(updated.audit_id.len(), 0);
 
     let deleted = &events[2];
     assert_eq!(deleted.entity_id, "tx-delete");
@@ -2439,5 +2439,5 @@ async fn http_transaction_publishes_typed_change_events_with_before_snapshots() 
     assert_eq!(deleted.version, 1);
     assert_eq!(deleted.previous_version, Some(1));
     assert_eq!(deleted.actor, "tx-agent");
-    assert!(!deleted.audit_id.is_empty());
+    assert_ne!(deleted.audit_id.len(), 0);
 }

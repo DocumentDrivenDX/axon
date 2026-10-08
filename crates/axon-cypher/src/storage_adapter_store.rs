@@ -582,8 +582,7 @@ mod tests {
         let (storage, schema) = setup();
         let store = StorageAdapterQueryStore::new(&storage, &schema);
         let scan = EntityScan::label("NoSuchLabel");
-        let entities: Vec<_> = store.scan_entities(scan).collect();
-        assert!(entities.is_empty());
+        assert_eq!(store.scan_entities(scan).count(), 0);
     }
 
     // ── AC2: get_entity via encoded ID ───────────────────────────────────────
@@ -641,7 +640,7 @@ mod tests {
             link_property_filters: vec![],
         };
         let links = collect_links(&store, traversal);
-        assert!(links.is_empty());
+        assert_eq!(links.len(), 0);
     }
 
     // ── AC3: incoming link traversal ─────────────────────────────────────────
@@ -775,7 +774,6 @@ mod tests {
             relationship_types: vec![],
             link_property_filters: vec![],
         };
-        let links: Vec<_> = store.traverse_links(traversal).collect();
-        assert!(links.is_empty());
+        assert_eq!(store.traverse_links(traversal).count(), 0);
     }
 }

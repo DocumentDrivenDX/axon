@@ -536,14 +536,14 @@ mod tests {
         let template = "{{_id}} {{_version}} {{_created_at}} {{title}}";
         let result = validate_template(template, Some(&schema));
         assert!(result.is_valid());
-        assert!(result.warnings.is_empty());
+        assert_eq!(result.warnings, [] as [TemplateFieldWarning; 0]);
     }
 
     #[test]
     fn no_schema_accepts_all_fields() {
         let result = validate_template("{{anything}} {{goes}}", None);
         assert!(result.is_valid());
-        assert!(result.warnings.is_empty());
+        assert_eq!(result.warnings, [] as [TemplateFieldWarning; 0]);
     }
 
     #[test]
@@ -569,7 +569,7 @@ mod tests {
         });
         let result = validate_template("{{amount.value}} {{amount.currency}}", Some(&schema));
         assert!(result.is_valid());
-        assert!(result.warnings.is_empty());
+        assert_eq!(result.warnings, [] as [TemplateFieldWarning; 0]);
     }
 
     #[test]
@@ -595,7 +595,7 @@ mod tests {
         let schema = schema_with_required(&["title"], &[]);
         let result = validate_template("# Static content only", Some(&schema));
         assert!(result.is_valid());
-        assert!(result.warnings.is_empty());
+        assert_eq!(result.warnings, [] as [TemplateFieldWarning; 0]);
     }
 
     #[test]

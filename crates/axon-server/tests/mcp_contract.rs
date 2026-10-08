@@ -124,7 +124,7 @@ async fn explain_policy_as(server: &axum_test::TestServer, actor: &str, input: &
         server,
         actor,
         &format!(
-            r#"{{
+            r"{{
                 explainPolicy(input: {input}) {{
                     operation
                     collection
@@ -141,7 +141,7 @@ async fn explain_policy_as(server: &axum_test::TestServer, actor: &str, input: &
                         reasonRequired
                     }}
                 }}
-            }}"#
+            }}"
         ),
     )
     .await;
@@ -444,10 +444,7 @@ async fn mcp_initialize_returns_server_capabilities() {
     let result = &body["result"];
     assert_eq!(result["protocolVersion"], "2024-11-05");
     assert_eq!(result["serverInfo"]["name"], "axon-mcp");
-    assert!(!result["serverInfo"]["version"]
-        .as_str()
-        .unwrap_or("")
-        .is_empty());
+    assert_ne!(result["serverInfo"]["version"].as_str().unwrap_or(""), "");
     assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
     assert_eq!(result["capabilities"]["resources"]["subscribe"], true);
     assert_eq!(result["capabilities"]["prompts"]["listChanged"], false);
@@ -498,7 +495,7 @@ async fn mcp_session_id_issued_on_first_request() {
         .headers()
         .get("x-axon-mcp-session")
         .expect("response should carry an MCP session header");
-    assert!(!session.is_empty());
+    assert_ne!(session.len(), 0);
 }
 
 // ── tools/list ────────────────────────────────────────────────────────────────
@@ -1284,14 +1281,13 @@ async fn mcp_crud_policy_denials_return_structured_outcomes() {
     assert_eq!(structured["ruleId"], "contractors-cannot-write-secret");
     assert_eq!(structured["deniedFields"], json!(["secret"]));
     assert_eq!(structured["fieldPaths"], json!(["secret"]));
-    let rule_names: Vec<_> = structured["rules"]
+    let mut rule_names = structured["rules"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|rule| rule["name"].as_str())
-        .collect();
+        .filter_map(|rule| rule["name"].as_str());
     assert!(
-        rule_names.contains(&"contractors-cannot-write-secret"),
+        rule_names.any(|name| name == "contractors-cannot-write-secret"),
         "structured denial should name the matching rule: {denied}"
     );
 
@@ -2339,7 +2335,7 @@ async fn mcp_tenant_aware_session_id_issued_on_first_request() {
         .headers()
         .get("x-axon-mcp-session")
         .expect("tenant-aware MCP should issue a session id");
-    assert!(!session.is_empty());
+    assert_ne!(session.len(), 0);
 }
 
 // ── SSE endpoint ──────────────────────────────────────────────────────────────

@@ -226,7 +226,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         raw_schema
             .entity_schema
             .as_ref()
-            .map_or(true, |_s| validate(&raw_schema, &entity.data).is_ok())
+            .is_none_or(|_s| validate(&raw_schema, &entity.data).is_ok())
     });
 
     SchemaEnforcementResult {

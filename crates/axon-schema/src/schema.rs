@@ -783,7 +783,7 @@ access_control:
     fn collection_schema_without_lifecycles_defaults_to_empty() {
         let doc = EsfDocument::parse(INVOICE_ESF).unwrap();
         let schema = doc.into_collection_schema().unwrap();
-        assert!(schema.lifecycles.is_empty());
+        assert_eq!(schema.lifecycles.len(), 0);
     }
 
     #[test]
@@ -823,6 +823,6 @@ access_control:
     #[test]
     fn collection_schema_new_has_empty_lifecycles() {
         let schema = CollectionSchema::new(CollectionId::new("tasks"));
-        assert!(schema.lifecycles.is_empty());
+        assert_eq!(schema.lifecycles.len(), 0);
     }
 }

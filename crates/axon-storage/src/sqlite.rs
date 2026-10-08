@@ -5212,10 +5212,12 @@ mod tests {
             store
                 .put(task("t-002", json!({"status": 42})))
                 .expect("put");
-            assert!(store
-                .index_lookup(&col, "status", &IndexValue::String(String::new()))
-                .expect("lookup")
-                .is_empty());
+            assert_eq!(
+                store
+                    .index_lookup(&col, "status", &IndexValue::String(String::new()))
+                    .expect("lookup"),
+                [] as [axon_core::EntityId; 0]
+            );
             // No rows at all were written for the missing/type-mismatch entities.
             let n = store
                 .query_scalar_i64("SELECT COUNT(*) FROM entity_index")
@@ -5288,10 +5290,12 @@ mod tests {
                     .expect("lookup"),
                 vec![EntityId::new("t-001")]
             );
-            assert!(store
-                .index_lookup(&col, "status", &IndexValue::String("done".into()))
-                .expect("lookup")
-                .is_empty());
+            assert_eq!(
+                store
+                    .index_lookup(&col, "status", &IndexValue::String("done".into()))
+                    .expect("lookup"),
+                [] as [axon_core::EntityId; 0]
+            );
         }
 
         #[test]
@@ -5311,10 +5315,12 @@ mod tests {
                 .expect("put");
 
             // No index rows yet.
-            assert!(store
-                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .expect("lookup")
-                .is_empty());
+            assert_eq!(
+                store
+                    .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                    .expect("lookup"),
+                [] as [axon_core::EntityId; 0]
+            );
 
             store
                 .reindex_collection(&col, &[status_index(), priority_index()])
@@ -5427,7 +5433,7 @@ mod tests {
             let results = store
                 .compound_index_prefix(&col, 0, &prefix)
                 .expect("prefix");
-            assert!(results.is_empty());
+            assert_eq!(results, [] as [axon_core::EntityId; 0]);
             let n = store
                 .query_scalar_i64("SELECT COUNT(*) FROM entity_compound_index")
                 .expect("count");
@@ -5467,10 +5473,12 @@ mod tests {
                 .expect("put");
 
             let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
-            assert!(store
-                .compound_index_prefix(&col, 0, &prefix)
-                .expect("prefix")
-                .is_empty());
+            assert_eq!(
+                store
+                    .compound_index_prefix(&col, 0, &prefix)
+                    .expect("prefix"),
+                [] as [axon_core::EntityId; 0]
+            );
 
             store
                 .reindex_compound_collection(&col, &[status_priority_index(false)])
@@ -5629,7 +5637,10 @@ mod tests {
             store
                 .compare_and_swap(person("p-1", json!({"status": "archived"})), 1)
                 .expect("cas");
-            assert!(lookup_status(&store, "active").is_empty());
+            assert_eq!(
+                lookup_status(&store, "active"),
+                [] as [axon_core::EntityId; 0]
+            );
             assert_eq!(
                 lookup_status(&store, "archived"),
                 vec![EntityId::new("p-1")]
@@ -5645,7 +5656,10 @@ mod tests {
             store
                 .delete(&people(), &EntityId::new("p-1"))
                 .expect("delete");
-            assert!(lookup_status(&store, "active").is_empty());
+            assert_eq!(
+                lookup_status(&store, "active"),
+                [] as [axon_core::EntityId; 0]
+            );
         }
 
         #[test]

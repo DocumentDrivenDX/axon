@@ -127,7 +127,7 @@ fn bootstrap_vector<S: StorageAdapter>(handler: &mut AxonHandler<S>) {
     bead::init_beads(handler).unwrap();
     bead::init_beads(handler).unwrap();
 
-    assert!(bead::list_beads(handler, None).unwrap().is_empty());
+    assert_eq!(bead::list_beads(handler, None).unwrap().len(), 0);
 }
 
 fn schema_vector<S: StorageAdapter>(handler: &mut AxonHandler<S>) {
@@ -148,7 +148,7 @@ fn schema_vector<S: StorageAdapter>(handler: &mut AxonHandler<S>) {
         matches!(err, AxonError::SchemaValidation(_)),
         "got: {err:?}"
     );
-    assert!(bead::list_beads(handler, None).unwrap().is_empty());
+    assert_eq!(bead::list_beads(handler, None).unwrap().len(), 0);
     assert_eq!(
         entity_and_link_audit_len(handler),
         audit_len_before,

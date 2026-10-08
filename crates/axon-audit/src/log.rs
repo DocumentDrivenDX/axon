@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn memory_log_starts_empty() {
         let log = MemoryAuditLog::default();
-        assert!(log.is_empty());
+        assert_eq!(log.len(), 0);
     }
 
     #[test]
@@ -524,7 +524,7 @@ mod tests {
             log.query_by_entity(&tasks(), &EntityId::new("none")),
             "empty entity query should succeed",
         );
-        assert!(entries.is_empty());
+        assert_eq!(entries.len(), 0);
     }
 
     #[test]
@@ -549,7 +549,7 @@ mod tests {
             log.query_by_time_range(0, e1.timestamp_ns - 1),
             "empty time range query should succeed",
         );
-        assert!(results_empty.is_empty());
+        assert_eq!(results_empty.len(), 0);
     }
 
     #[test]
@@ -753,7 +753,7 @@ mod tests {
             }),
             "missing intent-lineage query should succeed",
         );
-        assert!(missing.entries.is_empty());
+        assert_eq!(missing.entries.len(), 0);
     }
 
     #[test]
@@ -1016,14 +1016,14 @@ mod tests {
             }),
             "page 4 (drained) query should succeed",
         );
-        assert!(page4.entries.is_empty());
+        assert_eq!(page4.entries.len(), 0);
         assert!(page4.next_cursor.is_none());
     }
 
     #[test]
     fn audit_entries_are_append_only() {
         let log = MemoryAuditLog::default();
-        assert!(log.is_empty());
+        assert_eq!(log.len(), 0);
         // No delete or update method exists — enforced by the trait definition.
     }
 

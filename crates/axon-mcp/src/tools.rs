@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn empty_registry_lists_no_tools() {
         let registry = ToolRegistry::new();
-        assert!(registry.list_tools().is_empty());
+        assert_eq!(registry.list_tools().len(), 0);
         assert_eq!(registry.tool_count(), 0);
     }
 

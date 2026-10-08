@@ -1521,7 +1521,7 @@ mod tests {
 
         let err = import_beads(&mut h, &fixture).unwrap_err();
         assert!(matches!(err, AxonError::SchemaValidation(_)));
-        assert!(list_beads(&h, None).unwrap().is_empty());
+        assert_eq!(list_beads(&h, None).unwrap().len(), 0);
         assert_eq!(entity_and_link_audit_len(&h), audit_before);
     }
 
@@ -1557,7 +1557,7 @@ mod tests {
 
         let err = import_beads(&mut h, &fixture).unwrap_err();
         assert!(err.to_string().contains("circular dependency"));
-        assert!(list_beads(&h, None).unwrap().is_empty());
+        assert_eq!(list_beads(&h, None).unwrap().len(), 0);
         assert_eq!(entity_and_link_audit_len(&h), audit_before);
     }
 
@@ -1710,7 +1710,7 @@ mod tests {
 
         let err = add_dependency(&mut h, "base", "missing").unwrap_err();
         assert!(matches!(err, AxonError::NotFound(_)));
-        assert!(dependency_tree(&h, "base").unwrap().is_empty());
+        assert_eq!(dependency_tree(&h, "base").unwrap().len(), 0);
         assert_eq!(audit_len(&h), audit_before);
     }
 
@@ -1722,7 +1722,7 @@ mod tests {
 
         let err = add_dependency(&mut h, "base", "base").unwrap_err();
         assert!(err.to_string().contains("cannot depend on itself"));
-        assert!(dependency_tree(&h, "base").unwrap().is_empty());
+        assert_eq!(dependency_tree(&h, "base").unwrap().len(), 0);
         assert_eq!(audit_len(&h), audit_before);
     }
 
@@ -1738,7 +1738,7 @@ mod tests {
 
         let err = add_dependency(&mut h, "a", "c").unwrap_err();
         assert!(err.to_string().contains("circular dependency"));
-        assert!(dependency_tree(&h, "a").unwrap().is_empty());
+        assert_eq!(dependency_tree(&h, "a").unwrap().len(), 0);
         assert_eq!(ids(&dependency_tree(&h, "c").unwrap()), vec!["a", "b"]);
         assert_eq!(audit_len(&h), audit_before);
     }
@@ -1767,7 +1767,7 @@ mod tests {
         let audit_before = audit_len(&h);
         let err = add_dependency(&mut h, "n-00", "n-11").unwrap_err();
         assert!(err.to_string().contains("circular dependency"));
-        assert!(dependency_tree(&h, "n-00").unwrap().is_empty());
+        assert_eq!(dependency_tree(&h, "n-00").unwrap().len(), 0);
         assert_eq!(audit_len(&h), audit_before);
     }
 

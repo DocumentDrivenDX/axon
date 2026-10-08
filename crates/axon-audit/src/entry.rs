@@ -532,13 +532,13 @@ mod tests {
     fn compute_diff_empty_when_no_change() {
         let v = json!({"title": "v1", "done": false});
         let diff = compute_diff(&v, &v);
-        assert!(diff.is_empty());
+        assert_eq!(diff.len(), 0);
     }
 
     #[test]
     fn compute_diff_non_objects_returns_empty() {
         let diff = compute_diff(&json!("string"), &json!(42));
-        assert!(diff.is_empty());
+        assert_eq!(diff.len(), 0);
     }
 
     #[test]

@@ -75,7 +75,8 @@ fn caller_from_metadata(
     }
 }
 
-// Include the generated protobuf code.
+// Tonic-generated methods require an unboxed Status in their public signatures.
+#[allow(clippy::result_large_err)]
 pub mod proto {
     tonic::include_proto!("axon.v1");
 }
@@ -297,6 +298,8 @@ impl<S: StorageAdapter> AxonServiceImpl<S> {
         Self { handler, auth }
     }
 
+    // Match the unboxed Status required by the Tonic service boundary.
+    #[allow(clippy::result_large_err)]
     async fn authorize(&self, peer: Option<std::net::SocketAddr>) -> Result<Identity, Status> {
         self.auth.resolve_peer(peer).await.map_err(auth_to_status)
     }
@@ -1478,7 +1481,7 @@ mod tests {
             .expect("prod-scoped audit query should succeed")
             .into_inner()
             .entries;
-        assert!(!prod_entries.is_empty());
+        assert_ne!(prod_entries.len(), 0);
         assert!(prod_entries
             .iter()
             .all(|entry| entry.collection == "prod.default.tasks"));
@@ -1495,7 +1498,7 @@ mod tests {
             .expect("cross-database audit query should succeed")
             .into_inner()
             .entries;
-        assert!(cross_database_entries.is_empty());
+        assert_eq!(cross_database_entries.len(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -206,7 +206,7 @@ async fn snapshot_empty_database_returns_zero_cursor() {
     resp.assert_status_ok();
     let body: Value = resp.json();
 
-    assert!(body["entities"].as_array().unwrap().is_empty());
+    assert_eq!(body["entities"].as_array().unwrap().len(), 0);
     assert_eq!(body["audit_cursor"].as_u64().unwrap(), 0);
     assert!(body["next_page_token"].is_null());
 }

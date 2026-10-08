@@ -245,7 +245,7 @@ mod tests {
         migrate_cors_origins(&pool).await.unwrap();
         db_add(&pool, "https://foo:3000").await.unwrap();
         assert!(db_remove(&pool, "https://foo:3000").await.unwrap());
-        assert!(db_list(&pool).await.unwrap().is_empty());
+        assert_eq!(db_list(&pool).await.unwrap().len(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

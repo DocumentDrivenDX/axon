@@ -1155,7 +1155,7 @@ mod tests {
             sink.emit(&envelope),
             "disabled Kafka sink emit should be a no-op",
         );
-        assert!(sink.sent.is_empty());
+        assert_eq!(sink.sent.len(), 0);
     }
 
     #[cfg(not(feature = "kafka"))]

@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn no_refs_static_template() {
         let refs = extract_field_refs("# Static Heading\n\nNo fields here.");
-        assert!(refs.is_empty());
+        assert_eq!(refs.len(), 0);
     }
 
     #[test]

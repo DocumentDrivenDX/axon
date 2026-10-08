@@ -1,2 +1,8 @@
 [alias]
 xtask = "run -p xtask --"
+
+[env]
+# Each PostgreSQL test owns database pools on one shared fixture. Keep the
+# default parallel run within that fixture's connection budget; allow an
+# explicitly configured larger test cluster to choose its own concurrency.
+RUST_TEST_THREADS = { value = "2", force = false }

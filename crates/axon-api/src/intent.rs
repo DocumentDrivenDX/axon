@@ -2437,10 +2437,13 @@ mod tests {
                 .data["balance"],
             55
         );
-        assert!(storage
-            .query_audit_by_operation(&MutationType::EntityUpdate)
-            .expect("entity update audit query should pass")
-            .is_empty());
+        assert_eq!(
+            storage
+                .query_audit_by_operation(&MutationType::EntityUpdate)
+                .expect("entity update audit query should pass")
+                .len(),
+            0
+        );
         let stale_audit = storage
             .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentCommit),
@@ -2520,10 +2523,13 @@ mod tests {
                 .data["balance"],
             100
         );
-        assert!(storage
-            .query_audit_by_operation(&MutationType::EntityUpdate)
-            .expect("entity update audit query should pass")
-            .is_empty());
+        assert_eq!(
+            storage
+                .query_audit_by_operation(&MutationType::EntityUpdate)
+                .expect("entity update audit query should pass")
+                .len(),
+            0
+        );
         let mismatch_audit = storage
             .query_audit_paginated(AuditQuery {
                 operation: Some(MutationType::IntentCommit),
@@ -2756,14 +2762,20 @@ mod tests {
                 .data["balance"],
             50
         );
-        assert!(storage
-            .query_audit_by_operation(&MutationType::EntityUpdate)
-            .expect("entity update audit query should pass")
-            .is_empty());
-        assert!(storage
-            .query_audit_by_operation(&MutationType::LinkCreate)
-            .expect("link create audit query should pass")
-            .is_empty());
+        assert_eq!(
+            storage
+                .query_audit_by_operation(&MutationType::EntityUpdate)
+                .expect("entity update audit query should pass")
+                .len(),
+            0
+        );
+        assert_eq!(
+            storage
+                .query_audit_by_operation(&MutationType::LinkCreate)
+                .expect("link create audit query should pass")
+                .len(),
+            0
+        );
         assert_eq!(
             storage
                 .query_audit_by_operation(&MutationType::IntentPreview)
@@ -3814,18 +3826,27 @@ mod tests {
             MutationType::IntentPreview,
             "preview should be audited as intent lineage, not entity/link mutation"
         );
-        assert!(storage
-            .query_audit_by_operation(&MutationType::EntityCreate)
-            .expect("entity create audit query should pass")
-            .is_empty());
-        assert!(storage
-            .query_audit_by_operation(&MutationType::EntityUpdate)
-            .expect("entity update audit query should pass")
-            .is_empty());
-        assert!(storage
-            .query_audit_by_operation(&MutationType::LinkCreate)
-            .expect("link create audit query should pass")
-            .is_empty());
+        assert_eq!(
+            storage
+                .query_audit_by_operation(&MutationType::EntityCreate)
+                .expect("entity create audit query should pass")
+                .len(),
+            0
+        );
+        assert_eq!(
+            storage
+                .query_audit_by_operation(&MutationType::EntityUpdate)
+                .expect("entity update audit query should pass")
+                .len(),
+            0
+        );
+        assert_eq!(
+            storage
+                .query_audit_by_operation(&MutationType::LinkCreate)
+                .expect("link create audit query should pass")
+                .len(),
+            0
+        );
     }
 
     #[test]

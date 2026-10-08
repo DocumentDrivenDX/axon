@@ -442,7 +442,7 @@ mod tests {
         let svc = service();
         let t = svc.provision_tenant(hosted_spec("prod")).unwrap();
         assert_eq!(t.status, TenantStatus::Provisioning);
-        assert!(!t.id.as_str().is_empty());
+        assert_ne!(t.id.as_str(), "");
         assert!(t.created_at_ms > 0);
     }
 

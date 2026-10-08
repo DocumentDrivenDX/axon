@@ -165,7 +165,7 @@ async fn explain_policy_as(server: &axum_test::TestServer, actor: &str, input: &
         server,
         actor,
         &format!(
-            r#"{{
+            r"{{
                 explainPolicy(input: {input}) {{
                     operation
                     collection
@@ -206,7 +206,7 @@ async fn explain_policy_as(server: &axum_test::TestServer, actor: &str, input: &
                         }}
                     }}
                 }}
-            }}"#
+            }}"
         ),
     )
     .await;
@@ -501,13 +501,13 @@ async fn graphql_policy_read_semantics_are_safe() {
     let first_page = gql_as(
         &server,
         "requester",
-        r#"{
+        r"{
             tasksConnection(limit: 1) {
                 totalCount
                 edges { node { id title } }
                 pageInfo { hasNextPage hasPreviousPage endCursor }
             }
-        }"#,
+        }",
     )
     .await;
     assert!(
@@ -953,14 +953,13 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
     assert_eq!(read["decision"], "allow");
     assert_eq!(read["reason"], "allowed");
     assert_eq!(read["policyVersion"], 1);
-    let read_rule_names: Vec<_> = read["rules"]
+    let mut read_rule_names = read["rules"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|rule| rule["name"].as_str())
-        .collect();
+        .filter_map(|rule| rule["name"].as_str());
     assert!(
-        read_rule_names.contains(&"requesters-read-own-tasks"),
+        read_rule_names.any(|value| value == "requesters-read-own-tasks"),
         "read explanation should name the matching requester rule: {read}"
     );
 
@@ -986,14 +985,13 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
     assert_eq!(field_denial["reason"], "field_write_denied");
     assert_eq!(field_denial["deniedFields"], json!(["secret"]));
     assert_eq!(field_denial["fieldPaths"], json!(["secret"]));
-    let denial_rule_names: Vec<_> = field_denial["rules"]
+    let mut denial_rule_names = field_denial["rules"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|rule| rule["name"].as_str())
-        .collect();
+        .filter_map(|rule| rule["name"].as_str());
     assert!(
-        denial_rule_names.contains(&"finance-cannot-write-secret"),
+        denial_rule_names.any(|value| value == "finance-cannot-write-secret"),
         "field denial should name the matching rule: {field_denial}"
     );
 
@@ -1676,13 +1674,12 @@ async fn graphql_approval_inbox_lists_reviews_and_scopes_mutation_intents() {
     )
     .await;
     assert!(pending["errors"].is_null(), "pending errors: {pending}");
-    let pending_ids: Vec<_> = pending["data"]["pendingMutationIntents"]["edges"]
+    let mut pending_ids = pending["data"]["pendingMutationIntents"]["edges"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|edge| edge["node"]["id"].as_str().unwrap())
-        .collect();
-    assert!(pending_ids.contains(&approval_id.as_str()));
+        .map(|edge| edge["node"]["id"].as_str().unwrap());
+    assert!(pending_ids.any(|value| value == approval_id.as_str()));
     assert_eq!(
         pending["data"]["pendingMutationIntents"]["pageInfo"]["hasNextPage"],
         false

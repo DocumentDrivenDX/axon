@@ -147,7 +147,7 @@ fn test_collection_lifecycle<S: StorageAdapter>(mut h: AxonHandler<S>) {
     .unwrap();
 
     let resp = h.list_collections(ListCollectionsRequest {}).unwrap();
-    assert!(resp.collections.is_empty());
+    assert_eq!(resp.collections.len(), 0);
 }
 
 fn test_links_and_traversal<S: StorageAdapter>(mut h: AxonHandler<S>) {

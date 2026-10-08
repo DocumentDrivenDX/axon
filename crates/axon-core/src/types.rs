@@ -408,7 +408,7 @@ mod tests {
             EntityId::new("t-001"),
             json!({"title": "hello"}),
         );
-        assert!(entity.gate_results.is_empty());
+        assert_eq!(entity.gate_results.len(), 0);
     }
 
     #[test]
@@ -473,6 +473,6 @@ mod tests {
         let entity: Entity = serde_json::from_value(legacy).expect("deserialize legacy");
         assert_eq!(entity.version, 3);
         assert_eq!(entity.data["title"], "hello");
-        assert!(entity.gate_results.is_empty());
+        assert_eq!(entity.gate_results.len(), 0);
     }
 }

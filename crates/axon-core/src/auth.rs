@@ -586,7 +586,7 @@ mod tests {
         let old_data = serde_json::json!({"title": "T", "created_by": "alice", "source": "api"});
         let new_data = serde_json::json!({"title": "T2", "created_by": "alice", "source": "api"});
         let violations = policy.check_immutable_fields(&old_data, &new_data);
-        assert!(violations.is_empty());
+        assert_eq!(violations.len(), 0);
 
         let changed = serde_json::json!({"title": "T2", "created_by": "bob", "source": "api"});
         let violations = policy.check_immutable_fields(&old_data, &changed);
@@ -604,7 +604,7 @@ mod tests {
         let old_data = serde_json::json!({"title": "T"});
         let new_data = serde_json::json!({"title": "T", "locked": true});
         let violations = policy.check_immutable_fields(&old_data, &new_data);
-        assert!(violations.is_empty());
+        assert_eq!(violations.len(), 0);
     }
 
     #[test]

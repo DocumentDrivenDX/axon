@@ -494,7 +494,7 @@ entity_schema:
         }
 
         // Display output is non-empty.
-        assert!(!errs.to_string().is_empty());
+        assert_ne!(errs.to_string().len(), 0);
     }
 
     #[test]
@@ -507,7 +507,7 @@ entity_schema:
         });
         let errs = validate_entity(&schema, &entity)
             .expect_err("validation should fail for invalid enum values");
-        assert!(!errs.is_empty());
+        assert_ne!(errs.len(), 0);
         // At least one error should reference the currency field.
         let has_currency_error = errs.0.iter().any(|e| e.field_path.contains("currency"));
         assert!(

@@ -153,7 +153,7 @@ async fn explain_policy_as(server: &axum_test::TestServer, actor: &str, input: &
         server,
         actor,
         &format!(
-            r#"{{
+            r"{{
                 explainPolicy(input: {input}) {{
                     decision
                     reason
@@ -167,7 +167,7 @@ async fn explain_policy_as(server: &axum_test::TestServer, actor: &str, input: &
                         reasonRequired
                     }}
                 }}
-            }}"#
+            }}"
         ),
     )
     .await;
@@ -364,7 +364,7 @@ async fn run_procurement_graphql_suite(
     assert_eq!(denied["policyVersion"], 1);
     assert_eq!(denied["decision"], "deny");
     assert_eq!(denied["reason"], "row_write_denied");
-    assert!(denied["fieldPaths"].as_array().unwrap().is_empty());
+    assert_eq!(denied["fieldPaths"].as_array().unwrap().len(), 0);
 
     let mut decision_counts = DecisionCounts::default();
     decision_counts.push(allow["decision"].as_str().unwrap());

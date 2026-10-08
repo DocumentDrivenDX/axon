@@ -167,11 +167,11 @@ async fn control_graphql_admin_lifecycle_and_rest_parity() {
     let current_user = gql(
         &server,
         &jwt,
-        r#"
+        r"
         query {
           currentUser { actor role userId tenantId }
         }
-        "#,
+        ",
         json!({}),
     )
     .await;
@@ -207,14 +207,14 @@ async fn control_graphql_admin_lifecycle_and_rest_parity() {
     let role_list = gql(
         &server,
         &jwt,
-        r#"
+        r"
         query {
           userRoles {
             login
             role
           }
         }
-        "#,
+        ",
         json!({}),
     )
     .await;
@@ -248,11 +248,11 @@ async fn control_graphql_admin_lifecycle_and_rest_parity() {
     let create_tenant = gql(
         &server,
         &jwt,
-        r#"
+        r"
         mutation($name: String!) {
           createTenant(name: $name) { id name createdAt }
         }
-        "#,
+        ",
         json!({ "name": "Acme GraphQL" }),
     )
     .await;
@@ -351,7 +351,7 @@ async fn control_graphql_admin_lifecycle_and_rest_parity() {
     let suspend = gql(
         &server,
         &jwt,
-        r#"mutation($userId: String!) { suspendUser(userId: $userId) { userId suspended } }"#,
+        r"mutation($userId: String!) { suspendUser(userId: $userId) { userId suspended } }",
         json!({ "userId": user_id }),
     )
     .await;
@@ -421,11 +421,11 @@ async fn control_graphql_tenant_admin_permissions_and_denial_codes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn control_graphql_credentials_issue_list_and_revoke() {
-    let (server, issuer, admin_uid, _, storage) = build_test_env();
+    let (server, oidc_issuer, admin_uid, _, storage) = build_test_env();
     let tenant_id = "tenant-gql-credentials";
     let target_user = Uuid::now_v7().to_string();
     insert_member(&storage, tenant_id, &target_user, TenantRole::Write);
-    let admin_jwt = deployment_admin_jwt(&issuer, &admin_uid);
+    let admin_jwt = deployment_admin_jwt(&oidc_issuer, &admin_uid);
 
     let issued = gql(
         &server,
@@ -457,13 +457,13 @@ async fn control_graphql_credentials_issue_list_and_revoke() {
     let list = gql(
         &server,
         &admin_jwt,
-        r#"
+        r"
         query($tenantId: String!) {
           credentials(tenantId: $tenantId) {
             jti userId tenantId revoked grants
           }
         }
-        "#,
+        ",
         json!({ "tenantId": tenant_id }),
     )
     .await;
@@ -478,11 +478,16 @@ async fn control_graphql_credentials_issue_list_and_revoke() {
         "credential list must not expose signed JWT material: {list}"
     );
 
-    let owner_jwt = tenant_jwt(&issuer, &target_user, tenant_id, vec![Op::Read, Op::Write]);
+    let owner_jwt = tenant_jwt(
+        &oidc_issuer,
+        &target_user,
+        tenant_id,
+        vec![Op::Read, Op::Write],
+    );
     let owner_list = gql(
         &server,
         &owner_jwt,
-        r#"query($tenantId: String!) { credentials(tenantId: $tenantId) { userId } }"#,
+        r"query($tenantId: String!) { credentials(tenantId: $tenantId) { userId } }",
         json!({ "tenantId": tenant_id }),
     )
     .await;
@@ -492,11 +497,11 @@ async fn control_graphql_credentials_issue_list_and_revoke() {
     let revoked = gql(
         &server,
         &owner_jwt,
-        r#"
+        r"
         mutation($tenantId: String!, $jti: String!) {
           revokeCredential(tenantId: $tenantId, jti: $jti) { jti revoked }
         }
-        "#,
+        ",
         json!({ "tenantId": tenant_id, "jti": jti }),
     )
     .await;

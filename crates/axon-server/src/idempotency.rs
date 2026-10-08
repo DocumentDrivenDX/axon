@@ -24,7 +24,7 @@ use axon_core::Clock;
 /// Default TTL applied to idempotency entries.
 ///
 /// FEAT-008 US-081 specifies 5 minutes.
-pub const DEFAULT_IDEMPOTENCY_TTL: Duration = Duration::from_secs(5 * 60);
+pub const DEFAULT_IDEMPOTENCY_TTL: Duration = Duration::from_mins(5);
 
 /// Outcome of [`IdempotencyStore::try_reserve`].
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -545,7 +545,7 @@ mod tests {
         let expires_at = body["expires_at_ms"].as_u64().unwrap();
         let ttl = expires_at.saturating_sub(issued_at);
         assert!(ttl <= 24 * 3_600_000, "TTL must be ≤ 24h but was {ttl}ms");
-        assert!(!body["id"].as_str().unwrap().is_empty());
+        assert_ne!(body["id"].as_str().unwrap(), "");
     }
 
     /// AC1: Explicit ttl_ms accepted when within limit.

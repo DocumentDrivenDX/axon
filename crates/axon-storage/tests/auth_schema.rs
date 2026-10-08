@@ -65,7 +65,9 @@ fn superadmin_dsn() -> Option<String> {
                     .expect("container port should be available");
                 // Leak the container so it lives for the whole test binary run.
                 Box::leak(Box::new(container));
-                Some(format!("postgres://postgres:postgres@{host}:{port}/postgres"))
+                Some(format!(
+                    "postgres://postgres:postgres@{host}:{port}/postgres"
+                ))
             }
             Err(e) => {
                 eprintln!(
@@ -93,8 +95,7 @@ fn cluster_or_skip(test_name: &str) -> Option<TestPg> {
 
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let db_name = format!("as_{n:06}");
-    provision_postgres_database(&dsn, &db_name)
-        .expect("test database provision should succeed");
+    provision_postgres_database(&dsn, &db_name).expect("test database provision should succeed");
 
     Some(TestPg {
         dsn: tenant_dsn(&dsn, &db_name),

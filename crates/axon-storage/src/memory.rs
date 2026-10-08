@@ -732,8 +732,8 @@ impl StorageAdapter for MemoryStorageAdapter {
         let mut entities: Vec<&Entity> = col
             .values()
             .filter(|e| {
-                start.map_or(true, |s| e.id.as_str() >= s.as_str())
-                    && end.map_or(true, |en| e.id.as_str() <= en.as_str())
+                start.is_none_or(|s| e.id.as_str() >= s.as_str())
+                    && end.is_none_or(|en| e.id.as_str() <= en.as_str())
             })
             .collect();
 
@@ -1542,7 +1542,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             .links
             .iter()
             .filter(|((sc, si, lt, _, _), _)| {
-                sc == source_collection && si == source_id && link_type.map_or(true, |f| lt == f)
+                sc == source_collection && si == source_id && link_type.is_none_or(|f| lt == f)
             })
             .map(|(_, link)| link.clone())
             .collect())
@@ -1558,7 +1558,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             .links
             .iter()
             .filter(|((_, _, lt, tc, ti), _)| {
-                tc == target_collection && ti == target_id && link_type.map_or(true, |f| lt == f)
+                tc == target_collection && ti == target_id && link_type.is_none_or(|f| lt == f)
             })
             .map(|(_, link)| link.clone())
             .collect())
@@ -1883,8 +1883,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         let mut creds: Vec<CredentialMetadata> = issuances
             .values()
             .filter(|m| {
-                m.tenant_id == tenant_id
-                    && user_filter.as_ref().map_or(true, |uid| &m.user_id == uid)
+                m.tenant_id == tenant_id && user_filter.as_ref().is_none_or(|uid| &m.user_id == uid)
             })
             .cloned()
             .collect();
@@ -2547,7 +2546,7 @@ mod tests {
             let done_results = store
                 .index_lookup(&col, "status", &IndexValue::String("done".into()))
                 .expect("test operation should succeed");
-            assert!(done_results.is_empty());
+            assert_eq!(done_results, [] as [axon_core::EntityId; 0]);
         }
 
         #[test]
@@ -2688,10 +2687,12 @@ mod tests {
             store.put(task("t-001", "closed", 9)).expect("put replace");
 
             // Old single-field key gone, new present.
-            assert!(store
-                .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
-                .expect("lookup old")
-                .is_empty());
+            assert_eq!(
+                store
+                    .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
+                    .expect("lookup old"),
+                [] as [axon_core::EntityId; 0]
+            );
             assert_eq!(
                 store
                     .index_lookup(&tasks(), "status", &IndexValue::String("closed".into()))
@@ -2704,10 +2705,12 @@ mod tests {
                 IndexValue::String("open".into()),
                 IndexValue::Integer(5),
             ]);
-            assert!(store
-                .compound_index_lookup(&tasks(), 0, &old_ckey)
-                .expect("compound old")
-                .is_empty());
+            assert_eq!(
+                store
+                    .compound_index_lookup(&tasks(), 0, &old_ckey)
+                    .expect("compound old"),
+                [] as [axon_core::EntityId; 0]
+            );
             let new_ckey = CompoundKey(vec![
                 IndexValue::String("closed".into()),
                 IndexValue::Integer(9),
@@ -2731,10 +2734,12 @@ mod tests {
                 .compare_and_swap(task("t-001", "done", 1), 1)
                 .expect("cas");
 
-            assert!(store
-                .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
-                .expect("lookup old")
-                .is_empty());
+            assert_eq!(
+                store
+                    .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
+                    .expect("lookup old"),
+                [] as [axon_core::EntityId; 0]
+            );
             assert_eq!(
                 store
                     .index_lookup(&tasks(), "status", &IndexValue::String("done".into()))
@@ -2753,18 +2758,22 @@ mod tests {
                 .delete(&tasks(), &EntityId::new("t-001"))
                 .expect("delete");
 
-            assert!(store
-                .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
-                .expect("lookup")
-                .is_empty());
+            assert_eq!(
+                store
+                    .index_lookup(&tasks(), "status", &IndexValue::String("open".into()))
+                    .expect("lookup"),
+                [] as [axon_core::EntityId; 0]
+            );
             let ckey = CompoundKey(vec![
                 IndexValue::String("open".into()),
                 IndexValue::Integer(3),
             ]);
-            assert!(store
-                .compound_index_lookup(&tasks(), 0, &ckey)
-                .expect("compound lookup")
-                .is_empty());
+            assert_eq!(
+                store
+                    .compound_index_lookup(&tasks(), 0, &ckey)
+                    .expect("compound lookup"),
+                [] as [axon_core::EntityId; 0]
+            );
         }
 
         #[test]
@@ -3258,7 +3267,7 @@ mod tests {
             let outbound = store
                 .list_outbound_links(&CollectionId::new("tasks"), &EntityId::new("t-001"), None)
                 .expect("test operation should succeed");
-            assert!(outbound.is_empty());
+            assert_eq!(outbound, [] as [axon_core::Link; 0]);
         }
 
         #[test]

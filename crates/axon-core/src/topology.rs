@@ -110,8 +110,8 @@ mod tests {
         registry.register(make_node("node-1"));
         registry.place("db1".into(), "node-1".into(), true);
         registry.deregister("node-1");
-        assert!(registry.nodes.is_empty());
-        assert!(registry.placements.is_empty());
+        assert_eq!(registry.nodes.len(), 0);
+        assert_eq!(registry.placements.len(), 0);
     }
 
     #[test]

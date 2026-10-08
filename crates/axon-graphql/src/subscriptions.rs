@@ -292,7 +292,7 @@ mod tests {
         let events = broker
             .poll(id)
             .expect("active subscription should return a poll buffer");
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]

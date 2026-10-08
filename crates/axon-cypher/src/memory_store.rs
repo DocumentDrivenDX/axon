@@ -315,7 +315,7 @@ impl QueryStore for MemoryQueryStore {
 fn entity_matches_scan(entity: &QueryEntity, scan: &EntityScan) -> bool {
     scan.label
         .as_deref()
-        .map_or(true, |label| entity.has_label(label))
+        .is_none_or(|label| entity.has_label(label))
         && scan
             .property_filters
             .iter()

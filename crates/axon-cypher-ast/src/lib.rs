@@ -88,6 +88,6 @@ mod read_footprint_tests {
     #[test]
     fn unlabeled_nodes_are_ignored() {
         let q = parse("MATCH (n) RETURN n").expect("parse");
-        assert!(referenced_labels(&q).is_empty());
+        assert_eq!(referenced_labels(&q), [] as [std::string::String; 0]);
     }
 }

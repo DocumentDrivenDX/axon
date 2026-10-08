@@ -2404,7 +2404,7 @@ fn days_since_epoch(year: u64, month: u64, day: u64) -> Option<u64> {
 }
 
 fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 async fn rollback_collection_handler(
@@ -3451,7 +3451,7 @@ fn collection_field_name(collection: &str) -> String {
     if name
         .chars()
         .next()
-        .map_or(true, |first| !first.is_ascii_alphabetic() && first != '_')
+        .is_none_or(|first| !first.is_ascii_alphabetic() && first != '_')
     {
         name = format!("collection{name}");
     }
@@ -4770,7 +4770,7 @@ mod tests {
         let path_scoped_entries = path_scoped_body["entries"]
             .as_array()
             .expect("path-scoped audit/entity should return an entries array");
-        assert!(!path_scoped_entries.is_empty());
+        assert_ne!(path_scoped_entries.len(), 0);
         assert!(path_scoped_entries
             .iter()
             .all(|entry| entry["collection"] == "prod.default.tasks"));
@@ -4785,7 +4785,7 @@ mod tests {
         let cross_database_entries = cross_database_body["entries"]
             .as_array()
             .expect("cross-database audit/entity should return an entries array");
-        assert!(cross_database_entries.is_empty());
+        assert_eq!(cross_database_entries.len(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -6306,7 +6306,7 @@ mod tests {
         let path_scoped_entries = path_scoped_body["entries"]
             .as_array()
             .expect("path scoped audit query should return an entries array");
-        assert!(!path_scoped_entries.is_empty());
+        assert_ne!(path_scoped_entries.len(), 0);
         assert!(path_scoped_entries
             .iter()
             .all(|entry| entry["collection"] == "prod.default.tasks"));
