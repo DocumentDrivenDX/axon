@@ -1,0 +1,203 @@
+# Heavy / expensive suites. NOT run on ordinary PRs.
+# Triggers: release.yml (workflow_call, gates publishing), weekly schedule,
+# manual dispatch, and PRs labelled `ci:full` (called from ci.yml).
+# NOTE: no `concurrency:` here on purpose; when called from ci.yml the
+# caller's group applies (a same-named group in a called workflow would deadlock).
+name: Heavy
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'   # weekly, Monday 06:00 UTC
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  consumer-workload-gate:
+    name: Consumer Workload Gate (PR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXIQ_WORKLOAD_PATH: ${{ github.workspace }}/../nexiq
+      CAYCE_WORKLOAD_PATH: ${{ github.workspace }}/target/consumer-workloads/missing-cayce
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - name: Run consumer workload runner self-test
+        run: scripts/run-consumer-workloads.sh --self-test --run-dir target/consumer-workloads/pr-self-test
+      - name: Run Nexiq contract smoke when source is present
+        run: |
+          if [[ -d "$NEXIQ_WORKLOAD_PATH" ]]; then
+            scripts/run-consumer-workloads.sh --consumer nexiq --backend sqlite --mode contract --run-dir target/consumer-workloads/pr-nexiq-contract
+          else
+            scripts/run-consumer-workloads.sh --consumer nexiq --backend sqlite --mode contract --dry-run --run-dir target/consumer-workloads/pr-nexiq-contract
+          fi
+      - name: Run DDx contract-gap dry-run
+        run: scripts/run-consumer-workloads.sh --consumer ddx --backend sqlite --mode pr --dry-run --run-dir target/consumer-workloads/pr-ddx
+      - name: Run Cayce missing-workload probe
+        run: scripts/run-consumer-workloads.sh --consumer cayce --backend sqlite --mode pr --dry-run --run-dir target/consumer-workloads/pr-cayce
+      - name: Report PR status matrix outcomes
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("target/consumer-workloads")
+          for summary_path in sorted(root.glob("pr-*/summary.json")):
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              print(
+                  f"{summary['consumer']}: "
+                  f"status={summary['status']} "
+                  f"classification={summary['classification']} "
+                  f"exit_code={summary['exit_code']} "
+                  f"summary={summary_path}"
+              )
+
+          required = {
+              "pr-ddx": ("ddx", "blocked", "contract_gap"),
+              "pr-cayce": ("cayce", "missing", "missing_workload"),
+          }
+          for directory, expected in required.items():
+              summary_path = root / directory / "summary.json"
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              actual = (
+                  summary["consumer"],
+                  summary["status"],
+                  summary["classification"],
+              )
+              if actual != expected:
+                  raise SystemExit(
+                      f"{directory} expected {expected}, got {actual}"
+                  )
+          PY
+      - name: Upload consumer workload PR artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: consumer-workload-pr
+          path: target/consumer-workloads/pr-*
+          if-no-files-found: error
+
+  test-kafka:
+    name: Test (kafka feature)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      # cmake, C toolchain, and libcurl headers are required to compile librdkafka from source.
+      - name: Install native Kafka build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+      - name: Test axon-audit with kafka feature
+        run: cargo test -p axon-audit --features kafka
+
+  deny:
+    name: Deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+
+  machete:
+    name: Machete
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete
+      - run: cargo machete crates
+
+  installer-service:
+    name: Installer + Service (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: scripts/test-linux-installer-service.sh
+
+  storage-conformance:
+    name: L4 Storage Conformance (SQLite + PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      # Build first so the ratchet below times test execution, not
+      # compilation (compile time varies with cache state and is not what
+      # the ratchet is meant to catch).
+      - name: Build axon-storage tests
+        env:
+          AXON_TEST_POSTGRES: postgres://postgres:postgres@localhost:5432/postgres
+        run: cargo test -p axon-storage --no-run
+      # Slow-test ratchet: fails if axon-storage's test wall-clock regresses
+      # past 90s, guarding against reintroducing the per-test Docker
+      # container-startup pattern documented in ci-ratchets.md (148.23s
+      # before the fix, 18.74s after; 90s leaves headroom for slower runners).
+      - name: Run L4 storage conformance suite (SQLite + PostgreSQL)
+        env:
+          AXON_TEST_POSTGRES: postgres://postgres:postgres@localhost:5432/postgres
+        run: scripts/check-slow-tests.sh 90 /tmp/storage-conformance.log -- cargo test -p axon-storage
+      - name: Verify PostgreSQL conformance tests ran (not all skipped)
+        run: |
+          if grep -q "postgres_conformance::get_missing_returns_none" /tmp/storage-conformance.log; then
+            echo "PostgreSQL conformance tests ran successfully"
+          else
+            echo "WARNING: PostgreSQL conformance tests may not have run — check log" >&2
+          fi
+
+  e2e-postgres:
+    name: E2E (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      # Cargo.lock is gitignored; the e2e Docker build COPYs it for layer
+      # caching, so generate one before docker build when the rust-cache
+      # restore did not provide it.
+      - name: Ensure Cargo.lock exists
+        run: test -f Cargo.lock || cargo generate-lockfile
+      - run: cd ui && bun install
+      - run: cd ui && bun run test:e2e:postgres
