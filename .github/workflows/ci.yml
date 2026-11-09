@@ -61,6 +61,22 @@ jobs:
     name: Rust (fmt, clippy, test)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AXON_TEST_POSTGRES: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.99.0
