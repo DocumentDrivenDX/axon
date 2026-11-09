@@ -240,7 +240,7 @@ fn bm_001_single_entity_read(c: &mut Criterion) {
     }
 
     let mut i = 0_u64;
-    // @covers BM-001
+    // benchmark BM-001
     assert_p99_gate("BM-001: single entity read", 5, || {
         let id = format!("item-{:05}", i % 10_000);
         i += 1;
@@ -291,7 +291,7 @@ entity_schema:
     h.put_schema(schema).unwrap();
 
     let mut i = 0_u64;
-    // @covers BM-002
+    // benchmark BM-002
     assert_p99_gate("BM-002: single entity write", 10, || {
         let id = format!("w-{i:08}");
         i += 1;
@@ -364,7 +364,7 @@ fn bm_003_multi_entity_transaction(c: &mut Criterion) {
         tx.commit(storage, Some("bench".into()), None).unwrap()
     };
 
-    // @covers BM-003
+    // benchmark BM-003
     assert_p99_gate("BM-003: multi-entity transaction (5 ops)", 20, || {
         run_transaction(&mut storage)
     });
@@ -408,7 +408,7 @@ fn bm_004_collection_scan(c: &mut Criterion) {
         ..Default::default()
     };
 
-    // @covers BM-004
+    // benchmark BM-004
     assert_p99_gate(
         "BM-004: collection scan (1K entities, filter+sort)",
         100,
@@ -546,7 +546,7 @@ fn bm_006_link_traversal(c: &mut Criterion) {
         hop_filter: None,
     };
 
-    // @covers BM-006
+    // benchmark BM-006
     assert_p99_gate("BM-006: link traversal (3 hops, 155 nodes)", 50, || {
         h.traverse(traverse_request()).unwrap()
     });
@@ -602,7 +602,7 @@ fn bm_007_aggregation(c: &mut Criterion) {
         total
     };
 
-    // @covers BM-007
+    // benchmark BM-007
     assert_p99_gate(
         "BM-007: aggregation (10K entities, filter+sum)",
         500,
@@ -740,7 +740,7 @@ entity_schema:
         "score": 95.5
     });
 
-    // @covers BM-009
+    // benchmark BM-009
     assert_p99_gate("BM-009: schema validation (20 fields, 2 levels)", 1, || {
         axon_schema::validate(&schema, &valid_entity).unwrap()
     });
@@ -787,7 +787,7 @@ fn bm_010_audit_query(c: &mut Criterion) {
         ..Default::default()
     };
 
-    // @covers BM-010
+    // benchmark BM-010
     assert_p99_gate(
         "BM-010: audit query (single entity, 100 mutations)",
         100,
