@@ -17,6 +17,7 @@ enum Command {
     AuditDmlBoundary(AuditArgs),
 }
 
+#[allow(clippy::print_stdout)] // xtask is a CLI; stdout is its report channel
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::AuditDmlBoundary(args) => {
