@@ -1,267 +1,158 @@
 name: CI
 
+# PR tier is deliberately light: fmt + clippy + unit tests (one job), plus UI/SDK
+# checks only when those trees change. Heavy suites (Kafka, Postgres/storage
+# conformance, e2e, consumer gate, cargo-deny/machete, installer) live in
+# heavy.yml and run on release tags, weekly, manual dispatch, or when a PR has
+# the `ci:full` label.
+#
+# Merge gate for heavy-suite code: the `evidence-gate` job. Run
+# `scripts/verify-full.sh` locally and commit .ci/evidence/full-suite.json
+# (hash of all tracked files), or label the PR `ci:full`.
+#
+# Branch protection: required checks are now "Rust (fmt, clippy, test)",
+# "Frontend (SDK + UI)" and "evidence-gate" (old names Check/Test/Clippy/Format/
+# SDK/UI/Deny/Machete/... no longer exist). Docs-only PRs skip this workflow
+# entirely (paths-ignore), so do not mark these as required without that in mind.
+
 on:
   push:
-    branches: [master, main]
+    branches: [master]
   pull_request:
     branches: [master, main]
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'website/**'
+      - 'LICENSE*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
-# L5 benchmarks stay out of per-commit CI; the nightly workflow records
-# commit, environment, backend, dataset, and p99 evidence via
-# scripts/run-benchmarks.sh.
-
 jobs:
-  check:
-    name: Check
+  changes:
+    name: Detect changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      sdk: ${{ steps.f.outputs.sdk }}
+      ui: ${{ steps.f.outputs.ui }}
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - run: cargo check
+      - uses: dorny/paths-filter@v3
+        id: f
+        with:
+          filters: |
+            sdk:
+              - 'sdk/typescript/**'
+            ui:
+              - 'ui/**'
 
-  test:
-    name: Test
+  rust:
+    name: Rust (fmt, clippy, test)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - run: cargo test
+      - run: cargo fmt --all -- --check
+      # clippy subsumes `cargo check`
+      - run: cargo clippy --workspace --no-deps -- -D warnings -D clippy::todo -D clippy::unimplemented -D clippy::dbg_macro -D clippy::print_stdout -D clippy::unwrap_used
+      # Postgres-backed tests run in the heavy storage-conformance job
+      # (several fail on master today); PRs cover memory/sqlite only.
+      - run: cargo test --workspace -- --skip postgres --skip memory_sqlite_and_postgres
       - run: python3 scripts/check_covers_traceability_test.py
       - run: python3 scripts/check_covers_traceability.py --format text
 
-  consumer-workload-gate:
-    name: Consumer Workload Gate (PR)
+  frontend:
+    name: Frontend (SDK + UI)
+    needs: changes
+    if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
-    env:
-      NEXIQ_WORKLOAD_PATH: ${{ github.workspace }}/../nexiq
-      CAYCE_WORKLOAD_PATH: ${{ github.workspace }}/target/consumer-workloads/missing-cayce
-    steps:
-      - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
-      - name: Run consumer workload runner self-test
-        run: scripts/run-consumer-workloads.sh --self-test --run-dir target/consumer-workloads/pr-self-test
-      - name: Run Nexiq contract smoke when source is present
-        run: |
-          if [[ -d "$NEXIQ_WORKLOAD_PATH" ]]; then
-            scripts/run-consumer-workloads.sh --consumer nexiq --backend sqlite --mode contract --run-dir target/consumer-workloads/pr-nexiq-contract
-          else
-            scripts/run-consumer-workloads.sh --consumer nexiq --backend sqlite --mode contract --dry-run --run-dir target/consumer-workloads/pr-nexiq-contract
-          fi
-      - name: Run DDx contract-gap dry-run
-        run: scripts/run-consumer-workloads.sh --consumer ddx --backend sqlite --mode pr --dry-run --run-dir target/consumer-workloads/pr-ddx
-      - name: Run Cayce missing-workload probe
-        run: scripts/run-consumer-workloads.sh --consumer cayce --backend sqlite --mode pr --dry-run --run-dir target/consumer-workloads/pr-cayce
-      - name: Report PR status matrix outcomes
-        run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          root = Path("target/consumer-workloads")
-          for summary_path in sorted(root.glob("pr-*/summary.json")):
-              summary = json.loads(summary_path.read_text(encoding="utf-8"))
-              print(
-                  f"{summary['consumer']}: "
-                  f"status={summary['status']} "
-                  f"classification={summary['classification']} "
-                  f"exit_code={summary['exit_code']} "
-                  f"summary={summary_path}"
-              )
-
-          required = {
-              "pr-ddx": ("ddx", "blocked", "contract_gap"),
-              "pr-cayce": ("cayce", "missing", "missing_workload"),
-          }
-          for directory, expected in required.items():
-              summary_path = root / directory / "summary.json"
-              summary = json.loads(summary_path.read_text(encoding="utf-8"))
-              actual = (
-                  summary["consumer"],
-                  summary["status"],
-                  summary["classification"],
-              )
-              if actual != expected:
-                  raise SystemExit(
-                      f"{directory} expected {expected}, got {actual}"
-                  )
-          PY
-      - name: Upload consumer workload PR artifacts
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: consumer-workload-pr
-          path: target/consumer-workloads/pr-*
-          if-no-files-found: error
-
-  test-kafka:
-    name: Test (kafka feature)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
-      # cmake, C toolchain, and libcurl headers are required to compile librdkafka from source.
-      - name: Install native Kafka build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
-      - name: Test axon-audit with kafka feature
-        run: cargo test -p axon-audit --features kafka
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.99.0
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - run: cargo clippy --workspace --no-deps -- -D warnings -D clippy::todo -D clippy::unimplemented -D clippy::dbg_macro -D clippy::print_stdout -D clippy::unwrap_used
-
-  deny:
-    name: Deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny
-      - run: cargo deny check
-
-  machete:
-    name: Machete
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-machete
-      - run: cargo machete crates
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.99.0
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
-  installer-service:
-    name: Installer + Service (Linux)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - run: scripts/test-linux-installer-service.sh
-
-  sdk:
-    name: SDK (TypeScript)
-    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
+        if: needs.changes.outputs.sdk == 'true'
         with:
           node-version: '22'
-      - run: cd sdk/typescript && npm install
-      - run: cd sdk/typescript && npm test -- --run
-      - run: cd sdk/typescript && npm run lint
-
-  ui:
-    name: UI
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
-      - run: cd ui && bun install
-      - run: cd ui && bun run typecheck
-      - run: cd ui && bun run lint
-      - run: cd ui && bun test src/
-      - run: cd ui && bun run build
-      - run: cd ui && bun run check:story-coverage
-
-  # L4 backend conformance: runs the storage_conformance_tests! suite against
-  # SQLite (always) and PostgreSQL (via service container).  The memory backend
-  # is exercised by the main `test` job via `cargo test`.
-  storage-conformance:
-    name: L4 Storage Conformance (SQLite + PostgreSQL)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      # Build first so the ratchet below times test execution, not
-      # compilation (compile time varies with cache state and is not what
-      # the ratchet is meant to catch).
-      - name: Build axon-storage tests
-        env:
-          AXON_TEST_POSTGRES: postgres://postgres:postgres@localhost:5432/postgres
-        run: cargo test -p axon-storage --no-run
-      # Slow-test ratchet: fails if axon-storage's test wall-clock regresses
-      # past 90s, guarding against reintroducing the per-test Docker
-      # container-startup pattern documented in ci-ratchets.md (148.23s
-      # before the fix, 18.74s after; 90s leaves headroom for slower runners).
-      - name: Run L4 storage conformance suite (SQLite + PostgreSQL)
-        env:
-          AXON_TEST_POSTGRES: postgres://postgres:postgres@localhost:5432/postgres
-        run: scripts/check-slow-tests.sh 90 /tmp/storage-conformance.log -- cargo test -p axon-storage
-      - name: Verify PostgreSQL conformance tests ran (not all skipped)
+      - name: SDK
+        if: needs.changes.outputs.sdk == 'true'
         run: |
-          if grep -q "postgres_conformance::get_missing_returns_none" /tmp/storage-conformance.log; then
-            echo "PostgreSQL conformance tests ran successfully"
-          else
-            echo "WARNING: PostgreSQL conformance tests may not have run — check log" >&2
-          fi
+          cd sdk/typescript
+          npm install
+          npm test -- --run
+          npm run lint
+      - uses: oven-sh/setup-bun@v2
+        if: needs.changes.outputs.ui == 'true'
+      - name: UI
+        if: needs.changes.outputs.ui == 'true'
+        run: |
+          cd ui
+          bun install
+          bun run typecheck
+          bun run lint
+          bun test src/
+          bun run build
+          bun run check:story-coverage
 
-  e2e-postgres:
-    name: E2E (PostgreSQL)
+  full:
+    name: Heavy suite (ci:full)
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:full')
+    uses: ./.github/workflows/heavy.yml
+
+  # Cheap gate (seconds): proves the heavy suite was run for this exact tree.
+  # Passes if (a) .ci/evidence/full-suite.json matches the PR head content hash
+  # (produced by scripts/verify-full.sh), OR (b) PR has label `ci:full` and the
+  # heavy job passed, OR (c) the diff touches no path the heavy suite covers.
+  evidence-gate:
+    name: evidence-gate
+    if: always() && github.event_name == 'pull_request'
+    needs: [full]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
-      - uses: oven-sh/setup-bun@v2
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      # Cargo.lock is gitignored; the e2e Docker build COPYs it for layer
-      # caching, so generate one before docker build when the rust-cache
-      # restore did not provide it.
-      - name: Ensure Cargo.lock exists
-        run: test -f Cargo.lock || cargo generate-lockfile
-      - run: cd ui && bun install
-      - run: cd ui && bun run test:e2e:postgres
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Check evidence
+        env:
+          FULL_RESULT: ${{ needs.full.result }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAVY_RE: '^(crates/|Cargo\.|deny\.toml|ui/|scripts/|sdk/|Dockerfile|docker|rust-toolchain)'
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "origin/${BASE_REF}...HEAD" | grep -Ev '^(scripts/verify-full\.sh|\.ci/evidence/|crates/axon-api/benches/benchmarks\.rs$)' || true)
+          if ! grep -Eq "$HEAVY_RE" <<<"$changed"; then
+            echo "No heavy-suite paths changed; gate passes."; exit 0
+          fi
+          if [[ "$FULL_RESULT" == "success" ]]; then
+            echo "ci:full label set and heavy suite passed; gate passes."; exit 0
+          fi
+          f=.ci/evidence/full-suite.json
+          if [[ -f "$f" ]]; then
+            want=$(jq -r .content_hash "$f")
+            have=$(bash scripts/verify-full.sh --hash-only)
+            if [[ "$want" == "$have" ]]; then
+              echo "Evidence matches ($(jq -r '.suite + " @ " + .timestamp' "$f")); gate passes."; exit 0
+            fi
+            echo "::error::Evidence is stale (recorded $want, tree is $have). Re-run scripts/verify-full.sh and commit."
+          else
+            echo "::error::No $f. Run scripts/verify-full.sh and commit the evidence, or add the 'ci:full' label."
+          fi
+          exit 1

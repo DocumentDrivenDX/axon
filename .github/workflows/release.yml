@@ -13,7 +13,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Heavy suites must pass before anything is built/published.
+  heavy:
+    name: Heavy suite
+    uses: ./.github/workflows/heavy.yml
+
   build:
+    needs: heavy
     name: Build ${{ matrix.artifact }}
     strategy:
       fail-fast: false
@@ -36,6 +42,7 @@ jobs:
             artifact: axon-darwin-arm64
             cross: false
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -79,7 +86,9 @@ jobs:
 
   docker:
     name: Docker Image
+    needs: heavy
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -121,8 +130,9 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [heavy, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/download-artifact@v8
         with:
